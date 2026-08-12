@@ -1,0 +1,11 @@
+node_modules/
+venv/
+__pycache__/
+*.pyc
+.env
+!.env.example
+recordings/*.mp4
+browser-profiles/
+dist/
+build/
+.DS_Store

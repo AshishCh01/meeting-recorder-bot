@@ -1,0 +1,24 @@
+from pydantic import BaseModel
+from typing import Optional
+
+
+class MeetingCreate(BaseModel):
+    meeting_url: str
+
+
+class Meeting(BaseModel):
+    id: str
+    meeting_url: str
+    platform: str
+    status: str
+    recording_url: Optional[str] = None
+    duration_seconds: Optional[int] = None
+    error_message: Optional[str] = None
+
+
+class RecordingCompleteWebhook(BaseModel):
+    meeting_id: str
+    status: str  # "completed" | "failed"
+    recording_path: Optional[str] = None  # path inside the Supabase bucket
+    duration_seconds: Optional[int] = None
+    error_message: Optional[str] = None
