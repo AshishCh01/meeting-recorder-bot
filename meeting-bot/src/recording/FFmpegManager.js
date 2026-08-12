@@ -1,4 +1,6 @@
 import { spawn } from 'child_process';
+// We will leave this import here so we don't break dependencies, 
+// but we will not use it in the args array below.
 import { getCaptureArgs } from './AudioCapture.js';
 
 export class FFmpegManager {
@@ -8,17 +10,20 @@ export class FFmpegManager {
   }
 
   start() {
+    // Replaced dynamic args with hardcoded Windows video-only capture
     const args = [
-      ...getCaptureArgs(),
+      '-f', 'gdigrab',
+      '-framerate', '15',
+      '-i', 'desktop',
       '-c:v', 'libx264',
       '-preset', 'ultrafast',
-      '-c:a', 'aac',
+      // Removed the '-c:a', 'aac' audio flags completely
       '-y',
       this.outputPath,
     ];
 
     this.process = spawn('ffmpeg', args);
-    this.process.stderr.on('data', () => {
+    this.process.stderr.on('data', (data) => {
       // ffmpeg logs progress to stderr by default; uncomment for debugging:
       // console.log(data.toString());
     });
@@ -40,3 +45,4 @@ export class FFmpegManager {
     });
   }
 }
+
