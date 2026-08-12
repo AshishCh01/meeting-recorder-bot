@@ -4,9 +4,6 @@ export const GOOGLE_MEET_SELECTORS = {
   inCallIndicators: [
     '[aria-label="Leave call"]',
     '[aria-label="Leave meeting"]',
-    '[aria-label="End call"]',
-    '[aria-label*="microphone" i]',
-    '[aria-label*="camera" i]',
-  ],
-  meetingEndedText: /You left the call|removed from the meeting|Return to home screen/i,
+    '[aria-label="End call"]'
+  ]
 };

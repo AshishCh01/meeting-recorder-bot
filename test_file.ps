@@ -1,0 +1,10 @@
+$body = @{
+  url = "https://meet.google.com/exv-qgfq-zuv"
+  meetingId = "test-123"
+  bearerToken = "some-shared-secret"
+} | ConvertTo-Json
+
+Invoke-RestMethod -Uri "http://localhost:3000/google/join" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body $body

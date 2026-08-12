@@ -1,6 +1,4 @@
 import { spawn } from 'child_process';
-// We will leave this import here so we don't break dependencies, 
-// but we will not use it in the args array below.
 import { getCaptureArgs } from './AudioCapture.js';
 
 export class FFmpegManager {
@@ -10,19 +8,26 @@ export class FFmpegManager {
   }
 
   start() {
-    // Replaced dynamic args with hardcoded Windows video-only capture
     const args = [
-      '-f', 'gdigrab',
-      '-framerate', '15',
-      '-i', 'desktop',
-      '-c:v', 'libx264',
-      '-preset', 'ultrafast',
-      // Removed the '-c:a', 'aac' audio flags completely
+      // 1. Audio input from the Virtual Cable ONLY (No gdigrab/desktop)
+      '-f', 'dshow',
+      '-i', 'audio=CABLE Output (VB-Audio Virtual Cable)',
+      
+      // 2. Audio encoding settings
+      '-c:a', 'aac', 
+      '-ac', '2',        // Force Stereo
+      '-ar', '44100',    // Force 44.1kHz sample rate
+      '-b:a', '192k',    // Set a solid bitrate for clear voices
+      
+      // 3. Drop video completely just to be safe
+      '-vn', 
+      
       '-y',
       this.outputPath,
     ];
 
     this.process = spawn('ffmpeg', args);
+    
     this.process.stderr.on('data', (data) => {
       // ffmpeg logs progress to stderr by default; uncomment for debugging:
       // console.log(data.toString());
@@ -40,9 +45,8 @@ export class FFmpegManager {
         else reject(new Error(`ffmpeg exited with code ${code}`));
       });
 
-      // Graceful stop so the mp4 container is finalized correctly
+      // Graceful stop so the m4a container is finalized correctly
       this.process.stdin.write('q');
     });
   }
 }
-

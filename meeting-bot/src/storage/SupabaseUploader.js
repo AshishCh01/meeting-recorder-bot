@@ -22,7 +22,7 @@ export class SupabaseUploader {
         Bucket: process.env.S3_BUCKET_NAME,
         Key: storageKey,
         Body: fileStream,
-        ContentType: 'video/mp4',
+        ContentType: 'audio/mp4',
       },
     });
 

@@ -1,19 +1,15 @@
 import os from 'os';
 
-// Returns the ffmpeg input arguments for capturing screen + audio.
+// Returns the ffmpeg input arguments for capturing audio only.
 // Linux (production, inside Docker with Xvfb + PulseAudio) is the primary
-// target. Windows args are kept for local dev only (see README) — they
+// target. Windows args are kept for local dev only (see README) -- they
 // assume VB-Audio Virtual Cable is installed and selected as the bot
-// Chrome window's output device.
+// Chrome window's OUTPUT device in Windows' volume mixer.
 export function getCaptureArgs() {
   const platform = os.platform();
 
   if (platform === 'linux') {
-    const display = process.env.DISPLAY || ':99';
     return [
-      '-f', 'x11grab',
-      '-video_size', '1280x720',
-      '-i', display,
       '-f', 'pulse',
       '-i', 'RecordingSink.monitor',
     ];
@@ -21,9 +17,6 @@ export function getCaptureArgs() {
 
   if (platform === 'win32') {
     return [
-      '-f', 'gdigrab',
-      '-framerate', '15',
-      '-i', 'desktop',
       '-f', 'dshow',
       '-i', 'audio=CABLE Output (VB-Audio Virtual Cable)',
     ];

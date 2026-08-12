@@ -8,11 +8,11 @@ export class RecordingFile {
     if (!fs.existsSync(RECORDINGS_DIR)) {
       fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
     }
-    return path.join(RECORDINGS_DIR, `${meetingId}.mp4`);
+    return path.join(RECORDINGS_DIR, `${meetingId}.m4a`);
   }
 
   static storageKeyFor(meetingId) {
     // Object path/key used inside the Supabase Storage bucket
-    return `${meetingId}/recording.mp4`;
+    return `${meetingId}/recording.m4a`;
   }
 }
