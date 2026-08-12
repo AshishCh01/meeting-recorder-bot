@@ -1,32 +1,43 @@
-import { S3Client } from '@aws-sdk/client-s3';
-import { Upload } from '@aws-sdk/lib-storage';
+import { createClient } from '@supabase/supabase-js';
 import fs from 'fs';
+import dotenv from 'dotenv';
 
-const s3 = new S3Client({
-  endpoint: process.env.S3_ENDPOINT, // e.g. https://<project-ref>.storage.supabase.co/storage/v1/s3
-  region: process.env.S3_REGION || 'us-east-1',
-  credentials: {
-    accessKeyId: process.env.S3_ACCESS_KEY_ID,
-    secretAccessKey: process.env.S3_SECRET_ACCESS_KEY,
-  },
-  forcePathStyle: true, // required for Supabase's S3-compatible endpoint
-});
+// Load variables from your .env file
+dotenv.config();
+
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY;
+const bucketName = process.env.SUPABASE_RECORDINGS_BUCKET || 'recordings';
+
+// Initialize the Supabase client using your service_role key
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 export class SupabaseUploader {
   static async upload(localFilePath, storageKey) {
-    const fileStream = fs.createReadStream(localFilePath);
+    console.log(`[SupabaseUploader] Preparing to upload to bucket '${bucketName}'...`);
 
-    const upload = new Upload({
-      client: s3,
-      params: {
-        Bucket: process.env.S3_BUCKET_NAME,
-        Key: storageKey,
-        Body: fileStream,
-        ContentType: 'audio/mp4',
-      },
-    });
+    try {
+      // 1. Read the .m4a file from your local hard drive
+      const fileBuffer = fs.readFileSync(localFilePath);
 
-    await upload.done();
-    return storageKey; // backend generates the signed URL itself from this path
+      // 2. Upload it to the Supabase Storage bucket
+      const { data, error } = await supabase.storage
+        .from(bucketName)
+        .upload(storageKey, fileBuffer, {
+          contentType: 'audio/mp4', // .m4a is an mp4 audio container
+          upsert: true,             // Overwrite if a file with this name already exists
+        });
+
+      if (error) {
+        throw error;
+      }
+
+      console.log(`[SupabaseUploader] Upload successful! File saved as: ${data.path}`);
+      return data.path;
+
+    } catch (error) {
+      console.error('[SupabaseUploader] Upload failed:', error.message);
+      throw error;
+    }
   }
 }
