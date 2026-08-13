@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Any, Dict
 
 
 class MeetingCreate(BaseModel):
@@ -14,6 +14,7 @@ class Meeting(BaseModel):
     recording_url: Optional[str] = None
     duration_seconds: Optional[int] = None
     error_message: Optional[str] = None
+    transcript: Optional[Dict[str, Any]] = None
 
 
 class RecordingCompleteWebhook(BaseModel):

@@ -3,6 +3,7 @@ const COLORS = {
   joining: '#d97706',
   recording: '#dc2626',
   uploading: '#2563eb',
+  transcribing: '#7c3aed',
   completed: '#16a34a',
   failed: '#991b1b',
 };
