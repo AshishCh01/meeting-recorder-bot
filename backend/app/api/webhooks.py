@@ -1,32 +1,65 @@
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter
 from app.db.supabase import supabase
 from app.models.meeting import RecordingCompleteWebhook
 from app.services.storage_service import get_signed_recording_url
-from app.services.transcription_service import transcribe_recording
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 
 @router.post("/recording-complete")
-def recording_complete(payload: RecordingCompleteWebhook, background_tasks: BackgroundTasks):
+def recording_complete(payload: RecordingCompleteWebhook):
     """
-    Called by meeting-bot once it finishes joining/recording/uploading a meeting.
-    On success, payload.recording_path is the object path inside the Supabase
-    Storage bucket that meeting-bot already uploaded the file to.
+    Called by meeting-bot once recording finishes (or fails).
+    Only generates a signed URL if the recording actually exists in storage.
     """
-    if payload.status == "completed" and payload.recording_path:
-        update = {
-            "status": "transcribing",
-            "recording_url": get_signed_recording_url(payload.recording_path),
-            "duration_seconds": payload.duration_seconds,
-        }
-        supabase.table("meetings").update(update).eq("id", payload.meeting_id).execute()
-        background_tasks.add_task(transcribe_recording, payload.meeting_id, payload.recording_path)
-        return {"status": "received"}
-
     update = {"status": payload.status}
+
+    if payload.status == "completed" and payload.recording_path:
+        try:
+            update["recording_url"] = get_signed_recording_url(payload.recording_path)
+            update["duration_seconds"] = payload.duration_seconds
+        except Exception as e:
+            # Recording path was reported but file not found in storage —
+            # treat as failed rather than crashing the webhook handler
+            print(f"[webhook] Could not generate signed URL: {e}")
+            update["status"] = "failed"
+            update["error_message"] = f"Upload reported but file not found in storage: {e}"
+
     if payload.status == "failed":
-        update["error_message"] = payload.error_message
+        update["error_message"] = payload.error_message or "Recording failed"
 
     supabase.table("meetings").update(update).eq("id", payload.meeting_id).execute()
     return {"status": "received"}
+
+# from fastapi import APIRouter, BackgroundTasks
+# from app.db.supabase import supabase
+# from app.models.meeting import RecordingCompleteWebhook
+# from app.services.storage_service import get_signed_recording_url
+# from app.services.transcription_service import transcribe_recording
+
+# router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+
+
+# @router.post("/recording-complete")
+# def recording_complete(payload: RecordingCompleteWebhook, background_tasks: BackgroundTasks):
+#     """
+#     Called by meeting-bot once it finishes joining/recording/uploading a meeting.
+#     On success, payload.recording_path is the object path inside the Supabase
+#     Storage bucket that meeting-bot already uploaded the file to.
+#     """
+#     if payload.status == "completed" and payload.recording_path:
+#         update = {
+#             "status": "transcribing",
+#             "recording_url": get_signed_recording_url(payload.recording_path),
+#             "duration_seconds": payload.duration_seconds,
+#         }
+#         supabase.table("meetings").update(update).eq("id", payload.meeting_id).execute()
+#         background_tasks.add_task(transcribe_recording, payload.meeting_id, payload.recording_path)
+#         return {"status": "received"}
+
+#     update = {"status": payload.status}
+#     if payload.status == "failed":
+#         update["error_message"] = payload.error_message
+
+#     supabase.table("meetings").update(update).eq("id", payload.meeting_id).execute()
+#     return {"status": "received"}
