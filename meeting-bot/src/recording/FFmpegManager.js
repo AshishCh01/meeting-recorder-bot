@@ -1,5 +1,3 @@
-
-
 import { spawn } from 'child_process';
 import { getCaptureArgs } from './AudioCapture.js';
 
@@ -32,7 +30,7 @@ export class FFmpegManager {
     
     this.process.stderr.on('data', (data) => {
       // ffmpeg logs progress to stderr by default; uncomment for debugging:
-      // console.log(data.toString());
+      console.log(data.toString());
     });
 
     return this.process;

@@ -1,8 +1,10 @@
 import json
 import tempfile
 import os
+from typing import Optional
 
 from google import genai
+from google.genai import types
 
 from app.config import settings
 from app.db.supabase import supabase
@@ -32,7 +34,10 @@ RESPONSE_SCHEMA = {
                         "type": "string",
                         "description": "Who is responsible, if stated or implied. Otherwise 'Unspecified'."
                     },
-                    "timestamp": {"type": "string", "description": "MM:SS where this was mentioned."}
+                    "timestamp": {
+                        "type": "string",
+                        "description": "MM:SS where this was mentioned."
+                    }
                 },
                 "required": ["item", "owner"]
             }
@@ -82,61 +87,104 @@ Requirements for speaker identification:
 4. If no name is ever mentioned or the reference is ambiguous, fall back
    to "Speaker 1", "Speaker 2", etc. for that speaker only.
 5. Provide accurate start/end timestamps for each segment (MM:SS format).
-6. Detect the language of each segment individually.
 
 Requirements for content analysis:
-7. summary: A concise 3-5 sentence overview of the whole audio.
-8. key_points: The main ideas, arguments, options, or topics discussed,
+6. summary: A concise 3-5 sentence overview of the whole audio.
+7. key_points: The main ideas, arguments, options, or topics discussed,
    as short standalone bullet points (not full transcript lines).
-9. action_items: Any concrete tasks, decisions, or follow-ups mentioned,
+8. action_items: Any concrete tasks, decisions, or follow-ups mentioned,
    with an owner if one is stated or clearly implied by context (otherwise
    "Unspecified") and a timestamp of where it was mentioned. Return an
    empty array if the audio has no action items.
-10. conclusion: How the conversation resolves or wraps up - the final
-    takeaway, decision, or closing thought.
+9. conclusion: How the conversation resolves or wraps up — the final
+   takeaway, decision, or closing thought.
 """
 
 
-def transcribe_recording(meeting_id: str, storage_path: str) -> dict:
+def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
     """
-    Downloads the recording from Supabase Storage (NOT the database - the
-    `meetings` table only ever holds a pointer/URL, never the audio bytes),
-    runs it through Gemini, and writes the result onto the meeting row.
+    Downloads the recording from Supabase Storage, sends it to Gemini
+    for transcription and analysis, and writes the result to the meeting row.
+    Returns None if the download fails (already marked failed in DB).
     """
-    file_bytes = supabase.storage.from_(settings.supabase_recordings_bucket).download(storage_path)
+    print(f"[transcription] Starting for meeting {meeting_id}, path: {storage_path}")
+
+    try:
+        file_bytes = supabase.storage.from_(
+            settings.supabase_recordings_bucket
+        ).download(storage_path)
+    except Exception as e:
+        _mark_failed(meeting_id, f"Failed to download recording: {e}")
+        return None  # explicit early return — no file to process
 
     suffix = os.path.splitext(storage_path)[1] or ".m4a"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(file_bytes)
         tmp_path = tmp.name
 
-    try:
-        uploaded_file = client.files.upload(file=tmp_path, config={"mime_type": "audio/m4a"})
+    print(f"[transcription] Downloaded to temp file: {tmp_path}")
 
-        interaction = client.interactions.create(
-            model=settings.gemini_model,
-            input=[
-                {"type": "text", "text": PROMPT},
-                {"type": "audio", "uri": uploaded_file.uri, "mime_type": "audio/m4a"}
-            ],
-            response_format=RESPONSE_SCHEMA,
+    try:
+        print("[transcription] Uploading to Gemini File API...")
+        uploaded_file = client.files.upload(
+            file=tmp_path,
+            config=types.UploadFileConfig(mime_type="audio/mp4")
         )
 
-        result = json.loads(interaction.output_text)
+        # uploaded_file.uri is typed as str | None by the SDK.
+        # Raise explicitly here so the error is clear in logs rather than
+        # crashing with a cryptic TypeError inside Part.from_uri().
+        if uploaded_file.uri is None:
+            raise ValueError("Gemini File API returned no URI after upload")
+
+        print(f"[transcription] Uploaded. URI: {uploaded_file.uri}")
+
+        print("[transcription] Sending to Gemini for analysis...")
+        response = client.models.generate_content(
+            model=settings.gemini_model,
+            contents=[
+                PROMPT,
+                types.Part.from_uri(
+                    file_uri=uploaded_file.uri,  # guaranteed str here
+                    mime_type="audio/mp4"
+                ),
+            ],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=RESPONSE_SCHEMA,
+            ),
+        )
+
+        # response.text is typed as str | None by the SDK.
+        # Raise explicitly so the except block marks the meeting failed
+        # with a useful message rather than crashing json.loads with None.
+        if response.text is None:
+            raise ValueError("Gemini returned an empty response — no text content")
+
+        result = json.loads(response.text)  # guaranteed str here
+        print("[transcription] Gemini response parsed successfully")
 
         supabase.table("meetings").update({
             "transcript": result,
             "status": "completed",
         }).eq("id", meeting_id).execute()
 
+        print(f"[transcription] Meeting {meeting_id} marked completed")
         return result
 
     except Exception as e:
-        supabase.table("meetings").update({
-            "status": "failed",
-            "error_message": f"Transcription failed: {e}",
-        }).eq("id", meeting_id).execute()
+        print(f"[transcription] ERROR: {e}")
+        _mark_failed(meeting_id, f"Transcription failed: {e}")
         raise
 
     finally:
         os.unlink(tmp_path)
+        print(f"[transcription] Temp file cleaned up: {tmp_path}")
+
+
+def _mark_failed(meeting_id: str, message: str) -> None:
+    print(f"[transcription] Marking failed: {message}")
+    supabase.table("meetings").update({
+        "status": "failed",
+        "error_message": message,
+    }).eq("id", meeting_id).execute()
