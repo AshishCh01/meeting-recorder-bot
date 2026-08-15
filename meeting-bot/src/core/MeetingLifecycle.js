@@ -27,47 +27,62 @@ export async function runMeetingLifecycle(session) {
     session.markRecording();
     recorder.start();
 
-    // Poll every 10s until the meeting ends
+    const MAX_MEETING_MINUTES = Number(process.env.MAX_RECORDING_DURATION_MINUTES || 90);
+    const hardDeadline = Date.now() + MAX_MEETING_MINUTES * 60 * 1000;
+
     while (await bot.isStillInMeeting()) {
+      if (Date.now() > hardDeadline) {
+        console.log(`[Lifecycle] Hit ${MAX_MEETING_MINUTES}-minute hard cap — forcing exit`);
+        break;
+      }
       await new Promise((r) => setTimeout(r, 10000));
     }
 
+    // Only mark uploading if meeting ran successfully —
+    // do NOT call markCompleted() here; that happens after upload
     session.markUploading();
     console.log('[Lifecycle] Meeting ended naturally. Initiating shutdown...');
 
   } catch (err) {
     console.log('[Lifecycle] Process interrupted or errored:', err.message);
+    // markFailed sets status = 'failed', so the finally block
+    // will correctly report failed to the backend via notifyBackend()
     session.markFailed(err.message);
   } finally {
-    // ALWAYS run this cleanup block, even if the bot crashes!
     console.log('[Lifecycle] 1. Closing Chromium...');
     await bot.leave().catch(() => {});
 
-    console.log('[Lifecycle] 2. Safely stopping FFmpeg to prevent file corruption...');
-    // If we do not await this, the file gets corrupted.
+    console.log('[Lifecycle] 2. Safely stopping FFmpeg...');
     const localPath = await recorder.stop().catch((e) => {
       console.error('[Lifecycle] FFmpeg stop error:', e);
       return null;
     });
 
-    if (localPath) {
-      console.log(`[Lifecycle] 3. Audio safely saved to: ${localPath}`);
+    let uploadedStorageKey = null;
+
+    if (localPath && session.status !== 'failed') {
+      console.log(`[Lifecycle] 3. Audio saved to: ${localPath}`);
       try {
         const storageKey = RecordingFile.storageKeyFor(session.meetingId);
-        // In local testing, Supabase will fail if keys aren't set. 
-        // We catch it so it doesn't accidentally delete your test file.
         await SupabaseUploader.upload(localPath, storageKey);
-        fs.unlinkSync(localPath); // Only deletes the file if upload succeeds
+        fs.unlinkSync(localPath);
+        uploadedStorageKey = storageKey;
         console.log('[Lifecycle] 4. Upload successful, local file cleaned up.');
+        // Only mark completed AFTER upload succeeds
+        session.markCompleted();
       } catch (uploadErr) {
-        console.log('[Lifecycle] 4. Supabase upload skipped (expected in local testing). Local file kept.');
+        console.error('[Lifecycle] 4. Upload failed:', uploadErr.message);
+        session.markFailed(`Upload failed: ${uploadErr.message}`);
       }
+    } else if (localPath && session.status === 'failed') {
+      console.log('[Lifecycle] 3. Session failed — skipping upload, keeping local file for debug.');
+    } else {
+      console.log('[Lifecycle] 3. No recording file to upload.');
     }
 
-    session.markCompleted();
-    await notifyBackend(session, localPath ? RecordingFile.storageKeyFor(session.meetingId) : null);
+    await notifyBackend(session, uploadedStorageKey);
 
-    console.log('[Lifecycle] 5. Shutting down NPM server in 3 seconds...');
+    console.log('[Lifecycle] 5. Shutting down in 3 seconds...');
     setTimeout(() => {
       process.exit(session.status === 'failed' ? 1 : 0);
     }, 3000);
@@ -82,6 +97,6 @@ async function notifyBackend(session, storageKey) {
     duration_seconds: session.durationSeconds(),
     error_message: session.errorMessage,
   }).catch((err) => {
-    console.error('[Lifecycle] Failed to notify backend (Expected if backend is offline):', err.message);
+    console.error('[Lifecycle] Failed to notify backend:', err.message);
   });
 }
