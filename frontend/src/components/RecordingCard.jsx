@@ -1,5 +1,6 @@
 import MeetingStatus from './MeetingStatus.jsx';
 import TranscriptView from './TranscriptView.jsx';
+import MeetingChat from './MeetingChat.jsx';
 
 export default function RecordingCard({ meeting }) {
   return (
@@ -37,6 +38,7 @@ export default function RecordingCard({ meeting }) {
       </div>
 
       <TranscriptView transcript={meeting.transcript} />
+      {meeting.status === 'completed' && <MeetingChat meetingId={meeting.id} />}
     </div>
   );
 }

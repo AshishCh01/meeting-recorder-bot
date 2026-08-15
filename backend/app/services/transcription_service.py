@@ -6,6 +6,7 @@ from google import genai
 
 from app.config import settings
 from app.db.supabase import supabase
+from app.services.embedding_service import index_transcript
 
 client = genai.Client(api_key=settings.gemini_api_key)
 
@@ -128,6 +129,15 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> dict:
             "transcript": result,
             "status": "completed",
         }).eq("id", meeting_id).execute()
+
+        try:
+            index_transcript(meeting_id, result)
+        except Exception as e:
+            # Indexing failure shouldn't fail the transcript itself - the
+            # meeting is still usable, just not queryable via RAG yet.
+            supabase.table("meetings").update({
+                "error_message": f"Transcript ready, but RAG indexing failed: {e}",
+            }).eq("id", meeting_id).execute()
 
         return result
 

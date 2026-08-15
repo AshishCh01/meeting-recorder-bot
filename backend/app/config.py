@@ -14,6 +14,14 @@ class Settings(BaseSettings):
     gemini_api_key: str
     gemini_model: str = "gemini-3.6-flash"
 
+    # RAG: embeddings + retrieval agent
+    gemini_embedding_model: str = "gemini-embedding-001"
+    embedding_dimensions: int = 1536
+    rag_agent_model: str = "gemini-3.6-flash"
+    chunk_segments: int = 6          # conversation segments grouped per chunk
+    chunk_overlap: int = 1           # segments of overlap between consecutive chunks
+    retrieval_top_k: int = 6
+
     class Config:
         env_file = ".env"
 

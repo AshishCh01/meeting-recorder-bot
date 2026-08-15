@@ -17,6 +17,17 @@ class Meeting(BaseModel):
     transcript: Optional[Dict[str, Any]] = None
 
 
+class ChatRequest(BaseModel):
+    question: str
+    session_id: Optional[str] = None
+
+
+class ChatResponse(BaseModel):
+    answer: str
+    session_id: str
+    tools_used: list[str] = []
+
+
 class RecordingCompleteWebhook(BaseModel):
     meeting_id: str
     status: str  # "completed" | "failed"

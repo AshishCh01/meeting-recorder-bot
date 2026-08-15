@@ -20,4 +20,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ meeting_url }),
     }),
+  askMeeting: (id, question, session_id) =>
+    request(`/meetings/${id}/chat`, {
+      method: 'POST',
+      body: JSON.stringify({ question, session_id }),
+    }),
 };
