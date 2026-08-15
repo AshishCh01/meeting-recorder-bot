@@ -38,15 +38,11 @@ export async function runMeetingLifecycle(session) {
       await new Promise((r) => setTimeout(r, 10000));
     }
 
-    // Only mark uploading if meeting ran successfully —
-    // do NOT call markCompleted() here; that happens after upload
     session.markUploading();
     console.log('[Lifecycle] Meeting ended naturally. Initiating shutdown...');
 
   } catch (err) {
     console.log('[Lifecycle] Process interrupted or errored:', err.message);
-    // markFailed sets status = 'failed', so the finally block
-    // will correctly report failed to the backend via notifyBackend()
     session.markFailed(err.message);
   } finally {
     console.log('[Lifecycle] 1. Closing Chromium...');
@@ -68,7 +64,6 @@ export async function runMeetingLifecycle(session) {
         fs.unlinkSync(localPath);
         uploadedStorageKey = storageKey;
         console.log('[Lifecycle] 4. Upload successful, local file cleaned up.');
-        // Only mark completed AFTER upload succeeds
         session.markCompleted();
       } catch (uploadErr) {
         console.error('[Lifecycle] 4. Upload failed:', uploadErr.message);
@@ -82,10 +77,12 @@ export async function runMeetingLifecycle(session) {
 
     await notifyBackend(session, uploadedStorageKey);
 
-    console.log('[Lifecycle] 5. Shutting down in 3 seconds...');
-    setTimeout(() => {
-      process.exit(session.status === 'failed' ? 1 : 0);
-    }, 3000);
+    // Do NOT call process.exit() here — it kills the entire bot service,
+    // meaning every meeting after the first one gets a connection refused
+    // error from the backend because the Express server is dead.
+    // The lifecycle function simply returns and the bot stays alive,
+    // ready to accept the next POST /google/join or /zoom/join request.
+    console.log(`[Lifecycle] Done. Meeting ${session.meetingId} status: ${session.status}`);
   }
 }
 
