@@ -12,12 +12,12 @@ class Settings(BaseSettings):
     frontend_origin: str = "http://localhost:5173"
 
     gemini_api_key: str
-    gemini_model: str = "gemini-3.6-flash"
+    gemini_model: str = "gemini-3.7-flash"
 
     # RAG: embeddings + retrieval agent
     gemini_embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = 1536
-    rag_agent_model: str = "gemini-3.6-flash"
+    rag_agent_model: str = "gemini-3.7-flash"
     chunk_segments: int = 6          # conversation segments grouped per chunk
     chunk_overlap: int = 1           # segments of overlap between consecutive chunks
     retrieval_top_k: int = 6

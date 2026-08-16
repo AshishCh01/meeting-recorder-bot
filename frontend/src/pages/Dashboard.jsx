@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { api } from '../services/api.js';
 import MeetingForm from '../components/MeetingForm.jsx';
 import RecordingCard from '../components/RecordingCard.jsx';
+import {Recordings} from '../pages/Recordings.jsx';
 
 export default function Dashboard() {
   const [meetings, setMeetings] = useState([]);
@@ -34,9 +35,8 @@ export default function Dashboard() {
       {loading && <p>Loading...</p>}
       {!loading && meetings.length === 0 && <p>No meetings yet — paste a link above to get started.</p>}
 
-      {meetings.map((m) => (
-        <RecordingCard key={m.id} meeting={m} />
-      ))}
+      <Recordings />
+     
     </div>
   );
 }

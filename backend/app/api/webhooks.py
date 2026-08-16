@@ -1,13 +1,14 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, BackgroundTasks
 from app.db.supabase import supabase
 from app.models.meeting import RecordingCompleteWebhook
 from app.services.storage_service import get_signed_recording_url
+from app.services.transcription_service import transcribe_recording
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 
 @router.post("/recording-complete")
-def recording_complete(payload: RecordingCompleteWebhook):
+def recording_complete(payload: RecordingCompleteWebhook, background_tasks: BackgroundTasks):
     """
     Called by meeting-bot once recording finishes.
     On success: generates signed URL, sets status to transcribing,
