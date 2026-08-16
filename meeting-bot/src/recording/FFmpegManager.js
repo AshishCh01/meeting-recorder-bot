@@ -77,6 +77,13 @@ export class FFmpegManager {
         if (!closed) {
           console.log('[FFmpegManager] Graceful stop timed out — sending SIGINT');
           this.process.kill('SIGINT');
+          
+          setTimeout(() => {
+            if (!closed) {
+              console.log('[FFmpegManager] SIGINT timed out — sending SIGKILL');
+              this.process.kill('SIGKILL');
+            }
+          }, 3000);
         }
       }, 8000);
     });

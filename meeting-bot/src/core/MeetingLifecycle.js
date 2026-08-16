@@ -5,7 +5,6 @@ import { TeamsBot } from '../platforms/teams/TeamsBot.js';
 import { Recorder } from '../recording/Recorder.js';
 import { RecordingFile } from '../recording/RecordingFile.js';
 import { SupabaseUploader } from '../storage/SupabaseUploader.js';
-import { AudioRouter } from '../recording/AudioRouter.js';
 import fs from 'fs';
 
 const BOT_CLASSES = {
@@ -49,11 +48,6 @@ export async function runMeetingLifecycle(session) {
     console.log('[Lifecycle] 1. Closing Chromium...');
     await bot.leave().catch(() => {});
 
-    // Restore audio device immediately after Chrome closes —
-    // your speakers work normally again before upload/transcription run
-    console.log('[Lifecycle] 2. Restoring system audio device...');
-    await AudioRouter.routeBack();
-
     console.log('[Lifecycle] 3. Safely stopping FFmpeg...');
     const localPath = await recorder.stop().catch((e) => {
       console.error('[Lifecycle] FFmpeg stop error:', e);
@@ -65,7 +59,7 @@ export async function runMeetingLifecycle(session) {
     if (localPath && session.status !== 'failed') {
       console.log(`[Lifecycle] 4. Audio saved to: ${localPath}`);
       try {
-        const storageKey = RecordingFile.storageKeyFor(session.meetingId);
+        const storageKey = RecordingFile.storageKeyFor(session.userId, session.meetingId);
         await SupabaseUploader.upload(localPath, storageKey);
         fs.unlinkSync(localPath);
         uploadedStorageKey = storageKey;
@@ -91,11 +85,16 @@ async function notifyBackend(session, storageKey) {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       await axios.post(process.env.BACKEND_WEBHOOK_URL, {
+        user_id: session.userId,
         meeting_id: session.meetingId,
         status: session.status,
         recording_path: storageKey,
         duration_seconds: session.durationSeconds(),
         error_message: session.errorMessage,
+      }, {
+        headers: {
+          Authorization: `Bearer ${process.env.BEARER_TOKEN}`
+        }
       });
       console.log('[Lifecycle] Backend notified successfully');
       return;

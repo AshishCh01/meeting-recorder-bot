@@ -7,7 +7,7 @@ app = FastAPI(title="Meeting Recorder API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_origin],
+    allow_origins=[settings.frontend_origin, "http://localhost:5174"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

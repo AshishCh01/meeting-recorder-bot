@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
-body {
-      font-family: "Inter", sans-serif;
+@theme {
+  --color-brand-blue: #0052FF;
+  --color-brand-dark: #0F172A;
+}
+
+@layer base {
+  body {
+    @apply bg-slate-50 text-slate-800 antialiased;
+  }
 }

@@ -11,8 +11,8 @@ export class RecordingFile {
     return path.join(RECORDINGS_DIR, `${meetingId}.m4a`);
   }
 
-  static storageKeyFor(meetingId) {
+  static storageKeyFor(userId, meetingId) {
     // Object path/key used inside the Supabase Storage bucket
-    return `${meetingId}/recording.m4a`;
+    return `${userId}/${meetingId}/recording.m4a`;
   }
 }

@@ -29,6 +29,7 @@ class ChatResponse(BaseModel):
 
 
 class RecordingCompleteWebhook(BaseModel):
+    user_id: str
     meeting_id: str
     status: str  # "completed" | "failed"
     recording_path: Optional[str] = None  # path inside the Supabase bucket

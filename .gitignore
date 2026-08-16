@@ -1,22 +1,55 @@
+# Dependencies
 node_modules/
 venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+env/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Environment variables
 .env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 !.env.example
-recordings/*.mp4
-browser-profiles/
+
+# Build outputs
 dist/
 build/
+.next/
+out/
+.vite/
+
+# Temporary files & logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 .DS_Store
-dire
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.direnv/
 
+# Project specifics
+recordings/
+!recordings/.gitkeep
+browser-profiles/
 transcript.json
+test_file.ps
 
-
+# specific screenshots
 meeting-bot/zoom-no-input.png
 meeting-bot/zoom-step1.png
-meeting-bot/zoom-step2-no-link.png
 meeting-bot/zoom-step2-no-link.png
 meeting-bot/zoom-step2.png
 meeting-bot/zoom-step3.png

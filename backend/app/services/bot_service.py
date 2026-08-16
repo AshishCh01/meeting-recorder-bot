@@ -8,7 +8,7 @@ PLATFORM_ENDPOINTS = {
 }
 
 
-def trigger_bot_join(platform: str, meeting_url: str, meeting_id: str) -> dict:
+def trigger_bot_join(platform: str, meeting_url: str, meeting_id: str, user_id: str) -> dict:
     """
     Calls the standalone meeting-bot service to start joining and recording.
     Fire-and-forget from the API's perspective — the bot notifies us later
@@ -21,7 +21,10 @@ def trigger_bot_join(platform: str, meeting_url: str, meeting_id: str) -> dict:
         json={
             "url": meeting_url,
             "meetingId": meeting_id,
-            "bearerToken": settings.meeting_bot_bearer_token,
+            "userId": user_id,
+        },
+        headers={
+            "Authorization": f"Bearer {settings.meeting_bot_bearer_token}"
         },
         timeout=10,
     )

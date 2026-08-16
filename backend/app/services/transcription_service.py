@@ -10,6 +10,8 @@ from google.genai import types, errors
 
 from app.config import settings
 from app.db.supabase import supabase
+from app.db.database import SessionLocal
+from app.db.models import Meeting
 from app.services.embedding_service import index_transcript
 
 client = genai.Client(api_key=settings.gemini_api_key)
@@ -142,120 +144,128 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
     """
     print(f"[transcription] Starting for meeting {meeting_id}, path: {storage_path}")
 
+    db = SessionLocal()
     try:
-        file_bytes = supabase.storage.from_(
-            settings.supabase_recordings_bucket
-        ).download(storage_path)
-    except Exception as e:
-        _mark_failed(meeting_id, f"Failed to download recording: {e}")
-        return None  # explicit early return — no file to process
-
-    suffix = os.path.splitext(storage_path)[1] or ".m4a"
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        tmp.write(file_bytes)
-        tmp_path = tmp.name
-
-    print(f"[transcription] Downloaded to temp file: {tmp_path}")
-
-    uploaded_file = None
-    try:
-        # Phase 1, Step 3: Silence Detection
-        if _is_audio_silent(tmp_path):
-            print("[transcription] Audio is completely silent. Skipping Gemini API to prevent hallucinations.")
-            
-            silent_result = {
-                "summary": "This meeting recording was completely silent.",
-                "key_points": ["No audio was detected during the recording (possibly everyone was muted or the meeting was empty)."],
-                "action_items": [],
-                "conclusion": "No discussion took place.",
-                "conversation": []
-            }
-            
-            supabase.table("meetings").update({
-                "transcript": silent_result,
-                "status": "completed",
-            }).eq("id", meeting_id).execute()
-            
-            return silent_result
-
-        print("[transcription] Uploading to Gemini File API...")
-        uploaded_file = client.files.upload(
-            file=tmp_path,
-            config=types.UploadFileConfig(mime_type="audio/mp4")
-        )
-
-        if uploaded_file.uri is None:
-            raise ValueError("Gemini File API returned no URI after upload")
-
-        print(f"[transcription] Uploaded. URI: {uploaded_file.uri}")
-
-        print("[transcription] Sending to Gemini for analysis...")
-        response = client.models.generate_content(
-            model=settings.gemini_model,
-            contents=[
-                PROMPT,
-                types.Part.from_uri(
-                    file_uri=uploaded_file.uri,
-                    mime_type="audio/mp4"
-                ),
-            ],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=RESPONSE_SCHEMA,
-            ),
-        )
-
-        if response.text is None:
-            raise ValueError("Gemini returned an empty response — no text content")
-
-        result = json.loads(response.text)
-        print("[transcription] Gemini response parsed successfully")
-
-        supabase.table("meetings").update({
-            "transcript": result,
-            "status": "completed",
-        }).eq("id", meeting_id).execute()
-
         try:
-            index_transcript(meeting_id, result)
+            file_bytes = supabase.storage.from_(
+                settings.supabase_recordings_bucket
+            ).download(storage_path)
         except Exception as e:
-            supabase.table("meetings").update({
-                "error_message": f"Transcript ready, but RAG indexing failed: {e}",
-            }).eq("id", meeting_id).execute()
+            _mark_failed(db, meeting_id, f"Failed to download recording: {e}")
+            return None  # explicit early return — no file to process
 
-        return result
+        suffix = os.path.splitext(storage_path)[1] or ".m4a"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
 
-    except errors.APIError as e:
-        # Gracefully handle 503 Server Overloaded without crashing the app
-        print(f"[transcription] Gemini API Error: {e}")
-        msg = f"Gemini Error: {e.message}"
-        if e.code == 503:
-            msg = "Transcription failed: Gemini servers are currently overloaded (503). Please try again later."
-        _mark_failed(meeting_id, msg)
-        
-    except Exception as e:
-        print(f"[transcription] ERROR: {e}")
-        _mark_failed(meeting_id, f"Transcription failed: {str(e)}")
-        # Removed the `raise` keyword here so the background task exits cleanly
+        print(f"[transcription] Downloaded to temp file: {tmp_path}")
 
-    finally:
-        # Phase 3, Step 9: Delete Gemini file after transcription to save quota
-        if uploaded_file and hasattr(uploaded_file, 'name') and uploaded_file.name:
+        uploaded_file = None
+        try:
+            # Phase 1, Step 3: Silence Detection
+            if _is_audio_silent(tmp_path):
+                print("[transcription] Audio is completely silent. Skipping Gemini API to prevent hallucinations.")
+                
+                silent_result = {
+                    "summary": "This meeting recording was completely silent.",
+                    "key_points": ["No audio was detected during the recording (possibly everyone was muted or the meeting was empty)."],
+                    "action_items": [],
+                    "conclusion": "No discussion took place.",
+                    "conversation": []
+                }
+                
+                meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+                if meeting:
+                    meeting.transcript = silent_result
+                    meeting.status = "completed"
+                    db.commit()
+                
+                return silent_result
+
+            print("[transcription] Uploading to Gemini File API...")
+            uploaded_file = client.files.upload(
+                file=tmp_path,
+                config=types.UploadFileConfig(mime_type="audio/mp4")
+            )
+
+            if uploaded_file.uri is None:
+                raise ValueError("Gemini File API returned no URI after upload")
+
+            print(f"[transcription] Uploaded. URI: {uploaded_file.uri}")
+
+            print("[transcription] Sending to Gemini for analysis...")
+            response = client.models.generate_content(
+                model=settings.gemini_model,
+                contents=[
+                    PROMPT,
+                    types.Part.from_uri(
+                        file_uri=uploaded_file.uri,
+                        mime_type="audio/mp4"
+                    ),
+                ],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=RESPONSE_SCHEMA,
+                ),
+            )
+
+            if response.text is None:
+                raise ValueError("Gemini returned an empty response — no text content")
+
+            result = json.loads(response.text)
+            print("[transcription] Gemini response parsed successfully")
+
+            meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+            if meeting:
+                meeting.transcript = result
+                meeting.status = "completed"
+                db.commit()
+
             try:
-                client.files.delete(name=uploaded_file.name)
-                print(f"[transcription] Cleaned up Gemini storage file: {uploaded_file.name}")
-            except Exception as cleanup_err:
-                print(f"[transcription] Warning: Failed to clean up Gemini file: {cleanup_err}")
+                index_transcript(db, meeting_id, result)
+            except Exception as e:
+                meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+                if meeting:
+                    meeting.error_message = f"Transcript ready, but RAG indexing failed: {e}"
+                    db.commit()
 
-        # Clean up local temp file
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-            print(f"[transcription] Temp file cleaned up: {tmp_path}")
+            return result
+
+        except errors.APIError as e:
+            # Gracefully handle 503 Server Overloaded without crashing the app
+            print(f"[transcription] Gemini API Error: {e}")
+            msg = f"Gemini Error: {e.message}"
+            if e.code == 503:
+                msg = "Transcription failed: Gemini servers are currently overloaded (503). Please try again later."
+            _mark_failed(db, meeting_id, msg)
+            
+        except Exception as e:
+            print(f"[transcription] ERROR: {e}")
+            _mark_failed(db, meeting_id, f"Transcription failed: {str(e)}")
+            # Removed the `raise` keyword here so the background task exits cleanly
+
+        finally:
+            # Phase 3, Step 9: Delete Gemini file after transcription to save quota
+            if uploaded_file and hasattr(uploaded_file, 'name') and uploaded_file.name:
+                try:
+                    client.files.delete(name=uploaded_file.name)
+                    print(f"[transcription] Cleaned up Gemini storage file: {uploaded_file.name}")
+                except Exception as cleanup_err:
+                    print(f"[transcription] Warning: Failed to clean up Gemini file: {cleanup_err}")
+
+            # Clean up local temp file
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+                print(f"[transcription] Temp file cleaned up: {tmp_path}")
+    finally:
+        db.close()
 
 
-def _mark_failed(meeting_id: str, message: str) -> None:
+def _mark_failed(db, meeting_id: str, message: str) -> None:
     print(f"[transcription] Marking failed: {message}")
-    supabase.table("meetings").update({
-        "status": "failed",
-        "error_message": message,
-    }).eq("id", meeting_id).execute()
+    meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+    if meeting:
+        meeting.status = "failed"
+        meeting.error_message = message
+        db.commit()

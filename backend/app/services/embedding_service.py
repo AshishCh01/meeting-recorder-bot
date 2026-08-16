@@ -1,28 +1,46 @@
-from google import genai
-from google.genai import types
+from sentence_transformers import SentenceTransformer
+from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.db.supabase import supabase
+from app.db.models import MeetingChunk
 
-client = genai.Client(api_key=settings.gemini_api_key)
+# Initialize the embedding model locally
+model = SentenceTransformer('BAAI/bge-base-en-v1.5')
 
 
 def _build_chunks(conversation: list[dict]) -> list[dict]:
     """
-    Groups consecutive conversation segments into overlapping windows so each
-    embedded chunk has enough context to be useful on its own, while still
-    keeping timestamps and speakers attached.
+    Groups consecutive conversation segments into overlapping windows based on token count
+    using the model's tokenizer. Target: ~500 tokens per chunk with ~50 tokens overlap.
+    We preserve entire conversation segments to keep timestamps/speakers cleanly mapped.
     """
-    size = settings.chunk_segments
-    overlap = min(settings.chunk_overlap, size - 1)
-    step = max(size - overlap, 1)
+    if not conversation:
+        return []
+
+    TARGET_TOKENS = 500
+    OVERLAP_TOKENS = 50
 
     chunks = []
-    for start in range(0, len(conversation), step):
-        window = conversation[start:start + size]
-        if not window:
-            continue
+    chunk_index = 0
+    start_idx = 0
 
+    while start_idx < len(conversation):
+        current_tokens = 0
+        end_idx = start_idx
+        
+        # Grow the window until we hit TARGET_TOKENS or run out of segments
+        while end_idx < len(conversation):
+            seg_text = conversation[end_idx].get("text", "")
+            seg_tokens = len(model.tokenizer.encode(seg_text, add_special_tokens=False))
+            
+            if current_tokens + seg_tokens > TARGET_TOKENS and end_idx > start_idx:
+                break
+                
+            current_tokens += seg_tokens
+            end_idx += 1
+
+        window = conversation[start_idx:end_idx]
+        
         content = "\n".join(seg.get("text", "") for seg in window)
         speakers = sorted({
             seg["text"].split(" - ", 1)[0].strip()
@@ -31,48 +49,54 @@ def _build_chunks(conversation: list[dict]) -> list[dict]:
         })
 
         chunks.append({
-            "chunk_index": start // step,
+            "chunk_index": chunk_index,
             "content": content,
             "speakers": speakers,
             "timestamp_start": window[0].get("timestamp_start"),
             "timestamp_end": window[-1].get("timestamp_end"),
         })
+        
+        chunk_index += 1
 
-        if start + size >= len(conversation):
+        if end_idx >= len(conversation):
             break
+            
+        # Calculate overlap for the next chunk
+        overlap_tokens = 0
+        overlap_idx = end_idx - 1
+        
+        while overlap_idx > start_idx:
+            seg_text = conversation[overlap_idx].get("text", "")
+            seg_tokens = len(model.tokenizer.encode(seg_text, add_special_tokens=False))
+            if overlap_tokens + seg_tokens > OVERLAP_TOKENS:
+                break
+            overlap_tokens += seg_tokens
+            overlap_idx -= 1
+            
+        if overlap_idx <= start_idx:
+            start_idx = start_idx + 1
+        else:
+            start_idx = overlap_idx
 
     return chunks
 
 
 def _embed_documents(texts: list[str]) -> list[list[float]]:
-    """gemini-embedding-001 only accepts one input per request."""
-    embeddings = []
-    for text in texts:
-        result = client.models.embed_content(
-            model=settings.gemini_embedding_model,
-            contents=text,
-            config=types.EmbedContentConfig(
-                task_type="RETRIEVAL_DOCUMENT",
-                output_dimensionality=settings.embedding_dimensions,
-            ),
-        )
-        embeddings.append(result.embeddings[0].values)
-    return embeddings
+    """Embeds the documents (meeting chunks) using the local model."""
+    if not texts:
+        return []
+    embeddings = model.encode(texts, normalize_embeddings=True)
+    return embeddings.tolist()
 
 
 def embed_query(query: str) -> list[float]:
-    result = client.models.embed_content(
-        model=settings.gemini_embedding_model,
-        contents=query,
-        config=types.EmbedContentConfig(
-            task_type="RETRIEVAL_QUERY",
-            output_dimensionality=settings.embedding_dimensions,
-        ),
-    )
-    return result.embeddings[0].values
+    """Embeds a query, prepending the specific instruction required by BAAI models."""
+    instruction = "Represent this sentence for searching relevant passages: "
+    embedding = model.encode(instruction + query, normalize_embeddings=True)
+    return embedding.tolist()
 
 
-def index_transcript(meeting_id: str, transcript: dict) -> None:
+def index_transcript(db: Session, meeting_id: str, transcript: dict) -> None:
     """
     Chunks the `conversation` array of a completed transcript, embeds each
     chunk, and (re)writes them to `meeting_chunks` so the RAG agent can query
@@ -89,19 +113,23 @@ def index_transcript(meeting_id: str, transcript: dict) -> None:
 
     embeddings = _embed_documents([c["content"] for c in chunks])
 
-    supabase.table("meeting_chunks").delete().eq("meeting_id", meeting_id).execute()
+    # Delete existing chunks for this meeting
+    db.query(MeetingChunk).filter(MeetingChunk.meeting_id == meeting_id).delete()
+    db.commit()
 
-    rows = [
-        {
-            "meeting_id": meeting_id,
-            "chunk_index": chunk["chunk_index"],
-            "content": chunk["content"],
-            "speakers": chunk["speakers"],
-            "timestamp_start": chunk["timestamp_start"],
-            "timestamp_end": chunk["timestamp_end"],
-            "embedding": embedding,
-        }
+    # Insert new chunks
+    meeting_chunks = [
+        MeetingChunk(
+            meeting_id=meeting_id,
+            chunk_index=chunk["chunk_index"],
+            content=chunk["content"],
+            speakers=chunk["speakers"],
+            timestamp_start=chunk["timestamp_start"],
+            timestamp_end=chunk["timestamp_end"],
+            embedding=embedding,
+        )
         for chunk, embedding in zip(chunks, embeddings)
     ]
-
-    supabase.table("meeting_chunks").insert(rows).execute()
+    
+    db.add_all(meeting_chunks)
+    db.commit()

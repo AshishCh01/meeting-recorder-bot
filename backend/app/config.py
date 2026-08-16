@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     # RAG: embeddings + retrieval agent
     gemini_embedding_model: str = "gemini-embedding-001"
-    embedding_dimensions: int = 1536
+    embedding_dimensions: int = 768
     rag_agent_model: str = "gemini-3.6-flash"
     chunk_segments: int = 6          # conversation segments grouped per chunk
     chunk_overlap: int = 1           # segments of overlap between consecutive chunks
@@ -24,6 +24,7 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        extra = "ignore"
 
 
 settings = Settings()

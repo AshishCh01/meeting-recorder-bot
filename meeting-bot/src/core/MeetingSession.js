@@ -1,8 +1,9 @@
 export class MeetingSession {
-  constructor({ meetingId, meetingUrl, platform }) {
+  constructor({ meetingId, meetingUrl, platform, userId }) {
     this.meetingId = meetingId;
     this.meetingUrl = meetingUrl;
     this.platform = platform;
+    this.userId = userId;
     this.status = 'joining'; // joining | recording | uploading | completed | failed
     this.startedAt = null;
     this.endedAt = null;

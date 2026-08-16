@@ -17,15 +17,16 @@ export class SupabaseUploader {
     console.log(`[SupabaseUploader] Preparing to upload to bucket '${bucketName}'...`);
 
     try {
-      // 1. Read the .m4a file from your local hard drive
-      const fileBuffer = fs.readFileSync(localFilePath);
+      // 1. Read the .m4a file from your local hard drive using a stream
+      const fileStream = fs.createReadStream(localFilePath);
 
       // 2. Upload it to the Supabase Storage bucket
       const { data, error } = await supabase.storage
         .from(bucketName)
-        .upload(storageKey, fileBuffer, {
+        .upload(storageKey, fileStream, {
           contentType: 'audio/mp4', // .m4a is an mp4 audio container
           upsert: true,             // Overwrite if a file with this name already exists
+          duplex: 'half'
         });
 
       if (error) {
