@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Calendar, Clock, Video, ListTodo, FileText, FileAudio } from 'lucide-react';
+import { Calendar, Clock, Video, ListTodo, FileText, FileAudio, User } from 'lucide-react';
 
 export const MeetingDetails = ({ meeting }) => {
   const [activeTab, setActiveTab] = useState('summary');
@@ -10,34 +10,45 @@ export const MeetingDetails = ({ meeting }) => {
     { id: 'transcript', label: 'Transcript', icon: FileAudio },
   ];
 
-  const renderTranscript = (transcriptText) => {
-    if (!transcriptText) return <p className="text-slate-500 italic">No transcript available.</p>;
+  const transcriptData = meeting?.transcript || {};
+  const { summary, key_points, conclusion, action_items, conversation } = transcriptData;
 
-    // Attempt basic parsing assuming standard speaker formats like "Speaker 1: Hello"
-    const lines = transcriptText.split('\n');
+  const renderTranscript = () => {
+    if (!conversation || !Array.isArray(conversation) || conversation.length === 0) {
+      return <p className="text-slate-500 italic">No transcript available.</p>;
+    }
+
     return (
       <div className="space-y-4">
-        {lines.map((line, i) => {
-          if (!line.trim()) return null;
+        {conversation.map((seg, i) => {
+          if (!seg.text) return null;
           
-          // Match standard diarization formats
-          const match = line.match(/^([^:]+):\s*(.*)/);
+          let speaker = "Unknown";
+          let text = seg.text;
+          const match = seg.text.match(/^([^:-]+)[:\-]\s*(.*)/);
           if (match) {
-            return (
-              <div key={i} className="flex gap-4">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-brand-blue/10 flex items-center justify-center">
-                  <span className="text-xs font-bold text-brand-blue">{match[1].substring(0, 2).toUpperCase()}</span>
-                </div>
-                <div>
-                  <p className="text-xs font-semibold text-slate-500 mb-1">{match[1]}</p>
-                  <p className="text-sm text-brand-dark leading-relaxed">{match[2]}</p>
-                </div>
-              </div>
-            );
+            speaker = match[1].trim();
+            text = match[2].trim();
           }
 
-          // Fallback if no speaker found
-          return <p key={i} className="text-sm text-brand-dark leading-relaxed">{line}</p>;
+          return (
+            <div key={i} className="flex gap-4">
+              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-brand-blue/10 flex items-center justify-center mt-1">
+                <span className="text-xs font-bold text-brand-blue">
+                  {speaker.substring(0, 2).toUpperCase()}
+                </span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-baseline gap-2 mb-1">
+                  <p className="text-xs font-semibold text-slate-700 truncate">{speaker}</p>
+                  <span className="text-[10px] text-slate-400 font-mono flex-shrink-0">
+                    {seg.timestamp_start}
+                  </span>
+                </div>
+                <p className="text-sm text-brand-dark leading-relaxed break-words">{text}</p>
+              </div>
+            </div>
+          );
         })}
       </div>
     );
@@ -46,11 +57,32 @@ export const MeetingDetails = ({ meeting }) => {
   const renderContent = () => {
     if (activeTab === 'summary') {
       return (
-        <div className="prose prose-slate max-w-none text-sm text-brand-dark">
-          {meeting.summary ? (
-             <p className="whitespace-pre-wrap">{meeting.summary}</p>
+        <div className="space-y-6">
+          {summary ? (
+            <div>
+              <h3 className="text-sm font-semibold text-slate-800 mb-2">Overview</h3>
+              <p className="text-sm text-brand-dark leading-relaxed">{summary}</p>
+            </div>
           ) : (
             <p className="text-slate-500 italic">No summary generated yet.</p>
+          )}
+
+          {key_points && key_points.length > 0 && (
+            <div>
+              <h3 className="text-sm font-semibold text-slate-800 mb-2">Key Points</h3>
+              <ul className="list-disc pl-5 space-y-1">
+                {key_points.map((pt, i) => (
+                  <li key={i} className="text-sm text-brand-dark">{pt}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {conclusion && (
+            <div>
+              <h3 className="text-sm font-semibold text-slate-800 mb-2">Conclusion</h3>
+              <p className="text-sm text-brand-dark leading-relaxed">{conclusion}</p>
+            </div>
           )}
         </div>
       );
@@ -58,9 +90,26 @@ export const MeetingDetails = ({ meeting }) => {
     
     if (activeTab === 'action_items') {
       return (
-        <div className="prose prose-slate max-w-none text-sm text-brand-dark">
-          {meeting.action_items ? (
-             <p className="whitespace-pre-wrap">{meeting.action_items}</p>
+        <div>
+          {action_items && action_items.length > 0 ? (
+            <div className="space-y-3">
+              {action_items.map((item, i) => (
+                <div key={i} className="bg-slate-50 border border-slate-100 rounded-lg p-4 flex gap-3">
+                  <div className="mt-0.5">
+                    <ListTodo className="w-4 h-4 text-brand-blue" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-brand-dark mb-1">{item.item}</p>
+                    <div className="flex items-center gap-3 text-xs text-slate-500">
+                      <span className="flex items-center gap-1">
+                        <User className="w-3 h-3" /> {item.owner}
+                      </span>
+                      {item.timestamp && <span className="font-mono">{item.timestamp}</span>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
           ) : (
             <p className="text-slate-500 italic">No action items found.</p>
           )}
@@ -69,7 +118,7 @@ export const MeetingDetails = ({ meeting }) => {
     }
     
     if (activeTab === 'transcript') {
-      return renderTranscript(meeting.transcript);
+      return renderTranscript();
     }
   };
 
