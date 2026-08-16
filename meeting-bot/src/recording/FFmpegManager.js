@@ -9,28 +9,41 @@ export class FFmpegManager {
 
   start() {
     const args = [
-      // 1. Audio input from the Virtual Cable ONLY (No gdigrab/desktop)
-      '-f', 'dshow',
-      '-i', 'audio=CABLE Output (VB-Audio Virtual Cable)',
-      
-      // 2. Audio encoding settings
-      '-c:a', 'aac', 
-      '-ac', '2',        // Force Stereo
-      '-ar', '44100',    // Force 44.1kHz sample rate
-      '-b:a', '192k',    // Set a solid bitrate for clear voices
-      
-      // 3. Drop video completely just to be safe
-      '-vn', 
-      
+      // Platform-specific audio capture args (Windows: dshow/VB-Cable, Linux: pulse)
+      // getCaptureArgs() is defined in AudioCapture.js — this is the correct
+      // cross-platform call that was previously bypassed by hardcoded args
+      ...getCaptureArgs(),
+
+      // Audio encoding settings
+      '-c:a', 'aac',
+      '-ac', '2',       // force stereo
+      '-ar', '44100',   // force 44.1kHz sample rate
+      '-b:a', '192k',   // solid bitrate for clear voices
+
+      // Drop video completely
+      '-vn',
+
       '-y',
       this.outputPath,
     ];
 
-    this.process = spawn('ffmpeg', args);
-    
+    console.log('[FFmpegManager] Starting with args:', args.join(' '));
+
+    this.process = spawn('ffmpeg', args, {
+      // stdin MUST be 'pipe' for the graceful 'q' stop signal to reach ffmpeg.
+      // Without this, on Windows especially, stdin is disconnected and the
+      // 'q' command never arrives — ffmpeg gets killed abruptly and the
+      // m4a container is never finalized, producing a corrupted file.
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
     this.process.stderr.on('data', (data) => {
-      // ffmpeg logs progress to stderr by default; uncomment for debugging:
-      //console.log(data.toString());
+      // ffmpeg logs progress to stderr — uncomment for debugging:
+      // console.log('[FFmpegManager]', data.toString());
+    });
+
+    this.process.on('error', (err) => {
+      console.error('[FFmpegManager] Failed to start ffmpeg:', err.message);
     });
 
     return this.process;
@@ -40,13 +53,32 @@ export class FFmpegManager {
     return new Promise((resolve, reject) => {
       if (!this.process) return resolve();
 
+      let closed = false;
+
       this.process.on('close', (code) => {
+        closed = true;
+        console.log(`[FFmpegManager] ffmpeg closed with code ${code}`);
         if (code === 0 || code === 255) resolve(); // 255 = normal 'q' quit
         else reject(new Error(`ffmpeg exited with code ${code}`));
       });
 
-      // Graceful stop so the m4a container is finalized correctly
-      this.process.stdin.write('q');
+      // Step 1: send graceful quit signal
+      try {
+        this.process.stdin.write('q');
+        this.process.stdin.end();
+      } catch (err) {
+        console.error('[FFmpegManager] Could not write q to stdin:', err.message);
+      }
+
+      // Step 2: if ffmpeg hasn't closed within 8s, send SIGINT as fallback.
+      // SIGINT (Ctrl+C equivalent) still lets ffmpeg finalize the file
+      // on most platforms — unlike SIGKILL which truncates it.
+      setTimeout(() => {
+        if (!closed) {
+          console.log('[FFmpegManager] Graceful stop timed out — sending SIGINT');
+          this.process.kill('SIGINT');
+        }
+      }, 8000);
     });
   }
 }

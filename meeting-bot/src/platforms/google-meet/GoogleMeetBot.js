@@ -1,15 +1,28 @@
 import { MeetingBot } from '../../core/MeetingBot.js';
 import { BrowserManager } from '../../core/BrowserManager.js';
 import { GOOGLE_MEET_SELECTORS } from './selectors.js';
-import { isAdmitted, hasMeetingEnded } from './detector.js';
+import {
+  isAdmitted,
+  hasMeetingEnded,
+  getParticipantCount,
+  isAloneByText,
+  hasNavigatedAwayFromMeeting,
+} from './detector.js';
+
+const ALONE_GRACE_PERIOD_MS = 30000; // 30s — shorter now that detection is reliable
 
 export class GoogleMeetBot extends MeetingBot {
+  constructor(session) {
+    super(session);
+    this.aloneSince = null;
+  }
+
   async join() {
     this.context = await BrowserManager.launch('google-meet');
     this.page = await this.context.newPage();
 
     await this.page.goto(this.session.meetingUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await this.page.waitForTimeout(8000); 
+    await this.page.waitForTimeout(8000);
 
     const nameInput = this.page.locator(GOOGLE_MEET_SELECTORS.nameInput);
     const nameFieldExists = await nameInput.isVisible().catch(() => false);
@@ -34,26 +47,58 @@ export class GoogleMeetBot extends MeetingBot {
     try {
       if (this.page.isClosed()) return false;
 
-      // 1. Check if the red hangup button is still on screen
       const admitted = await isAdmitted(this.page);
       if (!admitted) {
         console.log('[GoogleMeetBot] Leave button disappeared. Meeting ended.');
         return false;
       }
 
-      // 2. Check for "host ended" text
       const ended = await hasMeetingEnded(this.page);
       if (ended) {
-        console.log('[GoogleMeetBot] End meeting text detected.');
+        console.log('[GoogleMeetBot] End-of-call text detected. Meeting ended.');
         return false;
+      }
+
+      if (hasNavigatedAwayFromMeeting(this.page, this.session.meetingUrl)) {
+        console.log('[GoogleMeetBot] Page navigated away from meeting URL. Meeting ended.');
+        return false;
+      }
+
+      // Primary alone-detection: actual DOM participant count
+      const participantCount = await getParticipantCount(this.page);
+      const aloneByCount = participantCount !== null && participantCount <= 1;
+
+      // Secondary fallback: banner text, in case the DOM query above
+      // ever returns null on a future Meet UI change
+      const aloneByText = participantCount === null ? await isAloneByText(this.page) : false;
+
+      const alone = aloneByCount || aloneByText;
+
+      console.log(`[GoogleMeetBot] Participant count: ${participantCount}, alone: ${alone}`);
+
+      if (alone) {
+        if (!this.aloneSince) {
+          this.aloneSince = Date.now();
+          console.log('[GoogleMeetBot] Bot is alone in the call. Starting 30s grace timer...');
+        } else {
+          const elapsed = Date.now() - this.aloneSince;
+          console.log(`[GoogleMeetBot] Still alone — ${Math.round(elapsed / 1000)}s elapsed of ${ALONE_GRACE_PERIOD_MS / 1000}s grace period`);
+          if (elapsed > ALONE_GRACE_PERIOD_MS) {
+            console.log('[GoogleMeetBot] Alone for over 30s. Leaving the call.');
+            return false;
+          }
+        }
+      } else {
+        if (this.aloneSince) {
+          console.log('[GoogleMeetBot] Participant rejoined. Grace timer reset.');
+        }
+        this.aloneSince = null;
       }
 
       return true;
     } catch (error) {
-      // If Playwright fails to check the page (e.g., page is rapidly redirecting),
-      // safely catch the error and report the meeting as over so Chromium can close.
-      console.log('[GoogleMeetBot] Page context lost, assuming meeting ended.');
-      return false; 
+      console.log('[GoogleMeetBot] Page context lost, assuming meeting ended:', error.message);
+      return false;
     }
   }
 
@@ -63,7 +108,6 @@ export class GoogleMeetBot extends MeetingBot {
       await this.context.close().catch(() => {});
       console.log('[GoogleMeetBot] Chromium successfully closed.');
     }
-    // The process.exit() command was removed from here. 
-    // MeetingLifecycle.js will now handle shutting down the server.
   }
 }
+

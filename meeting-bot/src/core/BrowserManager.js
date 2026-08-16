@@ -1,19 +1,21 @@
 import { chromium } from 'playwright';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { AudioRouter } from '../recording/AudioRouter.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export class BrowserManager {
   static async launch(profileName = 'default') {
-    // Persistent profile so a signed-in session (if you log in manually once)
-    // is reused across runs — this is what got past Google's guest-join
-    // blocking during development. Zoom/Teams may not need this, but sharing
-    // the same launch path keeps all three platforms consistent.
+    // Route audio to CABLE Input BEFORE Chrome launches.
+    // Chrome reads the system default audio device on startup — setting it
+    // here means we never need to touch Volume Mixer manually again.
+    await AudioRouter.routeToCable();
+
     const context = await chromium.launchPersistentContext(
       path.join(__dirname, '..', '..', 'browser-profiles', profileName),
       {
-        headless: false, // run under Xvfb in production (see README)
+        headless: false,
         channel: 'chrome',
         permissions: ['camera', 'microphone'],
         args: [
