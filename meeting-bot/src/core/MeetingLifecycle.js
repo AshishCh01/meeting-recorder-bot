@@ -5,6 +5,7 @@ import { TeamsBot } from '../platforms/teams/TeamsBot.js';
 import { Recorder } from '../recording/Recorder.js';
 import { RecordingFile } from '../recording/RecordingFile.js';
 import { SupabaseUploader } from '../storage/SupabaseUploader.js';
+import { AudioRouter } from '../recording/AudioRouter.js';
 import fs from 'fs';
 
 const BOT_CLASSES = {
@@ -48,7 +49,12 @@ export async function runMeetingLifecycle(session) {
     console.log('[Lifecycle] 1. Closing Chromium...');
     await bot.leave().catch(() => {});
 
-    console.log('[Lifecycle] 2. Safely stopping FFmpeg...');
+    // Restore audio device immediately after Chrome closes —
+    // your speakers work normally again before upload/transcription run
+    console.log('[Lifecycle] 2. Restoring system audio device...');
+    await AudioRouter.routeBack();
+
+    console.log('[Lifecycle] 3. Safely stopping FFmpeg...');
     const localPath = await recorder.stop().catch((e) => {
       console.error('[Lifecycle] FFmpeg stop error:', e);
       return null;
@@ -57,43 +63,48 @@ export async function runMeetingLifecycle(session) {
     let uploadedStorageKey = null;
 
     if (localPath && session.status !== 'failed') {
-      console.log(`[Lifecycle] 3. Audio saved to: ${localPath}`);
+      console.log(`[Lifecycle] 4. Audio saved to: ${localPath}`);
       try {
         const storageKey = RecordingFile.storageKeyFor(session.meetingId);
         await SupabaseUploader.upload(localPath, storageKey);
         fs.unlinkSync(localPath);
         uploadedStorageKey = storageKey;
-        console.log('[Lifecycle] 4. Upload successful, local file cleaned up.');
+        console.log('[Lifecycle] 5. Upload successful, local file cleaned up.');
         session.markCompleted();
       } catch (uploadErr) {
-        console.error('[Lifecycle] 4. Upload failed:', uploadErr.message);
+        console.error('[Lifecycle] 5. Upload failed:', uploadErr.message);
         session.markFailed(`Upload failed: ${uploadErr.message}`);
       }
     } else if (localPath && session.status === 'failed') {
-      console.log('[Lifecycle] 3. Session failed — skipping upload, keeping local file for debug.');
+      console.log('[Lifecycle] 4. Session failed — skipping upload, keeping local file for debug.');
     } else {
-      console.log('[Lifecycle] 3. No recording file to upload.');
+      console.log('[Lifecycle] 4. No recording file to upload.');
     }
 
     await notifyBackend(session, uploadedStorageKey);
-
-    // Do NOT call process.exit() here — it kills the entire bot service,
-    // meaning every meeting after the first one gets a connection refused
-    // error from the backend because the Express server is dead.
-    // The lifecycle function simply returns and the bot stays alive,
-    // ready to accept the next POST /google/join or /zoom/join request.
     console.log(`[Lifecycle] Done. Meeting ${session.meetingId} status: ${session.status}`);
   }
 }
 
 async function notifyBackend(session, storageKey) {
-  await axios.post(process.env.BACKEND_WEBHOOK_URL, {
-    meeting_id: session.meetingId,
-    status: session.status,
-    recording_path: storageKey,
-    duration_seconds: session.durationSeconds(),
-    error_message: session.errorMessage,
-  }).catch((err) => {
-    console.error('[Lifecycle] Failed to notify backend:', err.message);
-  });
+  const MAX_RETRIES = 3;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      await axios.post(process.env.BACKEND_WEBHOOK_URL, {
+        meeting_id: session.meetingId,
+        status: session.status,
+        recording_path: storageKey,
+        duration_seconds: session.durationSeconds(),
+        error_message: session.errorMessage,
+      });
+      console.log('[Lifecycle] Backend notified successfully');
+      return;
+    } catch (err) {
+      console.error(`[Lifecycle] Webhook attempt ${attempt}/${MAX_RETRIES} failed:`, err.message);
+      if (attempt < MAX_RETRIES) {
+        await new Promise((r) => setTimeout(r, 3000 * attempt)); // 3s, 6s backoff
+      }
+    }
+  }
+  console.error('[Lifecycle] All webhook attempts failed — meeting may be stuck in DB');
 }
