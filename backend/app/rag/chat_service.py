@@ -1,63 +1,159 @@
-from google.adk.runners import InMemoryRunner
+import inspect
+from google import genai
 from google.genai import types
 
-from app.rag.agent import root_agent
+from app.config import settings
+from app.rag.agent import INSTRUCTION
+from app.rag.tools import get_meeting_summary, get_action_items, search_by_speaker, search_transcript
 
-APP_NAME = "meeting_qa"
+# Global dict to store chat histories per session_id
+_SESSIONS: dict[str, list[types.Content]] = {}
 
-# Created once at import time and reused for the process lifetime, same as
-# any other client. The runner/session service are safe to call concurrently
-# - isolation happens per (user_id, session_id).
-_runner = InMemoryRunner(agent=root_agent, app_name=APP_NAME)
+# We create the genai client here
+client = genai.Client(api_key=settings.gemini_api_key)
 
+class DummyToolContext:
+    def __init__(self, meeting_id: str, user_id: str):
+        self.state = {"meeting_id": meeting_id, "user_id": user_id}
 
 def _session_id(meeting_id: str, session_id: str | None) -> str:
-    # Default to one running chat session per meeting so follow-up questions
-    # keep context, unless the caller wants separate threads.
     return session_id or f"meeting-{meeting_id}"
 
-
-async def _ensure_session(meeting_id: str, session_id: str, user_id: str) -> None:
-    existing = await _runner.session_service.get_session(
-        app_name=APP_NAME, user_id=meeting_id, session_id=session_id,
-    )
-    if existing is None:
-        await _runner.session_service.create_session(
-            app_name=APP_NAME,
-            user_id=meeting_id,
-            session_id=session_id,
-            state={"meeting_id": meeting_id, "user_id": user_id},
-        )
-
-
 async def ask_question(meeting_id: str, question: str, session_id: str | None = None, user_id: str = None) -> dict:
-    """
-    Runs the RAG agent against one meeting's transcript for a single
-    question, returning the final answer text plus which tools were used
-    (handy for debugging/UI transparency).
-    """
     if not user_id:
         raise ValueError("user_id must be provided to scope the agent's context.")
         
     sid = _session_id(meeting_id, session_id)
-    await _ensure_session(meeting_id, sid, user_id)
+    
+    if sid not in _SESSIONS:
+        _SESSIONS[sid] = []
 
-    message = types.Content(role="user", parts=[types.Part(text=question)])
+    history = _SESSIONS[sid]
+    
+    # Append the user's question
+    history.append(types.Content(role="user", parts=[types.Part.from_text(text=question)]))
 
-    answer = ""
-    tool_calls = []
+    # Define tools without ToolContext for Gemini
+    def _get_meeting_summary() -> dict:
+        """
+        Returns the high-level summary of the meeting, key points discussed, 
+        and the final conclusion/resolution.
 
-    async for event in _runner.run_async(
-        user_id=meeting_id, session_id=sid, new_message=message,
-    ):
-        for call in event.get_function_calls() or []:
-            tool_calls.append(call.name)
+        Use this FIRST for broad questions like "what was this meeting about",
+        "what were the main topics", or "how did it conclude".
+        """
+        return get_meeting_summary(DummyToolContext(meeting_id, user_id))
 
-        if event.is_final_response() and event.content and event.content.parts:
-            answer = "".join(part.text or "" for part in event.content.parts)
+    def _get_action_items() -> list[dict]:
+        """
+        Returns the concrete tasks, decisions, or follow-ups mentioned in the meeting,
+        including the owner and timestamp if available.
 
-    return {
-        "session_id": sid,
-        "answer": answer,
-        "tools_used": tool_calls,
-    }
+        Use this specifically when asked about action items, tasks, or follow-ups.
+        """
+        return get_action_items(DummyToolContext(meeting_id, user_id))
+
+    def _search_by_speaker(speaker_name: str) -> dict:
+        """
+        Searches the transcript for everything said by a specific person.
+
+        Use this when the user asks "what did Alice say", "find quotes by Bob",
+        or "did John mention anything?".
+        
+        Args:
+            speaker_name: The name of the speaker to search for.
+        """
+        return search_by_speaker(speaker_name, DummyToolContext(meeting_id, user_id))
+
+    def _search_transcript(query: str) -> dict:
+        """
+        Semantically searches this meeting's full transcript for passages
+        relevant to `query`, and returns the matching passages with their
+        speakers and MM:SS timestamps.
+
+        Use this for specific questions the summary can't answer: exact wording,
+        or anything tied to a specific moment or topic in the conversation.
+        Call it more than once with reworded queries if the first results don't
+        fully answer the question.
+
+        Args:
+            query: A focused natural-language description of what to find,
+                e.g. "budget concerns raised about the Q3 launch".
+        """
+        return search_transcript(query, DummyToolContext(meeting_id, user_id))
+        
+    available_tools = [_get_meeting_summary, _get_action_items, _search_by_speaker, _search_transcript]
+    tools_used = []
+
+    config = types.GenerateContentConfig(
+        tools=available_tools,
+        system_instruction=INSTRUCTION,
+        temperature=0.0
+    )
+
+    while True:
+        response = await client.aio.models.generate_content(
+            model=settings.rag_agent_model,
+            contents=history,
+            config=config,
+        )
+
+        if not response.candidates:
+            raise ValueError("No candidates returned from the model.")
+            
+        candidate = response.candidates[0]
+        # Append the model's response to history
+        history.append(candidate.content)
+
+        function_calls = []
+        for part in candidate.content.parts:
+            if part.function_call:
+                function_calls.append(part.function_call)
+
+        # If there are function calls, execute them and re-prompt
+        if function_calls:
+            responses = []
+            for fc in function_calls:
+                func_name = fc.name
+                func_args = fc.args or {}
+                # Map the wrapped tool name to the original tool name to show cleanly in the UI
+                clean_name = func_name.lstrip("_")
+                tools_used.append(clean_name)
+                
+                # Execute matching tool
+                tool_result = {}
+                try:
+                    if func_name == "_get_meeting_summary":
+                        tool_result = _get_meeting_summary()
+                    elif func_name == "_get_action_items":
+                        tool_result = _get_action_items()
+                    elif func_name == "_search_by_speaker":
+                        tool_result = _search_by_speaker(func_args.get("speaker_name", ""))
+                    elif func_name == "_search_transcript":
+                        tool_result = _search_transcript(func_args.get("query", ""))
+                    else:
+                        tool_result = {"error": f"Unknown tool {func_name}"}
+                except Exception as e:
+                    tool_result = {"error": str(e)}
+
+                # Build the response part
+                responses.append(types.Part.from_function_response(
+                    name=func_name,
+                    response={"result": tool_result}
+                ))
+            
+            # Append the function responses to history and loop to generate content again
+            history.append(types.Content(role="user", parts=responses))
+            continue
+            
+        # No function calls, meaning we have the final answer
+        answer = ""
+        for part in candidate.content.parts:
+            if getattr(part, "text", None):
+                answer += part.text
+
+        return {
+            "session_id": sid,
+            "answer": answer,
+            "tools_used": tools_used,
+        }
