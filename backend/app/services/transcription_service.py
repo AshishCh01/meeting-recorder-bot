@@ -1,10 +1,12 @@
 import json
 import tempfile
 import os
+import subprocess
+import re
 from typing import Optional
 
 from google import genai
-from google.genai import types
+from google.genai import types, errors
 
 from app.config import settings
 from app.db.supabase import supabase
@@ -101,6 +103,36 @@ Requirements for content analysis:
    takeaway, decision, or closing thought.
 """
 
+def _is_audio_silent(file_path: str) -> bool:
+    """
+    Uses ffmpeg to check if the audio is completely silent.
+    Prevents Gemini from hallucinating conversations out of static/silence.
+    """
+    try:
+        cmd = [
+            "ffmpeg", "-i", file_path,
+            "-af", "volumedetect",
+            "-f", "null", "-"
+        ]
+        result = subprocess.run(cmd, stderr=subprocess.PIPE, text=True)
+        
+        # Look for the mean_volume output from ffmpeg
+        mean_match = re.search(r"mean_volume:\s*([-0-9.]+)\s*dB", result.stderr)
+        
+        if mean_match:
+            mean_vol = float(mean_match.group(1))
+            print(f"[transcription] Audio mean volume: {mean_vol} dB")
+            # -65.0 dB or lower is generally pure digital silence or baseline static
+            if mean_vol < -65.0: 
+                return True
+        elif "mean_volume: -inf" in result.stderr:
+            return True
+            
+        return False
+    except Exception as e:
+        print(f"[transcription] Warning: Silence detection failed ({e}). Proceeding to transcription.")
+        return False
+
 
 def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
     """
@@ -125,16 +157,33 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
 
     print(f"[transcription] Downloaded to temp file: {tmp_path}")
 
+    uploaded_file = None
     try:
+        # Phase 1, Step 3: Silence Detection
+        if _is_audio_silent(tmp_path):
+            print("[transcription] Audio is completely silent. Skipping Gemini API to prevent hallucinations.")
+            
+            silent_result = {
+                "summary": "This meeting recording was completely silent.",
+                "key_points": ["No audio was detected during the recording (possibly everyone was muted or the meeting was empty)."],
+                "action_items": [],
+                "conclusion": "No discussion took place.",
+                "conversation": []
+            }
+            
+            supabase.table("meetings").update({
+                "transcript": silent_result,
+                "status": "completed",
+            }).eq("id", meeting_id).execute()
+            
+            return silent_result
+
         print("[transcription] Uploading to Gemini File API...")
         uploaded_file = client.files.upload(
             file=tmp_path,
             config=types.UploadFileConfig(mime_type="audio/mp4")
         )
 
-        # uploaded_file.uri is typed as str | None by the SDK.
-        # Raise explicitly here so the error is clear in logs rather than
-        # crashing with a cryptic TypeError inside Part.from_uri().
         if uploaded_file.uri is None:
             raise ValueError("Gemini File API returned no URI after upload")
 
@@ -146,7 +195,7 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
             contents=[
                 PROMPT,
                 types.Part.from_uri(
-                    file_uri=uploaded_file.uri,  # guaranteed str here
+                    file_uri=uploaded_file.uri,
                     mime_type="audio/mp4"
                 ),
             ],
@@ -156,13 +205,10 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
             ),
         )
 
-        # response.text is typed as str | None by the SDK.
-        # Raise explicitly so the except block marks the meeting failed
-        # with a useful message rather than crashing json.loads with None.
         if response.text is None:
             raise ValueError("Gemini returned an empty response — no text content")
 
-        result = json.loads(response.text)  # guaranteed str here
+        result = json.loads(response.text)
         print("[transcription] Gemini response parsed successfully")
 
         supabase.table("meetings").update({
@@ -173,22 +219,38 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
         try:
             index_transcript(meeting_id, result)
         except Exception as e:
-            # Indexing failure shouldn't fail the transcript itself - the
-            # meeting is still usable, just not queryable via RAG yet.
             supabase.table("meetings").update({
                 "error_message": f"Transcript ready, but RAG indexing failed: {e}",
             }).eq("id", meeting_id).execute()
 
         return result
 
+    except errors.APIError as e:
+        # Gracefully handle 503 Server Overloaded without crashing the app
+        print(f"[transcription] Gemini API Error: {e}")
+        msg = f"Gemini Error: {e.message}"
+        if e.code == 503:
+            msg = "Transcription failed: Gemini servers are currently overloaded (503). Please try again later."
+        _mark_failed(meeting_id, msg)
+        
     except Exception as e:
         print(f"[transcription] ERROR: {e}")
-        _mark_failed(meeting_id, f"Transcription failed: {e}")
-        raise
+        _mark_failed(meeting_id, f"Transcription failed: {str(e)}")
+        # Removed the `raise` keyword here so the background task exits cleanly
 
     finally:
-        os.unlink(tmp_path)
-        print(f"[transcription] Temp file cleaned up: {tmp_path}")
+        # Phase 3, Step 9: Delete Gemini file after transcription to save quota
+        if uploaded_file and hasattr(uploaded_file, 'name') and uploaded_file.name:
+            try:
+                client.files.delete(name=uploaded_file.name)
+                print(f"[transcription] Cleaned up Gemini storage file: {uploaded_file.name}")
+            except Exception as cleanup_err:
+                print(f"[transcription] Warning: Failed to clean up Gemini file: {cleanup_err}")
+
+        # Clean up local temp file
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+            print(f"[transcription] Temp file cleaned up: {tmp_path}")
 
 
 def _mark_failed(meeting_id: str, message: str) -> None:
