@@ -29,15 +29,11 @@ export const ChatInterface = ({ meetingId }) => {
     setLoading(true);
 
     try {
-      // Create chat session context payload
       const payload = {
-        meeting_id: meetingId,
-        query: userMsg,
-        // Passing previous messages as context to the backend agent if supported
-        history: messages.map(m => ({ role: m.role, content: m.content }))
+        question: userMsg
       };
 
-      const { data } = await api.post('/chat', payload);
+      const { data } = await api.post(`/meetings/${meetingId}/chat`, payload);
       
       setMessages(prev => [...prev, { role: 'agent', content: data.answer }]);
     } catch (err) {
