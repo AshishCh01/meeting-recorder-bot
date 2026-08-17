@@ -16,8 +16,16 @@ from sarvamai import SarvamAI
 
 from app.config import settings
 
-client = SarvamAI(api_subscription_key=settings.sarvam_api_key.strip().strip('"').strip("'"))
+_client = None
 
+def get_sarvam_client():
+    global _client
+    if _client is None:
+        key = settings.sarvam_api_key.strip().strip('"').strip("'")
+        if not key:
+            raise ValueError("Sarvam API key is not configured.")
+        _client = SarvamAI(api_subscription_key=key)
+    return _client
 
 def _sec_to_mmss(seconds: float) -> str:
     total_seconds = int(seconds)
@@ -38,6 +46,7 @@ def _run_stt_job(audio_path: str) -> dict:
     if settings.sarvam_num_speakers is not None:
         job_kwargs["num_speakers"] = settings.sarvam_num_speakers
 
+    client = get_sarvam_client()
     job = client.speech_to_text_job.create_job(**job_kwargs)
 
     job.upload_files(file_paths=[audio_path])
@@ -125,6 +134,7 @@ def _build_analysis(transcript_text: str) -> dict:
         "return an empty array if there are none."
     )
 
+    client = get_sarvam_client()
     response = client.chat.completions(
         model=settings.sarvam_chat_model,
         messages=[

@@ -12,6 +12,7 @@ export const Dashboard = () => {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [retryingId, setRetryingId] = useState(null);
+  const [showAllMeetings, setShowAllMeetings] = useState(false);
 
   const handleRetry = async (e, meetingId) => {
     e.preventDefault();
@@ -118,8 +119,16 @@ export const Dashboard = () => {
       )}
 
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden min-h-[300px]">
-        <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50">
+        <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
           <h2 className="text-sm font-semibold text-brand-dark">Recent Recordings</h2>
+          {meetings.length > 5 && (
+            <button 
+              onClick={() => setShowAllMeetings(!showAllMeetings)}
+              className="text-xs font-medium text-brand-blue hover:text-blue-700 transition-colors"
+            >
+              {showAllMeetings ? 'Show Less' : 'View All'}
+            </button>
+          )}
         </div>
         
         {loading ? (
@@ -128,7 +137,7 @@ export const Dashboard = () => {
           </div>
         ) : meetings.length > 0 ? (
           <ul className="divide-y divide-slate-100 overflow-y-auto max-h-[600px]">
-            {meetings.map((meeting) => (
+            {(showAllMeetings ? meetings : meetings.slice(0, 5)).map((meeting) => (
               <li key={meeting.id} className="hover:bg-slate-50 transition-colors group cursor-pointer block">
                 <Link to={`/meetings/${meeting.id}`} className="px-6 py-5 flex items-center justify-between">
                   <div className="flex items-center min-w-0 gap-4">
