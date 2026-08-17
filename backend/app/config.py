@@ -22,9 +22,17 @@ class Settings(BaseSettings):
     chunk_overlap: int = 1           # segments of overlap between consecutive chunks
     retrieval_top_k: int = 6
 
+    # Fallback STT provider - used if Gemini keeps failing (429/503)
+    sarvam_api_key: str = ""
+    sarvam_stt_model: str = "saaras:v3"
+    sarvam_chat_model: str = "sarvam-105b"
+    sarvam_language_code: str = "en-IN"
+    sarvam_num_speakers: int | None = None  # None = let Sarvam auto-detect speaker count
+
     class Config:
         env_file = ".env"
         extra = "ignore"
 
 
 settings = Settings()
+

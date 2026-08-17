@@ -3,6 +3,8 @@ import tempfile
 import os
 import subprocess
 import re
+import time
+import random
 from typing import Optional
 
 from google import genai
@@ -13,6 +15,7 @@ from app.db.supabase import supabase
 from app.db.database import SessionLocal
 from app.db.models import Meeting
 from app.services.embedding_service import index_transcript
+from app.services.transcription_fallback_sarvam import transcribe_with_sarvam_fallback
 
 client = genai.Client(api_key=settings.gemini_api_key)
 
@@ -136,6 +139,29 @@ def _is_audio_silent(file_path: str) -> bool:
         return False
 
 
+def _call_gemini_with_retry(contents, config, max_retries=4):
+    """
+    Calls Gemini's generate_content with exponential backoff retry
+    for transient errors (429 rate limit, 503 overloaded). Re-raises
+    the last error if all retries are exhausted, or immediately for
+    non-retriable errors (e.g. 400, 401) - retrying those is pointless.
+    """
+    for attempt in range(max_retries):
+        try:
+            return client.models.generate_content(
+                model=settings.gemini_model,
+                contents=contents,
+                config=config,
+            )
+        except errors.APIError as e:
+            retriable = e.code in (429, 503)
+            if not retriable or attempt == max_retries - 1:
+                raise
+            delay = (2 ** attempt) + random.uniform(0, 1)
+            print(f"[transcription] Gemini {e.code}, retrying in {delay:.1f}s (attempt {attempt+1}/{max_retries})")
+            time.sleep(delay)
+
+
 def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
     """
     Downloads the recording from Supabase Storage, sends it to Gemini
@@ -195,8 +221,7 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
             print(f"[transcription] Uploaded. URI: {uploaded_file.uri}")
 
             print("[transcription] Sending to Gemini for analysis...")
-            response = client.models.generate_content(
-                model=settings.gemini_model,
+            response = _call_gemini_with_retry(
                 contents=[
                     PROMPT,
                     types.Part.from_uri(
@@ -233,8 +258,38 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
             return result
 
         except errors.APIError as e:
-            # Gracefully handle 503 Server Overloaded without crashing the app
             print(f"[transcription] Gemini API Error: {e}")
+
+            if e.code in (429, 503) and settings.sarvam_api_key:
+                # Retries already exhausted inside _call_gemini_with_retry -
+                # Gemini is genuinely unavailable right now, switch providers.
+                print(f"[transcription] Gemini {e.code} persisted after retries, falling back to Sarvam AI...")
+                try:
+                    result = transcribe_with_sarvam_fallback(tmp_path)
+                    meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+                    if meeting:
+                        meeting.transcript = result
+                        meeting.status = "completed"
+                        meeting.error_message = f"Transcribed via Sarvam AI fallback (Gemini {e.code} unavailable)"
+                        db.commit()
+                    try:
+                        index_transcript(db, meeting_id, result)
+                    except Exception as idx_err:
+                        meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+                        if meeting:
+                            meeting.error_message = f"Transcript ready (Sarvam fallback), but RAG indexing failed: {idx_err}"
+                            db.commit()
+                    return result
+                except Exception as fallback_err:
+                    print(f"[transcription] Sarvam AI fallback also failed: {fallback_err}")
+                    _mark_failed(
+                        db, meeting_id,
+                        f"Gemini {e.code} and Sarvam AI fallback both failed: {fallback_err}"
+                    )
+                return None
+
+            # Non-retriable error (e.g. 400 bad request, 401 auth) or no
+            # Sarvam key configured - no point falling back, just fail.
             msg = f"Gemini Error: {e.message}"
             if e.code == 503:
                 msg = "Transcription failed: Gemini servers are currently overloaded (503). Please try again later."
