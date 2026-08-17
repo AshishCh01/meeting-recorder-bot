@@ -1,5 +1,6 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import update
 from app.db.database import get_db
 from app.db.models import Meeting
 from app.api.auth import verify_webhook_token
@@ -24,23 +25,32 @@ def recording_complete(
     if not meeting:
         raise HTTPException(404, "Meeting not found")
 
-    if meeting.status in ["transcribing", "completed"]:
-        return {"status": "already_processed"}
-
     if payload.status == "completed" and payload.recording_path:
         try:
             signed_url = get_signed_recording_url(payload.recording_path)
         except Exception as e:
             print(f"[webhook] Could not generate signed URL: {e}")
-            meeting.status = "failed"
-            meeting.error_message = f"Upload reported but file not found in storage: {e}"
+            db.execute(
+                update(Meeting)
+                .where(Meeting.id == payload.meeting_id, Meeting.status.notin_(["transcribing", "completed"]))
+                .values(status="failed", error_message=f"Upload reported but file not found in storage: {e}")
+            )
             db.commit()
             return {"status": "received"}
 
-        meeting.status = "transcribing"
-        meeting.recording_url = signed_url
-        meeting.duration_seconds = payload.duration_seconds
+        result = db.execute(
+            update(Meeting)
+            .where(Meeting.id == payload.meeting_id, Meeting.status.notin_(["transcribing", "completed"]))
+            .values(
+                status="transcribing",
+                recording_url=signed_url,
+                duration_seconds=payload.duration_seconds
+            )
+        )
         db.commit()
+
+        if result.rowcount == 0:
+            return {"status": "already_processed"}
 
         transcription_executor.submit(
             transcribe_recording,
@@ -49,7 +59,13 @@ def recording_complete(
         )
         return {"status": "received"}
 
-    meeting.status = "failed"
-    meeting.error_message = payload.error_message or "Recording failed"
+    result = db.execute(
+        update(Meeting)
+        .where(Meeting.id == payload.meeting_id, Meeting.status.notin_(["transcribing", "completed"]))
+        .values(
+            status="failed",
+            error_message=payload.error_message or "Recording failed"
+        )
+    )
     db.commit()
     return {"status": "received"}

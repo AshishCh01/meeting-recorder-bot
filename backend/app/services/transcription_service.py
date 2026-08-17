@@ -292,7 +292,7 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
                     if meeting:
                         meeting.transcript = result
                         meeting.status = "completed"
-                        meeting.error_message = f"Transcribed via Sarvam AI fallback (Gemini {e.code} unavailable)"
+                        meeting.error_message = f"Transcribed via Sarvam AI fallback (Gemini {code_str} unavailable)"
                         db.commit()
                     try:
                         index_transcript(db, meeting_id, result)
@@ -312,9 +312,12 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
 
             # Non-retriable error (e.g. 400 bad request, 401 auth) or no
             # Sarvam key configured - no point falling back, just fail.
-            msg = f"Gemini Error: {e.message}"
-            if e.code == 503:
-                msg = "Transcription failed: Gemini servers are currently overloaded (503). Please try again later."
+            if isinstance(e, errors.APIError):
+                msg = f"Gemini Error: {e.message}"
+                if e.code == 503:
+                    msg = "Transcription failed: Gemini servers are currently overloaded (503). Please try again later."
+            else:
+                msg = f"Transcription failed: network error communicating with Gemini ({type(e).__name__}: {e})"
             _mark_failed(db, meeting_id, msg)
             
         except Exception as e:
