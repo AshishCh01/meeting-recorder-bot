@@ -13,19 +13,47 @@ export const MeetingView = () => {
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    let intervalId;
+    let isMounted = true;
+
     const fetchMeeting = async () => {
       try {
         const { data } = await api.get(`/meetings/${id}`);
-        setMeeting(data);
+        if (isMounted) {
+          setMeeting(data);
+          setLoading(false);
+          if (data.status === 'completed' || data.status === 'failed') {
+            if (intervalId) clearInterval(intervalId);
+          }
+        }
       } catch (err) {
         console.error(err);
-        setError('Failed to load meeting details.');
-      } finally {
-        setLoading(false);
+        if (isMounted) {
+          setError('Failed to load meeting details.');
+          setLoading(false);
+          if (intervalId) clearInterval(intervalId);
+        }
       }
     };
+
     fetchMeeting();
+    intervalId = setInterval(fetchMeeting, 5000);
+
+    return () => {
+      isMounted = false;
+      if (intervalId) clearInterval(intervalId);
+    };
   }, [id]);
+
+  const handleRetry = async () => {
+    try {
+      await api.post(`/meetings/${id}/retry`);
+      setMeeting(prev => ({ ...prev, status: 'transcribing', error_message: null }));
+    } catch (err) {
+      console.error(err);
+      alert("Retry failed to initiate.");
+    }
+  };
 
   if (loading) {
     return (
@@ -62,7 +90,7 @@ export const MeetingView = () => {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 h-[calc(100vh-140px)]">
         {/* Left Pane: Static Details */}
         <div className="h-full overflow-hidden">
-          <MeetingDetails meeting={meeting} />
+          <MeetingDetails meeting={meeting} onRetry={handleRetry} />
         </div>
 
         {/* Right Pane: AI Chat */}

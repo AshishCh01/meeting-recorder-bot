@@ -1,8 +1,9 @@
 import inspect
 import asyncio
 from collections import OrderedDict
+import httpx
 from google import genai
-from google.genai import types
+from google.genai import types, errors
 
 from app.config import settings
 from app.rag.agent import INSTRUCTION
@@ -30,7 +31,7 @@ class LRUSessionCache:
 _session_cache = LRUSessionCache(capacity=500)
 
 # We create the genai client here
-client = genai.Client(api_key=settings.gemini_api_key)
+client = genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOptions(timeout=60_000))
 
 class DummyToolContext:
     def __init__(self, meeting_id: str, user_id: str):
@@ -125,11 +126,23 @@ async def ask_question(meeting_id: str, question: str, session_id: str | None = 
                 }
             loop_count += 1
 
-            response = await client.aio.models.generate_content(
-                model=settings.rag_agent_model,
-                contents=history,
-                config=config,
-            )
+            chat_max_retries = 3
+            for attempt in range(chat_max_retries):
+                try:
+                    response = await client.aio.models.generate_content(
+                        model=settings.rag_agent_model,
+                        contents=history,
+                        config=config,
+                    )
+                    break # Success!
+                except (errors.APIError, httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
+                    if attempt == chat_max_retries - 1:
+                        return {
+                            "session_id": sid,
+                            "answer": "The AI service is currently experiencing high load or rate limits. Please try again in a few moments.",
+                            "tools_used": tools_used,
+                        }
+                    await asyncio.sleep((2 ** attempt) + 0.5)
     
             if not response.candidates:
                 raise ValueError("No candidates returned from the model.")

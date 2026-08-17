@@ -5,7 +5,11 @@ import subprocess
 import re
 import time
 import random
+import httpx
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
+
+transcription_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="transcribe")
 
 from google import genai
 from google.genai import types, errors
@@ -17,7 +21,7 @@ from app.db.models import Meeting
 from app.services.embedding_service import index_transcript
 from app.services.transcription_fallback_sarvam import transcribe_with_sarvam_fallback
 
-client = genai.Client(api_key=settings.gemini_api_key)
+client = genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOptions(timeout=60_000))
 
 RESPONSE_SCHEMA = {
     "type": "object",
@@ -153,12 +157,13 @@ def _call_gemini_with_retry(contents, config, max_retries=4):
                 contents=contents,
                 config=config,
             )
-        except errors.APIError as e:
-            retriable = e.code in (429, 503)
+        except (errors.APIError, httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
+            retriable = (isinstance(e, errors.APIError) and e.code in (429, 503)) or not isinstance(e, errors.APIError)
+            code_str = str(e.code) if hasattr(e, "code") else type(e).__name__
             if not retriable or attempt == max_retries - 1:
                 raise
             delay = (2 ** attempt) + random.uniform(0, 1)
-            print(f"[transcription] Gemini {e.code}, retrying in {delay:.1f}s (attempt {attempt+1}/{max_retries})")
+            print(f"[transcription] Gemini {code_str}, retrying in {delay:.1f}s (attempt {attempt+1}/{max_retries})")
             time.sleep(delay)
 
 
@@ -272,13 +277,15 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
 
             return result
 
-        except errors.APIError as e:
-            print(f"[transcription] Gemini API Error: {e}")
+        except (errors.APIError, httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
+            code_str = str(e.code) if hasattr(e, "code") else type(e).__name__
+            print(f"[transcription] Gemini API Error: {code_str}")
 
-            if e.code in (429, 503) and settings.sarvam_api_key:
+            is_retriable = (isinstance(e, errors.APIError) and e.code in (429, 503)) or not isinstance(e, errors.APIError)
+            if is_retriable and settings.sarvam_api_key:
                 # Retries already exhausted inside _call_gemini_with_retry -
                 # Gemini is genuinely unavailable right now, switch providers.
-                print(f"[transcription] Gemini {e.code} persisted after retries, falling back to Sarvam AI...")
+                print(f"[transcription] Gemini {code_str} persisted after retries, falling back to Sarvam AI...")
                 try:
                     result = transcribe_with_sarvam_fallback(tmp_path)
                     meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
@@ -299,7 +306,7 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
                     print(f"[transcription] Sarvam AI fallback also failed: {fallback_err}")
                     _mark_failed(
                         db, meeting_id,
-                        f"Gemini {e.code} and Sarvam AI fallback both failed: {fallback_err}"
+                        f"Gemini {code_str} and Sarvam AI fallback both failed: {fallback_err}"
                     )
                 return None
 

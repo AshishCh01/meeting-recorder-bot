@@ -1,31 +1,16 @@
 import React, { useState } from 'react';
-import { Calendar, Clock, Video, ListTodo, FileText, FileAudio, User, AlertCircle, RefreshCw } from 'lucide-react';
+import { Calendar, Clock, Video, ListTodo, FileText, FileAudio, User, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
 
-export const MeetingDetails = ({ meeting }) => {
+export const MeetingDetails = ({ meeting, onRetry }) => {
   const [activeTab, setActiveTab] = useState('summary');
   const [isRetrying, setIsRetrying] = useState(false);
 
-  const handleRetry = async () => {
-    try {
-      setIsRetrying(true);
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/meetings/${meeting.id}/retry`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      if (response.ok) {
-        window.location.reload();
-      } else {
-        alert("Retry failed to initiate.");
-        setIsRetrying(false);
-      }
-    } catch (e) {
-      console.error(e);
-      alert("Retry failed to initiate.");
-      setIsRetrying(false);
+  const handleRetryClick = async () => {
+    setIsRetrying(true);
+    if (onRetry) {
+      await onRetry();
     }
+    setIsRetrying(false);
   };
 
   const tabs = [
@@ -189,7 +174,7 @@ export const MeetingDetails = ({ meeting }) => {
                 <p className="text-sm text-red-600 mt-1">{meeting.error_message || "An unknown error occurred during transcription."}</p>
               </div>
               <button
-                onClick={handleRetry}
+                onClick={handleRetryClick}
                 disabled={isRetrying}
                 className="px-4 py-2 bg-white text-red-600 text-sm font-medium border border-red-200 rounded-lg shadow-sm hover:bg-red-50 disabled:opacity-50 flex items-center gap-2"
               >
@@ -197,6 +182,18 @@ export const MeetingDetails = ({ meeting }) => {
                 {isRetrying ? 'Retrying...' : 'Retry Processing'}
               </button>
             </div>
+          </div>
+        )}
+        {/* Processing State Block */}
+        {['joining', 'recording', 'transcribing'].includes(meeting.status) && (
+          <div className="mt-5 p-6 bg-blue-50 border border-blue-100 rounded-xl flex flex-col items-center justify-center text-center">
+            <Loader2 className="w-8 h-8 text-brand-blue animate-spin mb-3" />
+            <h3 className="text-sm font-semibold text-brand-dark mb-1">
+              {meeting.status === 'joining' ? 'Bot is joining the meeting...' :
+               meeting.status === 'recording' ? 'Recording in progress...' :
+               'Transcribing and generating insights...'}
+            </h3>
+            <p className="text-xs text-slate-500">This page will update automatically when finished.</p>
           </div>
         )}
       </div>

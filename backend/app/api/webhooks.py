@@ -5,14 +5,13 @@ from app.db.models import Meeting
 from app.api.auth import verify_webhook_token
 from app.models.meeting import RecordingCompleteWebhook
 from app.services.storage_service import get_signed_recording_url
-from app.services.transcription_service import transcribe_recording
+from app.services.transcription_service import transcribe_recording, transcription_executor
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 @router.post("/recording-complete", dependencies=[Depends(verify_webhook_token)])
 def recording_complete(
     payload: RecordingCompleteWebhook, 
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
     """
@@ -43,7 +42,7 @@ def recording_complete(
         meeting.duration_seconds = payload.duration_seconds
         db.commit()
 
-        background_tasks.add_task(
+        transcription_executor.submit(
             transcribe_recording,
             payload.meeting_id,
             payload.recording_path,

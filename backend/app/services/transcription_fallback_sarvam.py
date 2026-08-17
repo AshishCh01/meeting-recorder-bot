@@ -51,7 +51,7 @@ def _run_stt_job(audio_path: str) -> dict:
 
     job.upload_files(file_paths=[audio_path])
     job.start()
-    job.wait_until_complete(poll_interval=5, timeout=1800)
+    job.wait_until_complete(poll_interval=5, timeout=420)
 
     file_results = job.get_file_results()
     if file_results["failed"]:

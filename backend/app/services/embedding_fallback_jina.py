@@ -12,37 +12,48 @@ still fit the existing pgvector column with no schema change.
 """
 
 import httpx
+import time
+import random
 
 from app.config import settings
 
 JINA_URL = "https://api.jina.ai/v1/embeddings"
 
 
-def _call_jina(texts: list[str], task: str) -> list[list[float]]:
+def _call_jina(texts: list[str], task: str, max_retries=3) -> list[list[float]]:
     if not texts:
         return []
 
-    response = httpx.post(
-        JINA_URL,
-        headers={
-            "Authorization": f"Bearer {settings.jina_api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": settings.jina_embedding_model,
-            "task": task,
-            "dimensions": settings.embedding_dimensions,
-            "input": texts,
-        },
-        timeout=60.0,
-    )
-    response.raise_for_status()
+    for attempt in range(max_retries):
+        try:
+            response = httpx.post(
+                JINA_URL,
+                headers={
+                    "Authorization": f"Bearer {settings.jina_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": settings.jina_embedding_model,
+                    "task": task,
+                    "dimensions": settings.embedding_dimensions,
+                    "input": texts,
+                },
+                timeout=60.0,
+            )
+            response.raise_for_status()
 
-    data = response.json()["data"]
-    # Jina doesn't guarantee `data` preserves input order - sort by the
-    # index field it returns alongside each embedding, to be safe.
-    data.sort(key=lambda d: d["index"])
-    return [d["embedding"] for d in data]
+            data = response.json()["data"]
+            # Jina doesn't guarantee `data` preserves input order - sort by the
+            # index field it returns alongside each embedding, to be safe.
+            data.sort(key=lambda d: d["index"])
+            return [d["embedding"] for d in data]
+        except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
+            is_retriable = (isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (429, 500, 502, 503)) or not isinstance(e, httpx.HTTPStatusError)
+            if not is_retriable or attempt == max_retries - 1:
+                raise
+            delay = (2 ** attempt) + random.uniform(0, 1)
+            print(f"[embedding] Jina fallback error, retrying in {delay:.1f}s (attempt {attempt+1}/{max_retries})")
+            time.sleep(delay)
 
 
 def embed_documents_with_jina(texts: list[str]) -> list[list[float]]:

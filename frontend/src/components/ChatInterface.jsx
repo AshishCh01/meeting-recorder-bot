@@ -38,9 +38,13 @@ export const ChatInterface = ({ meetingId }) => {
       setMessages(prev => [...prev, { role: 'agent', content: data.answer }]);
     } catch (err) {
       console.error('Chat error:', err);
+      let errorMsg = '*Sorry, I encountered an error communicating with the server.*';
+      if (err.code === 'ECONNABORTED') {
+        errorMsg = '*That took too long. The AI service is currently experiencing high load. Please try again.*';
+      }
       setMessages(prev => [...prev, { 
         role: 'agent', 
-        content: '*Sorry, I encountered an error communicating with the server.*' 
+        content: errorMsg 
       }]);
     } finally {
       setLoading(false);
