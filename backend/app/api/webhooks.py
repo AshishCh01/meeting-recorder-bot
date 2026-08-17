@@ -25,6 +25,9 @@ def recording_complete(
     if not meeting:
         raise HTTPException(404, "Meeting not found")
 
+    if meeting.status in ["transcribing", "completed"]:
+        return {"status": "already_processed"}
+
     if payload.status == "completed" and payload.recording_path:
         try:
             signed_url = get_signed_recording_url(payload.recording_path)

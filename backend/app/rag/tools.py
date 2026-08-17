@@ -131,6 +131,9 @@ def search_transcript(query: str, tool_context: ToolContext) -> dict:
             e.g. "budget concerns raised about the Q3 launch".
     """
     meeting_id, user_id = _get_context(tool_context)
+    if not query or not query.strip():
+        return {"note": "No query provided."}
+        
     query_embedding = embed_query(query)
 
     db = SessionLocal()

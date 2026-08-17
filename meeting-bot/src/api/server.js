@@ -49,6 +49,12 @@ function makeJoinHandler(platform) {
       return res.status(400).json({ error: 'url, meetingId, and userId are required' });
     }
 
+    if (activeMeeting) {
+      return res.status(409).json({ error: 'Bot is currently busy with another meeting' });
+    }
+    
+    activeMeeting = meetingId;
+
     const session = new MeetingSession({ meetingId, meetingUrl: url, platform, userId });
 
     res.status(202).json({ status: 'accepted', meetingId });
@@ -58,6 +64,7 @@ function makeJoinHandler(platform) {
         console.error(`[${platform}] meeting ${meetingId} failed:`, err.message);
       })
       .finally(() => {
+        activeMeeting = null;
         console.log(`[${platform}] meeting ${meetingId} handler finished.`);
       });
   };
