@@ -11,5 +11,3 @@ sqlalchemy>=2.0.36
 alembic==1.13.1
 pgvector==0.2.5
 psycopg[binary]>=3.1.18
-sentence-transformers>=3.0.1
-torch>=2.0.0

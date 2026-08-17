@@ -1,17 +1,19 @@
-from sentence_transformers import SentenceTransformer
 from sqlalchemy.orm import Session
+from google import genai
+from google.genai import types
 
 from app.config import settings
 from app.db.models import MeetingChunk
 
-# Initialize the embedding model locally
-model = SentenceTransformer('BAAI/bge-base-en-v1.5')
+# Initialize the Gemini GenAI client
+client = genai.Client(api_key=settings.gemini_api_key)
 
 
 def _build_chunks(conversation: list[dict]) -> list[dict]:
     """
     Groups consecutive conversation segments into overlapping windows based on token count
-    using the model's tokenizer. Target: ~500 tokens per chunk with ~50 tokens overlap.
+    using a character-based heuristic (1 token ~= 4 chars). 
+    Target: ~500 tokens per chunk with ~50 tokens overlap.
     We preserve entire conversation segments to keep timestamps/speakers cleanly mapped.
     """
     if not conversation:
@@ -31,7 +33,8 @@ def _build_chunks(conversation: list[dict]) -> list[dict]:
         # Grow the window until we hit TARGET_TOKENS or run out of segments
         while end_idx < len(conversation):
             seg_text = conversation[end_idx].get("text", "")
-            seg_tokens = len(model.tokenizer.encode(seg_text, add_special_tokens=False))
+            # Heuristic: 1 token is roughly 4 characters
+            seg_tokens = len(seg_text) // 4
             
             if current_tokens + seg_tokens > TARGET_TOKENS and end_idx > start_idx:
                 break
@@ -67,7 +70,7 @@ def _build_chunks(conversation: list[dict]) -> list[dict]:
         
         while overlap_idx > start_idx:
             seg_text = conversation[overlap_idx].get("text", "")
-            seg_tokens = len(model.tokenizer.encode(seg_text, add_special_tokens=False))
+            seg_tokens = len(seg_text) // 4
             if overlap_tokens + seg_tokens > OVERLAP_TOKENS:
                 break
             overlap_tokens += seg_tokens
@@ -82,18 +85,28 @@ def _build_chunks(conversation: list[dict]) -> list[dict]:
 
 
 def _embed_documents(texts: list[str]) -> list[list[float]]:
-    """Embeds the documents (meeting chunks) using the local model."""
+    """Embeds the documents (meeting chunks) using the Gemini embedding API."""
     if not texts:
         return []
-    embeddings = model.encode(texts, normalize_embeddings=True)
-    return embeddings.tolist()
+    
+    response = client.models.embed_content(
+        model="gemini-embedding-2",
+        contents=texts,
+        config=types.EmbedContentConfig(output_dimensionality=768)
+    )
+    
+    # Extract the vectors from response.embeddings
+    return [e.values for e in response.embeddings]
 
 
 def embed_query(query: str) -> list[float]:
-    """Embeds a query, prepending the specific instruction required by BAAI models."""
-    instruction = "Represent this sentence for searching relevant passages: "
-    embedding = model.encode(instruction + query, normalize_embeddings=True)
-    return embedding.tolist()
+    """Embeds a query using the Gemini embedding API."""
+    response = client.models.embed_content(
+        model="gemini-embedding-2",
+        contents=query,
+        config=types.EmbedContentConfig(output_dimensionality=768)
+    )
+    return response.embeddings[0].values
 
 
 def index_transcript(db: Session, meeting_id: str, transcript: dict) -> None:
