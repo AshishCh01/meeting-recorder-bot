@@ -51,7 +51,7 @@ def upgrade() -> None:
                type_=pgvector.sqlalchemy.Vector(dim=768),
                existing_nullable=False,
                postgresql_using="embedding::vector(768)")
-    op.drop_index('meeting_chunks_embedding_idx', table_name='meeting_chunks', postgresql_ops={'embedding': 'vector_cosine_ops'}, postgresql_with={'lists': '100'}, postgresql_using='ivfflat')
+    op.create_index('meeting_chunks_embedding_idx', 'meeting_chunks', ['embedding'], unique=False, postgresql_ops={'embedding': 'vector_cosine_ops'}, postgresql_with={'lists': '100'}, postgresql_using='ivfflat')
     op.drop_index('meeting_chunks_meeting_id_idx', table_name='meeting_chunks')
     op.add_column('meetings', sa.Column('user_id', sa.UUID(), nullable=True))
     op.alter_column('meetings', 'meeting_url',
@@ -105,7 +105,7 @@ def downgrade() -> None:
                existing_nullable=False)
     op.drop_column('meetings', 'user_id')
     op.create_index('meeting_chunks_meeting_id_idx', 'meeting_chunks', ['meeting_id'], unique=False)
-    op.create_index('meeting_chunks_embedding_idx', 'meeting_chunks', ['embedding'], unique=False, postgresql_ops={'embedding': 'vector_cosine_ops'}, postgresql_with={'lists': '100'}, postgresql_using='ivfflat')
+    op.drop_index('meeting_chunks_embedding_idx', table_name='meeting_chunks', postgresql_ops={'embedding': 'vector_cosine_ops'}, postgresql_with={'lists': '100'}, postgresql_using='ivfflat')
     op.alter_column('meeting_chunks', 'embedding',
                existing_type=pgvector.sqlalchemy.Vector(dim=768),
                type_=pgvector.sqlalchemy.Vector(dim=1536),
