@@ -69,10 +69,10 @@ def list_meetings(
 
     for meeting in meetings:
         m_dict = meeting_to_dict(meeting)
-        if m_dict.get("status") == "completed" and m_dict.get("recording_url"):
+        if m_dict.get("status") == "completed":
             storage_path = f"{m_dict['user_id']}/{m_dict['id']}/recording.m4a"
             try:
-                m_dict["recording_url"] = get_signed_recording_url(storage_path)
+                m_dict["audio_playback_url"] = get_signed_recording_url(storage_path, expires_in=3600)
             except Exception:
                 pass
         results.append(m_dict)
@@ -91,10 +91,10 @@ def get_meeting(
         raise HTTPException(404, "Meeting not found")
 
     m_dict = meeting_to_dict(meeting)
-    if m_dict.get("status") == "completed" and m_dict.get("recording_url"):
+    if m_dict.get("status") == "completed":
         storage_path = f"{m_dict['user_id']}/{m_dict['id']}/recording.m4a"
         try:
-            m_dict["recording_url"] = get_signed_recording_url(storage_path)
+            m_dict["audio_playback_url"] = get_signed_recording_url(storage_path, expires_in=3600)
         except Exception:
             pass
 

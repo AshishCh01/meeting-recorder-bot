@@ -147,6 +147,13 @@ export const MeetingDetails = ({ meeting }) => {
             </div>
           )}
         </div>
+        
+        {/* Secure Audio Playback Player */}
+        {meeting.audio_playback_url && (
+          <div className="mt-5 border-t border-slate-100 pt-4">
+            <audio controls src={meeting.audio_playback_url} className="w-full h-10 outline-none" />
+          </div>
+        )}
       </div>
 
       {/* Tabs */}
