@@ -1,12 +1,19 @@
+import random
+import time
+
 from sqlalchemy.orm import Session
 from google import genai
-from google.genai import types
+from google.genai import types, errors
 
 from app.config import settings
-from app.db.models import MeetingChunk
+from app.db.models import Meeting, MeetingChunk
+from app.services.embedding_fallback_jina import embed_documents_with_jina, embed_query_with_jina
 
 # Initialize the Gemini GenAI client
 client = genai.Client(api_key=settings.gemini_api_key)
+
+GEMINI_PROVIDER = "gemini"
+JINA_PROVIDER = "jina"
 
 
 def _build_chunks(conversation: list[dict]) -> list[dict]:
@@ -84,29 +91,72 @@ def _build_chunks(conversation: list[dict]) -> list[dict]:
     return chunks
 
 
-def _embed_documents(texts: list[str]) -> list[list[float]]:
-    """Embeds the documents (meeting chunks) using the Gemini embedding API."""
+def _call_gemini_embed_with_retry(contents, max_retries: int = 4):
+    """
+    Calls Gemini's embed_content with exponential backoff retry for
+    transient errors (429 rate limit, 503 overloaded) - mirrors
+    _call_gemini_with_retry in transcription_service.py. Re-raises the
+    last error if all retries are exhausted, or immediately for
+    non-retriable errors (e.g. 400, 401) - retrying those is pointless.
+    """
+    for attempt in range(max_retries):
+        try:
+            return client.models.embed_content(
+                model=settings.gemini_embedding_model,
+                contents=contents,
+                config=types.EmbedContentConfig(output_dimensionality=settings.embedding_dimensions),
+            )
+        except errors.APIError as e:
+            retriable = e.code in (429, 503)
+            if not retriable or attempt == max_retries - 1:
+                raise
+            delay = (2 ** attempt) + random.uniform(0, 1)
+            print(f"[embedding] Gemini {e.code}, retrying in {delay:.1f}s (attempt {attempt+1}/{max_retries})")
+            time.sleep(delay)
+
+
+def _embed_documents(texts: list[str]) -> tuple[list[list[float]], str]:
+    """
+    Embeds document chunks for indexing. Tries Gemini first (with
+    retry); if Gemini is still failing with 429/503 once retries are
+    exhausted, falls back to Jina (if configured). Returns the vectors
+    together with whichever provider actually produced them, so the
+    caller can record it on the Meeting row for embed_query to match
+    later - Gemini and Jina vectors are not comparable to each other.
+    """
     if not texts:
-        return []
-    
-    response = client.models.embed_content(
-        model="gemini-embedding-2",
-        contents=texts,
-        config=types.EmbedContentConfig(output_dimensionality=768)
-    )
-    
-    # Extract the vectors from response.embeddings
-    return [e.values for e in response.embeddings]
+        return [], GEMINI_PROVIDER
+
+    try:
+        response = _call_gemini_embed_with_retry(texts)
+        return [e.values for e in response.embeddings], GEMINI_PROVIDER
+    except errors.APIError as e:
+        if e.code in (429, 503) and settings.jina_api_key:
+            print(f"[embedding] Gemini {e.code} persisted after retries, falling back to Jina AI...")
+            return embed_documents_with_jina(texts), JINA_PROVIDER
+        raise
 
 
-def embed_query(query: str) -> list[float]:
-    """Embeds a query using the Gemini embedding API."""
-    response = client.models.embed_content(
-        model="gemini-embedding-2",
-        contents=query,
-        config=types.EmbedContentConfig(output_dimensionality=768)
-    )
-    return response.embeddings[0].values
+def embed_query(query: str, provider: str = GEMINI_PROVIDER) -> list[float]:
+    """
+    Embeds a chat query. `provider` MUST match whichever model indexed
+    the meeting being queried (Meeting.embedding_provider) - Gemini and
+    Jina embeddings live in different, incompatible vector spaces, so
+    mixing them wouldn't error, it would just silently return wrong
+    nearest-neighbor results. Callers should read the meeting's stored
+    provider and pass it through rather than assume Gemini.
+    """
+    if provider == JINA_PROVIDER:
+        return embed_query_with_jina(query)
+
+    try:
+        response = _call_gemini_embed_with_retry(query)
+        return response.embeddings[0].values
+    except errors.APIError as e:
+        if e.code in (429, 503) and settings.jina_api_key:
+            print(f"[embedding] Gemini {e.code} persisted after retries, falling back to Jina AI for query...")
+            return embed_query_with_jina(query)
+        raise
 
 
 def index_transcript(db: Session, meeting_id: str, transcript: dict) -> None:
@@ -114,7 +164,9 @@ def index_transcript(db: Session, meeting_id: str, transcript: dict) -> None:
     Chunks the `conversation` array of a completed transcript, embeds each
     chunk, and (re)writes them to `meeting_chunks` so the RAG agent can query
     this meeting. Safe to call again for the same meeting (old chunks are
-    cleared first).
+    cleared first). Also records which provider embedded the chunks on
+    the Meeting row, so embed_query can use a matching model later even
+    if Gemini and Jina alternate between re-indexing runs.
     """
     conversation = transcript.get("conversation") or []
     if not conversation:
@@ -124,7 +176,7 @@ def index_transcript(db: Session, meeting_id: str, transcript: dict) -> None:
     if not chunks:
         return
 
-    embeddings = _embed_documents([c["content"] for c in chunks])
+    embeddings, provider = _embed_documents([c["content"] for c in chunks])
 
     # Delete existing chunks for this meeting
     db.query(MeetingChunk).filter(MeetingChunk.meeting_id == meeting_id).delete()
@@ -143,6 +195,11 @@ def index_transcript(db: Session, meeting_id: str, transcript: dict) -> None:
         )
         for chunk, embedding in zip(chunks, embeddings)
     ]
-    
+
     db.add_all(meeting_chunks)
+
+    meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+    if meeting:
+        meeting.embedding_provider = provider
+
     db.commit()

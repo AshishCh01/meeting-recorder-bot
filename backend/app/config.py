@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     sarvam_language_code: str = "en-IN"
     sarvam_num_speakers: int | None = None  # None = let Sarvam auto-detect speaker count
 
+    jina_api_key: str = ""      
+    jina_embedding_model: str = "jina-embeddings-v3"    #Fallback embedding model
+
     class Config:
         env_file = ".env"
         extra = "ignore"

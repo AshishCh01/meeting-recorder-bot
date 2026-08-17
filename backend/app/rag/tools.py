@@ -169,3 +169,61 @@ def search_transcript(query: str, tool_context: ToolContext) -> dict:
         }
     finally:
         db.close()
+
+def search_transcript(query: str, tool_context: ToolContext) -> dict:
+    """
+    Semantically searches this meeting's full transcript for passages
+    relevant to `query`, and returns the matching passages with their
+    speakers and MM:SS timestamps.
+
+    Use this for specific questions the summary can't answer: exact wording,
+    or anything tied to a specific moment or topic in the conversation.
+    Call it more than once with reworded queries if the first results don't
+    fully answer the question.
+
+    Args:
+        query: A focused natural-language description of what to find,
+            e.g. "budget concerns raised about the Q3 launch".
+    """
+    meeting_id, user_id = _get_context(tool_context)
+    if not query or not query.strip():
+        return {"note": "No query provided."}
+
+    db = SessionLocal()
+    try:
+        meeting = db.query(Meeting).filter(Meeting.id == meeting_id, Meeting.user_id == user_id).first()
+        if not meeting:
+            return {"note": "Meeting not found or unauthorized."}
+
+        # Must match whichever provider embedded this meeting's chunks
+        # (older meetings indexed before this column existed default to
+        # "gemini", since that's all that existed then).
+        query_embedding = embed_query(query, provider=meeting.embedding_provider or "gemini")
+
+        chunks = (
+            db.query(MeetingChunk)
+            .filter(MeetingChunk.meeting_id == meeting_id)
+            .order_by(MeetingChunk.embedding.cosine_distance(query_embedding))
+            .limit(settings.retrieval_top_k)
+            .all()
+        )
+        
+        if not chunks:
+            return {
+                "matches": [],
+                "note": "No indexed transcript chunks found for this meeting.",
+            }
+
+        return {
+            "matches": [
+                {
+                    "content": chunk.content,
+                    "speakers": chunk.speakers or [],
+                    "timestamp_start": chunk.timestamp_start,
+                    "timestamp_end": chunk.timestamp_end,
+                }
+                for chunk in chunks
+            ]
+        }
+    finally:
+        db.close()

@@ -27,6 +27,11 @@ class Meeting(Base):
     duration_seconds = Column(Integer, nullable=True)
     error_message = Column(String, nullable=True)
     transcript = Column(JSONB, nullable=True)
+    # Which embedding provider ("gemini" or "jina") indexed this meeting's
+    # chunks. embed_query() must use the same provider when searching this
+    # meeting - Gemini and Jina vectors live in different, incompatible
+    # spaces, so mixing them silently returns wrong results, not an error.
+    embedding_provider = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="meetings")
