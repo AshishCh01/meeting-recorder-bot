@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.db.models import Meeting
@@ -7,6 +7,9 @@ from app.models.meeting import MeetingCreate
 from app.services.platform_detector import detect_platform
 from app.services.bot_service import trigger_bot_join
 from app.services.storage_service import get_signed_recording_url
+from app.services.transcription_service import transcribe_recording
+from app.db.supabase import supabase
+from app.config import settings
 
 router = APIRouter(prefix="/meetings", tags=["meetings"])
 
@@ -99,3 +102,42 @@ def get_meeting(
             pass
 
     return m_dict
+
+
+@router.post("/{meeting_id}/retry")
+def retry_meeting(
+    meeting_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user)
+):
+    meeting = db.query(Meeting).filter(Meeting.id == meeting_id, Meeting.user_id == user_id).first()
+    if not meeting:
+        raise HTTPException(404, "Meeting not found")
+
+    if meeting.status != "failed":
+        raise HTTPException(400, "Only failed meetings can be retried")
+
+    storage_path = f"{meeting.user_id}/{meeting.id}/recording.m4a"
+    folder_path = f"{meeting.user_id}/{meeting.id}"
+
+    try:
+        files = supabase.storage.from_(settings.supabase_recordings_bucket).list(folder_path)
+        if not files or not isinstance(files, list) or not any(f.get('name') == 'recording.m4a' for f in files):
+            raise HTTPException(404, "Recording file not found in storage. Cannot retry.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Error communicating with storage: {e}")
+
+    meeting.status = "transcribing"
+    meeting.error_message = None
+    db.commit()
+
+    background_tasks.add_task(
+        transcribe_recording,
+        str(meeting.id),
+        storage_path,
+    )
+    
+    return {"status": "retrying"}

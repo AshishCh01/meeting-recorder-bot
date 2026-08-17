@@ -11,6 +11,25 @@ export const Dashboard = () => {
   const [meetingUrl, setMeetingUrl] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  const [retryingId, setRetryingId] = useState(null);
+
+  const handleRetry = async (e, meetingId) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    setRetryingId(meetingId);
+    setMeetings(prev => prev.map(m => m.id === meetingId ? { ...m, status: 'transcribing' } : m));
+    
+    try {
+      await api.post(`/meetings/${meetingId}/retry`);
+    } catch (err) {
+      console.error('Retry failed', err);
+      alert("Failed to initiate retry.");
+      fetchMeetings(); // Revert optimistic update
+    } finally {
+      setRetryingId(null);
+    }
+  };
 
   const fetchMeetings = async () => {
     try {
@@ -108,7 +127,7 @@ export const Dashboard = () => {
             <Loader2 className="w-8 h-8 animate-spin text-brand-blue" />
           </div>
         ) : meetings.length > 0 ? (
-          <ul className="divide-y divide-slate-100">
+          <ul className="divide-y divide-slate-100 overflow-y-auto max-h-[600px]">
             {meetings.map((meeting) => (
               <li key={meeting.id} className="hover:bg-slate-50 transition-colors group cursor-pointer block">
                 <Link to={`/meetings/${meeting.id}`} className="px-6 py-5 flex items-center justify-between">
@@ -141,7 +160,17 @@ export const Dashboard = () => {
                       </div>
                     </div>
                   </div>
-                  <div className="flex-shrink-0">
+                  <div className="flex-shrink-0 flex items-center gap-4">
+                    {meeting.status === 'failed' && (
+                      <button 
+                        onClick={(e) => handleRetry(e, meeting.id)}
+                        disabled={retryingId === meeting.id}
+                        className="px-3 py-1.5 bg-red-50 text-red-600 text-xs font-semibold rounded-lg hover:bg-red-100 transition-colors border border-red-200 shadow-sm flex items-center gap-1.5 disabled:opacity-50"
+                      >
+                        {retryingId === meeting.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                        {retryingId === meeting.id ? 'Retrying' : 'Retry'}
+                      </button>
+                    )}
                     <ArrowRight className="h-5 w-5 text-slate-300 group-hover:text-brand-blue transition-colors" />
                   </div>
                 </Link>

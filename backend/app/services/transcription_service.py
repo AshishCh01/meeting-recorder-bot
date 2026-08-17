@@ -218,9 +218,24 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
             if uploaded_file.uri is None:
                 raise ValueError("Gemini File API returned no URI after upload")
 
-            print(f"[transcription] Uploaded. URI: {uploaded_file.uri}")
+            print(f"[transcription] Uploaded. URI: {uploaded_file.uri}. Waiting for processing...")
 
-            print("[transcription] Sending to Gemini for analysis...")
+            start_time = time.time()
+            while True:
+                if time.time() - start_time > 300:
+                    raise TimeoutError(f"Gemini File API processing timed out after 5 minutes for file: {uploaded_file.name}")
+
+                uploaded_file = client.files.get(name=uploaded_file.name)
+                state_name = uploaded_file.state.name if hasattr(uploaded_file.state, "name") else uploaded_file.state
+                if state_name == "ACTIVE":
+                    break
+                elif state_name == "FAILED":
+                    raise ValueError(f"Gemini File API failed to process the audio file: {uploaded_file.name}")
+                
+                print(f"[transcription] File state is {state_name}. Waiting 2 seconds...")
+                time.sleep(2)
+
+            print("[transcription] File is ACTIVE. Sending to Gemini for analysis...")
             response = _call_gemini_with_retry(
                 contents=[
                     PROMPT,

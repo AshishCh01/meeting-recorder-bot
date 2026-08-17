@@ -1,8 +1,32 @@
 import React, { useState } from 'react';
-import { Calendar, Clock, Video, ListTodo, FileText, FileAudio, User } from 'lucide-react';
+import { Calendar, Clock, Video, ListTodo, FileText, FileAudio, User, AlertCircle, RefreshCw } from 'lucide-react';
 
 export const MeetingDetails = ({ meeting }) => {
   const [activeTab, setActiveTab] = useState('summary');
+  const [isRetrying, setIsRetrying] = useState(false);
+
+  const handleRetry = async () => {
+    try {
+      setIsRetrying(true);
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/meetings/${meeting.id}/retry`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (response.ok) {
+        window.location.reload();
+      } else {
+        alert("Retry failed to initiate.");
+        setIsRetrying(false);
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Retry failed to initiate.");
+      setIsRetrying(false);
+    }
+  };
 
   const tabs = [
     { id: 'summary', label: 'Summary', icon: FileText },
@@ -152,6 +176,27 @@ export const MeetingDetails = ({ meeting }) => {
         {meeting.audio_playback_url && (
           <div className="mt-5 border-t border-slate-100 pt-4">
             <audio controls src={meeting.audio_playback_url} className="w-full h-10 outline-none" />
+          </div>
+        )}
+
+        {/* Retry Processing Block */}
+        {meeting.status === 'failed' && (
+          <div className="mt-5 border-t border-slate-100 pt-4">
+            <div className="p-4 bg-red-50 border border-red-100 rounded-lg flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-red-500 mt-0.5" />
+              <div className="flex-1">
+                <h3 className="text-sm font-semibold text-red-800">Processing Failed</h3>
+                <p className="text-sm text-red-600 mt-1">{meeting.error_message || "An unknown error occurred during transcription."}</p>
+              </div>
+              <button
+                onClick={handleRetry}
+                disabled={isRetrying}
+                className="px-4 py-2 bg-white text-red-600 text-sm font-medium border border-red-200 rounded-lg shadow-sm hover:bg-red-50 disabled:opacity-50 flex items-center gap-2"
+              >
+                <RefreshCw className={`w-4 h-4 ${isRetrying ? 'animate-spin' : ''}`} />
+                {isRetrying ? 'Retrying...' : 'Retry Processing'}
+              </button>
+            </div>
           </div>
         )}
       </div>
