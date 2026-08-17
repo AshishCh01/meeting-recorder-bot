@@ -33,9 +33,12 @@ def get_current_user(
     
     return user_id
 
+import hmac
+
 def verify_webhook_token(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     token = credentials.credentials
-    if token != settings.meeting_bot_bearer_token:
+    # Use hmac.compare_digest for constant-time comparison to prevent timing attacks
+    if not hmac.compare_digest(token, settings.meeting_bot_bearer_token):
         raise HTTPException(status_code=401, detail="Invalid webhook token")
