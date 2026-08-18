@@ -1,9 +1,34 @@
 import React, { useState } from 'react';
-import { Calendar, Clock, Video, ListTodo, FileText, FileAudio, User, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
+import { Calendar, Clock, Video, ListTodo, FileText, FileAudio, User, AlertCircle, RefreshCw, Loader2, Download } from 'lucide-react';
+import api from '../lib/api';
 
 export const MeetingDetails = ({ meeting, onRetry }) => {
   const [activeTab, setActiveTab] = useState('summary');
   const [isRetrying, setIsRetrying] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
+
+  const handleDownloadPDF = async () => {
+    setIsDownloading(true);
+    try {
+      const response = await api.get(`/meetings/${meeting.id}/export-pdf`, {
+        responseType: 'blob'
+      });
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `meeting-summary-${meeting.id}.pdf`);
+      document.body.appendChild(link);
+      link.click();
+      link.parentNode.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error("Error downloading PDF:", error);
+      alert("Failed to download PDF. Please try again.");
+    } finally {
+      setIsDownloading(false);
+    }
+  };
 
   const handleRetryClick = async () => {
     setIsRetrying(true);
@@ -135,7 +160,23 @@ export const MeetingDetails = ({ meeting, onRetry }) => {
     <div className="flex flex-col h-full bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
       {/* Header */}
       <div className="px-6 py-5 border-b border-slate-100 bg-slate-50/50">
-        <h2 className="text-xl font-bold text-brand-dark mb-2">Meeting Details</h2>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-xl font-bold text-brand-dark">Meeting Details</h2>
+          {meeting.status === 'completed' && (
+            <button
+              onClick={handleDownloadPDF}
+              disabled={isDownloading}
+              className="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 text-sm font-medium text-slate-700 rounded-lg hover:bg-slate-50 shadow-sm disabled:opacity-50 transition-colors"
+            >
+              {isDownloading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Download className="w-4 h-4" />
+              )}
+              {isDownloading ? 'Generating...' : 'Download PDF'}
+            </button>
+          )}
+        </div>
         <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500">
           {meeting.created_at && (
             <div className="flex items-center gap-1.5">

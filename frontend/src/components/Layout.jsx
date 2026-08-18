@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { Link, useLocation } from 'react-router-dom';
 import { LayoutDashboard, LogOut, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
-import meetiqLogo from '../assets/MeetIQ.png';
+import meetiqLogo from '../assets/MeetIQ.png.png';
 
 export const Layout = ({ children }) => {
   const { user, signOut } = useAuth();

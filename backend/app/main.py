@@ -5,12 +5,25 @@ from app.api import chat, meetings, webhooks
 
 app = FastAPI(title="Meeting Recorder API")
 
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_origin, "http://localhost:5174"],
+    allow_origins=[
+        settings.frontend_origin, 
+        "http://localhost:5173",  # <-- Fixed port here!
+        "http://127.0.0.1:5173"   # <-- Good to include just in case
+    ],
+    allow_credentials=True,       # <-- Added this for auth compatibility
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=[settings.frontend_origin, "http://localhost:5174"],
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
 
 app.include_router(meetings.router)
 app.include_router(webhooks.router)

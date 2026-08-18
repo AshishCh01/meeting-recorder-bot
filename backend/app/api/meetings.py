@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Response
 from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.db.models import Meeting
@@ -10,6 +10,7 @@ from app.services.storage_service import get_signed_recording_url
 from app.services.transcription_service import transcribe_recording, transcription_executor
 from app.db.supabase import supabase
 from app.config import settings
+from app.services.pdf_service import generate_meeting_pdf
 
 router = APIRouter(prefix="/meetings", tags=["meetings"])
 
@@ -149,3 +150,32 @@ def retry_meeting(
     )
     
     return {"status": "retrying"}
+
+
+@router.get("/{meeting_id}/export-pdf")
+def export_meeting_pdf(
+    meeting_id: str,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user)
+):
+    meeting = db.query(Meeting).filter(Meeting.id == meeting_id, Meeting.user_id == user_id).first()
+    if not meeting:
+        raise HTTPException(404, "Meeting not found")
+
+    if not meeting.transcript:
+        raise HTTPException(400, "Meeting transcript is not ready yet.")
+
+    try:
+        pdf_bytes = generate_meeting_pdf(meeting)
+        date_str = meeting.created_at.strftime("%Y-%m-%d") if meeting.created_at else "Unknown"
+        
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="Meeting_Summary_{date_str}.pdf"'
+            }
+        )
+    except Exception as e:
+        print(f"PDF Generation Error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to compile PDF document.")

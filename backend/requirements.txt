@@ -12,3 +12,4 @@ alembic==1.13.1
 pgvector==0.2.5
 psycopg[binary]>=3.1.18
 sarvamai>=0.1.0
+fpdf2>=2.7.9
