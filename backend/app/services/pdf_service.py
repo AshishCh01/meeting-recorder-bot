@@ -3,6 +3,16 @@ from fpdf import FPDF
 from app.db.models import Meeting
 
 class MeetingPDF(FPDF):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        fonts_dir = os.path.join(base_dir, 'static', 'fonts')
+        
+        # Load Unicode-compliant fonts (DejaVu)
+        self.add_font('DejaVu', '', os.path.join(fonts_dir, 'DejaVuSans.ttf'))
+        self.add_font('DejaVu', 'B', os.path.join(fonts_dir, 'DejaVuSans-Bold.ttf'))
+        self.add_font('DejaVu', 'I', os.path.join(fonts_dir, 'DejaVuSans-Oblique.ttf'))
+
     def header(self):
         # Logo
         # The script is in backend/app/services, so static is at ../../static
@@ -12,7 +22,7 @@ class MeetingPDF(FPDF):
             self.image(logo_path, 10, 8, 25)
         
         # Professional header title
-        self.set_font('helvetica', 'B', 15)
+        self.set_font('DejaVu', 'B', 15)
         self.cell(40)
         self.cell(0, 10, 'MeetIQ - Meeting Summary Report', border=0, align='R', new_x="LMARGIN", new_y="NEXT")
         
@@ -27,7 +37,7 @@ class MeetingPDF(FPDF):
     def footer(self):
         # Position at 1.5 cm from bottom
         self.set_y(-15)
-        self.set_font('helvetica', 'I', 8)
+        self.set_font('DejaVu', 'I', 8)
         self.set_text_color(128, 128, 128)
         
         # Confidentiality notice
@@ -41,13 +51,13 @@ def generate_meeting_pdf(meeting: Meeting) -> bytes:
     pdf.add_page()
     
     # Title
-    pdf.set_font('helvetica', 'B', 16)
+    pdf.set_font('DejaVu', 'B', 16)
     pdf.set_x(10)
     # 🔴 CRITICAL FIX: Use cell with line breaks instead of multi_cell to prevent floating text
     pdf.cell(0, 10, "Meeting Details", border=0, align='L', new_x="LMARGIN", new_y="NEXT")
     
     # Metadata
-    pdf.set_font('helvetica', '', 10)
+    pdf.set_font('DejaVu', '', 10)
     pdf.set_text_color(100, 100, 100)
     date_str = meeting.created_at.strftime('%Y-%m-%d %H:%M') if meeting.created_at else "Unknown Date"
     platform = meeting.platform.capitalize() if meeting.platform else "Unknown Platform"
@@ -60,18 +70,18 @@ def generate_meeting_pdf(meeting: Meeting) -> bytes:
     
     # Summary
     if transcript.get('summary'):
-        pdf.set_font('helvetica', 'B', 14)
+        pdf.set_font('DejaVu', 'B', 14)
         pdf.cell(0, 10, "Summary", border=0, align='L', new_x="LMARGIN", new_y="NEXT")
-        pdf.set_font('helvetica', '', 11)
+        pdf.set_font('DejaVu', '', 11)
         pdf.set_x(10)
         pdf.multi_cell(0, 6, transcript['summary'])
         pdf.ln(5)
         
     # Key Points
     if transcript.get('key_points') and len(transcript['key_points']) > 0:
-        pdf.set_font('helvetica', 'B', 14)
+        pdf.set_font('DejaVu', 'B', 14)
         pdf.cell(0, 10, "Key Points", border=0, align='L', new_x="LMARGIN", new_y="NEXT")
-        pdf.set_font('helvetica', '', 11)
+        pdf.set_font('DejaVu', '', 11)
         for pt in transcript['key_points']:
             pdf.set_x(10) # Good! This prevents the margin crash.
             pdf.multi_cell(0, 6, f"- {pt}")
@@ -79,9 +89,9 @@ def generate_meeting_pdf(meeting: Meeting) -> bytes:
         
     # Action Items
     if transcript.get('action_items') and len(transcript['action_items']) > 0:
-        pdf.set_font('helvetica', 'B', 14)
+        pdf.set_font('DejaVu', 'B', 14)
         pdf.cell(0, 10, "Action Items", border=0, align='L', new_x="LMARGIN", new_y="NEXT")
-        pdf.set_font('helvetica', '', 11)
+        pdf.set_font('DejaVu', '', 11)
         for item in transcript['action_items']:
             owner = item.get('owner', 'Unspecified')
             task = item.get('item', '')
@@ -91,9 +101,9 @@ def generate_meeting_pdf(meeting: Meeting) -> bytes:
         
     # Conclusion
     if transcript.get('conclusion'):
-        pdf.set_font('helvetica', 'B', 14)
+        pdf.set_font('DejaVu', 'B', 14)
         pdf.cell(0, 10, "Conclusion", border=0, align='L', new_x="LMARGIN", new_y="NEXT")
-        pdf.set_font('helvetica', '', 11)
+        pdf.set_font('DejaVu', '', 11)
         pdf.set_x(10)
         pdf.multi_cell(0, 6, transcript['conclusion'])
         pdf.ln(5)

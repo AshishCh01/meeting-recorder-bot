@@ -21,7 +21,7 @@ from app.db.models import Meeting
 from app.services.embedding_service import index_transcript
 from app.services.transcription_fallback_sarvam import transcribe_with_sarvam_fallback
 
-client = genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOptions(timeout=600_000))
+client = genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOptions(timeout=90_000))
 
 RESPONSE_SCHEMA = {
     "type": "object",

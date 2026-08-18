@@ -18,13 +18,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=[settings.frontend_origin, "http://localhost:5174"],
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
-
 app.include_router(meetings.router)
 app.include_router(webhooks.router)
 app.include_router(chat.router)
