@@ -31,7 +31,7 @@ class LRUSessionCache:
 _session_cache = LRUSessionCache(capacity=500)
 
 # We create the genai client here
-client = genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOptions(timeout=120_000))
+client = genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOptions(timeout=60_000))
 
 class DummyToolContext:
     def __init__(self, meeting_id: str, user_id: str):
