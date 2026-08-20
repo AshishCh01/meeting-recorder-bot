@@ -1,8 +1,25 @@
 import { GOOGLE_MEET_SELECTORS } from './selectors.js';
 
 export async function isAdmitted(page) {
+  // Signal 1: known in-call-only controls (aria-label based). This can
+  // go stale if Google renames a button's aria-label, which is exactly
+  // the risk Signal 2 below hedges against.
   const selector = GOOGLE_MEET_SELECTORS.inCallIndicators.join(', ');
-  return page.locator(selector).first().isVisible().catch(() => false);
+  const byToolbar = await page.locator(selector).first().isVisible().catch(() => false);
+  if (byToolbar) return true;
+
+  // Signal 2: structural DOM check. Participant tiles only ever render
+  // once you're actually inside the live call — never on the "asking
+  // to join" waiting-room screen. Same [data-participant-id] attribute
+  // getParticipantCount() below already relies on for alone-detection.
+  try {
+    const count = await page.evaluate(() =>
+      document.querySelectorAll('[data-participant-id]').length
+    );
+    return count > 0;
+  } catch {
+    return false;
+  }
 }
 
 export async function hasMeetingEnded(page) {
@@ -50,4 +67,3 @@ export function hasNavigatedAwayFromMeeting(page, originalMeetingUrl) {
     return false;
   }
 }
-

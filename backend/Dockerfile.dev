@@ -1,0 +1,25 @@
+# Start with a lightweight Python environment
+FROM python:3.11-slim
+
+# Set the working directory inside the container
+WORKDIR /app
+
+# Install ffmpeg for transcription_service.py (required for _is_audio_silent)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the pinned dependencies file first
+COPY requirements.txt .
+
+# Install the dependencies without caching
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of your backend code
+COPY . .
+
+# Expose the FastAPI port
+EXPOSE 8000
+
+# Start FastAPI with your specific startup command and the reload flag
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

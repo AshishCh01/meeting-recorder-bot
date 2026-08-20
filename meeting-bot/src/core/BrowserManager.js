@@ -14,7 +14,13 @@ export class BrowserManager {
         permissions: ['camera', 'microphone'],
         args: [
           '--use-fake-ui-for-media-stream',
+          '--use-fake-device-for-media-stream', 
           '--disable-blink-features=AutomationControlled',
+          // Docker/Linux specific flags below:
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
         ],
       }
     );

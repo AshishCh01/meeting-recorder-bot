@@ -1,0 +1,50 @@
+# Version control
+.git
+.gitignore
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Windows-only helper tools - these do nothing inside a Linux
+# container (audio routing is handled by PulseAudio in the
+# entrypoint script instead), pure dead weight in the build context
+SoundVolumeView.exe
+SoundVolumeView.cfg
+nircmd.exe
+
+# Debug screenshots left over from local testing - not needed at
+# runtime, and some of these may show real meeting content
+*.png
+*.jpg
+zoom-step*.png
+zoom-no-input.png
+
+zoom-no-input.png
+zoom-step1.png
+zoom-step2.png
+zoom-step2-direct.png
+zoom-step2-no-link.png
+zoom-step3.png
+zoom-step4.png
+zoom-admission-timeout.png
+
+
+google-meet-prejoin.png
+google-meet-after-join-click.png
+google-meet-admission-timeout.png
+google-meet-alone.png
+
+# Browser profile data generated at runtime - regenerated fresh
+# inside the container anyway, don't ship stale local state
+browser-profiles/
+
+# Editor/OS noise
+.vscode/
+.idea/
+.DS_Store

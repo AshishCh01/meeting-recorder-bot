@@ -23,6 +23,7 @@ export class GoogleMeetBot extends MeetingBot {
 
     await this.page.goto(this.session.meetingUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await this.page.waitForTimeout(8000);
+    await this.page.screenshot({ path: 'google-meet-prejoin.png' }).catch(() => {});
 
     const nameInput = this.page.locator(GOOGLE_MEET_SELECTORS.nameInput);
     const nameFieldExists = await nameInput.isVisible().catch(() => false);
@@ -32,6 +33,8 @@ export class GoogleMeetBot extends MeetingBot {
     }
 
     await this.page.click(GOOGLE_MEET_SELECTORS.joinButton, { timeout: 30000 });
+    await this.page.waitForTimeout(2000);
+    await this.page.screenshot({ path: 'google-meet-after-join-click.png' }).catch(() => {});
   }
 
   async waitForAdmission(timeoutMs = 120000) {
@@ -40,6 +43,7 @@ export class GoogleMeetBot extends MeetingBot {
       if (await isAdmitted(this.page)) return true;
       await this.page.waitForTimeout(2000);
     }
+    await this.page.screenshot({ path: 'google-meet-admission-timeout.png' }).catch(() => {});
     throw new Error('Not admitted to the meeting within the timeout window');
   }
 
@@ -110,4 +114,3 @@ export class GoogleMeetBot extends MeetingBot {
     }
   }
 }
-

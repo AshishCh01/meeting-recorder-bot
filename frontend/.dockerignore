@@ -1,0 +1,25 @@
+# Version control
+.git
+.gitignore
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Build output - generated fresh inside the container, don't ship
+# a stale local build into the build context
+dist/
+build/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Editor/OS noise
+.vscode/
+.idea/
+.DS_Store
+
+# Docs not needed at build time
+README.md

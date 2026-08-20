@@ -1,0 +1,38 @@
+# Version control
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual envs (if you ever created one locally)
+venv/
+.venv/
+env/
+
+# Secrets - never bake these into an image layer
+.env
+.env.*
+!.env.example
+
+# Local leftovers - test.db is a local SQLite file, not used in
+# production (you're on Supabase Postgres), don't ship it
+test.db
+*.db
+*.sqlite3
+
+# Tests - not needed to run the container
+tests/
+scripts/
+
+# Editor/OS noise
+.vscode/
+.idea/
+.DS_Store

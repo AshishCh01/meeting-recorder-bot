@@ -1,7 +1,6 @@
 import axios from 'axios';
 import { GoogleMeetBot } from '../platforms/google-meet/GoogleMeetBot.js';
 import { ZoomBot } from '../platforms/zoom/ZoomBot.js';
-import { TeamsBot } from '../platforms/teams/TeamsBot.js';
 import { Recorder } from '../recording/Recorder.js';
 import { RecordingFile } from '../recording/RecordingFile.js';
 import { SupabaseUploader } from '../storage/SupabaseUploader.js';
@@ -10,7 +9,6 @@ import fs from 'fs';
 const BOT_CLASSES = {
   google: GoogleMeetBot,
   zoom: ZoomBot,
-  teams: TeamsBot,
 };
 
 export async function runMeetingLifecycle(session) {
