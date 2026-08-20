@@ -1,3 +1,5 @@
+// meeting-bot/src/platforms/google-meet/GoogleMeetBot.js
+
 import { MeetingBot } from '../../core/MeetingBot.js';
 import { BrowserManager } from '../../core/BrowserManager.js';
 import { GOOGLE_MEET_SELECTORS } from './selectors.js';
@@ -15,32 +17,64 @@ export class GoogleMeetBot extends MeetingBot {
   constructor(session) {
     super(session);
     this.aloneSince = null;
+    this.navigatedAwayHits = 0; // debounce counter for false-positive navigation-away reads
   }
 
   async join() {
     this.context = await BrowserManager.launch('google-meet');
     this.page = await this.context.newPage();
 
+    console.log(`[GoogleMeetBot] Navigating to ${this.session.meetingUrl}`);
     await this.page.goto(this.session.meetingUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await this.page.waitForTimeout(8000);
-    await this.page.screenshot({ path: 'google-meet-prejoin.png' }).catch(() => {});
+    await this.page.waitForTimeout(5000);
 
-    const nameInput = this.page.locator(GOOGLE_MEET_SELECTORS.nameInput);
-    const nameFieldExists = await nameInput.isVisible().catch(() => false);
-    if (nameFieldExists) {
-      await nameInput.click();
-      await nameInput.fill('Meeting Recorder Bot');
+    // Dismiss any "Got it" tooltips or popups if present
+    const gotItBtn = this.page.locator('button:has-text("Got it"), span:has-text("Got it")').first();
+    if (await gotItBtn.isVisible().catch(() => false)) {
+      await gotItBtn.click().catch(() => {});
     }
 
-    await this.page.click(GOOGLE_MEET_SELECTORS.joinButton, { timeout: 30000 });
+    // Explicitly wait for the name input field
+    try {
+      const nameInput = this.page.locator(GOOGLE_MEET_SELECTORS.nameInput).first();
+      await nameInput.waitFor({ state: 'visible', timeout: 10000 });
+      console.log('[GoogleMeetBot] Name input located. Filling bot name...');
+      await nameInput.click();
+      await nameInput.fill('Meeting Recorder Bot');
+      await this.page.waitForTimeout(1000);
+    } catch {
+      console.log('[GoogleMeetBot] No name input required or visible, proceeding to join...');
+    }
+
+    await this.page.screenshot({ path: 'google-meet-prejoin.png' }).catch(() => {});
+
+    // Locate and click the join button
+    console.log('[GoogleMeetBot] Clicking Join / Ask to join button...');
+    const joinBtn = this.page.locator(GOOGLE_MEET_SELECTORS.joinButton).first();
+    await joinBtn.waitFor({ state: 'visible', timeout: 15000 });
+    await joinBtn.click({ force: true });
+
     await this.page.waitForTimeout(2000);
     await this.page.screenshot({ path: 'google-meet-after-join-click.png' }).catch(() => {});
   }
 
   async waitForAdmission(timeoutMs = 120000) {
     const start = Date.now();
+    let consecutiveHits = 0;
+    const REQUIRED_HITS = 2; // debounce: require the signal to hold across 2 polls (~4s) before trusting it
+
     while (Date.now() - start < timeoutMs) {
-      if (await isAdmitted(this.page)) return true;
+      if (await isAdmitted(this.page)) {
+        consecutiveHits++;
+        console.log(`[GoogleMeetBot] In-call signal detected (${consecutiveHits}/${REQUIRED_HITS})...`);
+        if (consecutiveHits >= REQUIRED_HITS) {
+          console.log('[GoogleMeetBot] Admission confirmed. Waiting for UI to settle...');
+          await this.page.waitForTimeout(3000); // let Meet's post-admission transition/reload finish before polling begins
+          return true;
+        }
+      } else {
+        consecutiveHits = 0;
+      }
       await this.page.waitForTimeout(2000);
     }
     await this.page.screenshot({ path: 'google-meet-admission-timeout.png' }).catch(() => {});
@@ -64,8 +98,15 @@ export class GoogleMeetBot extends MeetingBot {
       }
 
       if (hasNavigatedAwayFromMeeting(this.page, this.session.meetingUrl)) {
-        console.log('[GoogleMeetBot] Page navigated away from meeting URL. Meeting ended.');
-        return false;
+        this.navigatedAwayHits++;
+        console.log(`[GoogleMeetBot] Navigation-away signal (${this.navigatedAwayHits}/2)...`);
+        if (this.navigatedAwayHits >= 2) {
+          console.log('[GoogleMeetBot] Page navigated away from meeting URL. Meeting ended.');
+          return false;
+        }
+        return true;
+      } else {
+        this.navigatedAwayHits = 0;
       }
 
       // Primary alone-detection: actual DOM participant count

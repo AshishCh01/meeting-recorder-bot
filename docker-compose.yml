@@ -26,6 +26,8 @@ services:
     volumes:
       # Ensures audio files are saved safely to the host machine
       - ./meeting-bot/recordings:/app/recordings
+      # CRITICAL: Live link for your Google auth file to bypass the anonymous block
+      - ./meeting-bot/auth.json:/app/auth.json
     # CRITICAL: Gives Chromium enough shared memory to process video/audio streams
     shm_size: '2gb'
     depends_on:

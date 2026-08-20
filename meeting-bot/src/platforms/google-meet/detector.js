@@ -1,25 +1,15 @@
 import { GOOGLE_MEET_SELECTORS } from './selectors.js';
 
 export async function isAdmitted(page) {
-  // Signal 1: known in-call-only controls (aria-label based). This can
-  // go stale if Google renames a button's aria-label, which is exactly
-  // the risk Signal 2 below hedges against.
+  // Rely solely on genuine in-call-only controls. The old Signal 2
+  // ([data-participant-id] count > 0) was dropped — it false-positived
+  // on the bot's own self-preview tile in the waiting room, which
+  // apparently carries the same attribute as real in-call participant
+  // tiles, causing "admitted" to fire seconds after clicking "Ask to
+  // join" with no host action at all.
   const selector = GOOGLE_MEET_SELECTORS.inCallIndicators.join(', ');
   const byToolbar = await page.locator(selector).first().isVisible().catch(() => false);
-  if (byToolbar) return true;
-
-  // Signal 2: structural DOM check. Participant tiles only ever render
-  // once you're actually inside the live call — never on the "asking
-  // to join" waiting-room screen. Same [data-participant-id] attribute
-  // getParticipantCount() below already relies on for alone-detection.
-  try {
-    const count = await page.evaluate(() =>
-      document.querySelectorAll('[data-participant-id]').length
-    );
-    return count > 0;
-  } catch {
-    return false;
-  }
+  return byToolbar;
 }
 
 export async function hasMeetingEnded(page) {
@@ -32,10 +22,13 @@ export async function hasMeetingEnded(page) {
   }
 }
 
-// Counts actual participant tiles in the DOM rather than matching banner
-// text — this is far more reliable since Google changes the exact wording
-// of the "you're alone" banner across UI versions, but every real
-// participant always gets a [data-participant-id] element.
+// NOTE: still uses [data-participant-id], which we now know can include
+// the bot's own self-preview tile pre-admission. This only matters for
+// alone-detection though, which runs AFTER isAdmitted() already
+// confirmed real in-call state via the toolbar signal — so a stray
+// self-tile can't cause a false "admitted," only a possible off-by-one
+// in participant count. Worth revisiting if alone-detection ever
+// misfires, but not urgent right now.
 export async function getParticipantCount(page) {
   try {
     const count = await page.evaluate(() => {
@@ -43,12 +36,10 @@ export async function getParticipantCount(page) {
     });
     return count;
   } catch {
-    return null; // couldn't determine — treat as unknown, not alone
+    return null;
   }
 }
 
-// Kept as a secondary signal in case the participant-count DOM query
-// ever fails on a future Meet UI version.
 export async function isAloneByText(page) {
   try {
     const bodyText = await page.innerText('body', { timeout: 1000 });
@@ -61,8 +52,13 @@ export async function isAloneByText(page) {
 
 export function hasNavigatedAwayFromMeeting(page, originalMeetingUrl) {
   try {
-    const meetingCode = originalMeetingUrl.split('/').pop().split('?')[0];
-    return !page.url().includes(meetingCode);
+    const meetingCode = originalMeetingUrl.trim().split('/').pop().split('?')[0].trim();
+    const currentUrl = page.url();
+    const navigatedAway = !currentUrl.includes(meetingCode);
+    if (navigatedAway) {
+      console.log(`[detector] Navigation check — current URL: ${currentUrl} | expected code: ${meetingCode}`);
+    }
+    return navigatedAway;
   } catch {
     return false;
   }
