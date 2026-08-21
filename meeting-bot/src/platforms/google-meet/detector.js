@@ -77,3 +77,18 @@ export async function isAuthExpired(page) {
     return false;
   }
 }
+
+// Distinct from isAuthExpired(): Google doesn't always show an explicit
+// error when auth.json's session didn't actually authenticate - it can
+// just silently render the ordinary anonymous "Ask to join" pre-join
+// screen instead, with no error text isAuthExpired()'s regex would ever
+// match. The reliable signal there is the "Sign in" prompt Meet shows
+// on that screen specifically because no authenticated session was found.
+export async function isAnonymousSession(page) {
+  try {
+    const signInPrompt = page.locator('a:has-text("Sign in"), button:has-text("Sign in")').first();
+    return await signInPrompt.isVisible({ timeout: 2000 }).catch(() => false);
+  } catch {
+    return false;
+  }
+}

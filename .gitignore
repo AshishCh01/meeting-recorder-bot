@@ -77,3 +77,7 @@ meeting-bot/auth.json
 
 # Audit reports that may quote real secret values found in scans
 docs/secrets-audit.md
+
+# Fill-in-the-blank sheet with real .env values, for pasting into the
+# Render dashboard - never commit this
+docs/render-env-values.md

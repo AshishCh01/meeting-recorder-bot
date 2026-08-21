@@ -1,7 +1,7 @@
 // meeting-bot/src/platforms/google-meet/GoogleMeetBot.js
 
 import { MeetingBot } from '../../core/MeetingBot.js';
-import { BrowserManager } from '../../core/BrowserManager.js';
+import { BrowserManager, resolveAuthStatePath } from '../../core/BrowserManager.js';
 import { GOOGLE_MEET_SELECTORS } from './selectors.js';
 import {
   isAdmitted,
@@ -10,6 +10,7 @@ import {
   isAloneByText,
   hasNavigatedAwayFromMeeting,
   isAuthExpired,
+  isAnonymousSession,
 } from './detector.js';
 
 const ALONE_GRACE_PERIOD_MS = 30000; // 30s — shorter now that detection is reliable
@@ -50,6 +51,32 @@ export class GoogleMeetBot extends MeetingBot {
       await this.page.screenshot({ path: 'google-meet-auth-expired.png' }).catch(() => {});
       throw new Error('AUTH_EXPIRED: Google session in auth.json is no longer valid — regenerate auth.json');
     }
+
+    // Catches the case isAuthExpired() can't: Google silently falling
+    // back to the anonymous "Ask to join" flow with no explicit error
+    // text, instead of authenticating as the auth.json account. Failing
+    // here takes ~2s instead of burning the full waitForAdmission()
+    // timeout waiting for an admission that was never coming, because
+    // the anonymous join request gets flatly denied within seconds.
+    if (await isAnonymousSession(this.page)) {
+      await this.page.screenshot({ path: 'google-meet-anonymous-session.png' }).catch(() => {});
+      throw new Error(
+        'AUTH_EXPIRED: auth.json did not authenticate — Meet is showing the ' +
+        'anonymous "Ask to join" flow with a Sign in prompt. This can happen ' +
+        'even when the main session cookie looks valid for a long time, ' +
+        'because Google\'s short-lived session-rotation cookies expire ' +
+        'within roughly 10-60 minutes of generation and nothing refreshes ' +
+        'them between runs. Regenerate auth.json.'
+      );
+    }
+
+    // The session just proved itself live (no error, not anonymous) -
+    // persist whatever fresh rotation cookies Google issued during this
+    // page load back to auth.json, extending how long the session stays
+    // usable before it goes stale again.
+    await this.context.storageState({ path: resolveAuthStatePath() }).catch((err) => {
+      console.log('[GoogleMeetBot] Warning: could not refresh auth.json:', err.message);
+    });
 
     // Dismiss any "Got it" tooltips or popups if present
     const gotItBtn = this.page.locator('button:has-text("Got it"), span:has-text("Got it")').first();
