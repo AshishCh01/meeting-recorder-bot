@@ -33,6 +33,10 @@ class Meeting(Base):
     # spaces, so mixing them silently returns wrong results, not an error.
     embedding_provider = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # Bumped automatically (including on Core-style bulk updates - see
+    # webhooks.py/meetings.py) on every write. The watchdog sweep uses
+    # this to find meetings stuck in a non-terminal status past its TTL.
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     user = relationship("User", back_populates="meetings")
     chunks = relationship("MeetingChunk", back_populates="meeting", cascade="all, delete-orphan")

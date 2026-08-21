@@ -6,7 +6,7 @@ from app.db.models import Meeting
 from app.api.auth import verify_webhook_token
 from app.models.meeting import RecordingCompleteWebhook
 from app.services.storage_service import get_signed_recording_url
-from app.services.transcription_service import transcribe_recording, transcription_executor
+from app.services.transcription_service import submit_transcription
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -24,6 +24,13 @@ def recording_complete(
     meeting = db.query(Meeting).filter(Meeting.id == payload.meeting_id).first()
     if not meeting:
         raise HTTPException(404, "Meeting not found")
+
+    # Defense-in-depth: meeting-bot already knew this pairing when it
+    # started the job. A mismatch means a bug upstream, not a real
+    # update - fail loudly instead of silently touching the wrong
+    # user's meeting.
+    if str(meeting.user_id) != payload.user_id:
+        raise HTTPException(409, "meeting_id does not belong to payload.user_id")
 
     if payload.status == "completed" and payload.recording_path:
         try:
@@ -52,11 +59,7 @@ def recording_complete(
         if result.rowcount == 0:
             return {"status": "already_processed"}
 
-        transcription_executor.submit(
-            transcribe_recording,
-            payload.meeting_id,
-            payload.recording_path,
-        )
+        submit_transcription(payload.meeting_id, payload.recording_path)
         return {"status": "received"}
 
     result = db.execute(

@@ -349,3 +349,29 @@ def _mark_failed(db, meeting_id: str, message: str) -> None:
         meeting.status = "failed"
         meeting.error_message = message
         db.commit()
+
+
+def submit_transcription(meeting_id: str, storage_path: str):
+    """
+    Wraps transcription_executor.submit() so an exception that escapes
+    transcribe_recording's own try/except (e.g. the tempfile write at
+    the top, which sits outside every handler - see
+    docs/reliability-audit.md, finding #2) still marks the meeting
+    failed instead of vanishing into an unchecked Future. Every call
+    site should submit through this, not the executor directly.
+    """
+    future = transcription_executor.submit(transcribe_recording, meeting_id, storage_path)
+
+    def _on_done(f):
+        exc = f.exception()
+        if exc is None:
+            return
+        print(f"[transcription] Unhandled exception in background task for meeting {meeting_id}: {exc}")
+        db = SessionLocal()
+        try:
+            _mark_failed(db, meeting_id, f"Transcription task crashed unexpectedly: {exc}")
+        finally:
+            db.close()
+
+    future.add_done_callback(_on_done)
+    return future

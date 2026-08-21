@@ -1,9 +1,11 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl, Field
 from typing import Optional, Any, Dict
 
 
 class MeetingCreate(BaseModel):
-    meeting_url: str
+    # HttpUrl only confirms it's a well-formed http(s) URL - the actual
+    # platform/host allowlist enforcement happens in detect_platform().
+    meeting_url: HttpUrl = Field(max_length=2048)
 
 
 class Meeting(BaseModel):

@@ -7,7 +7,7 @@ from app.models.meeting import MeetingCreate
 from app.services.platform_detector import detect_platform
 from app.services.bot_service import trigger_bot_join
 from app.services.storage_service import get_signed_recording_url
-from app.services.transcription_service import transcribe_recording, transcription_executor
+from app.services.transcription_service import submit_transcription
 from app.db.supabase import supabase
 from app.config import settings
 from app.services.pdf_service import generate_meeting_pdf
@@ -35,14 +35,16 @@ def create_meeting(
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user)
 ):
+    meeting_url = str(payload.meeting_url)
+
     try:
-        platform = detect_platform(payload.meeting_url)
+        platform = detect_platform(meeting_url)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
     meeting = Meeting(
         user_id=user_id,
-        meeting_url=payload.meeting_url,
+        meeting_url=meeting_url,
         platform=platform,
         status="scheduled"
     )
@@ -53,7 +55,7 @@ def create_meeting(
     try:
         meeting.status = "joining"
         db.commit()
-        trigger_bot_join(platform, payload.meeting_url, str(meeting.id), user_id)
+        trigger_bot_join(platform, meeting_url, str(meeting.id), user_id)
     except Exception as e:
         meeting.status = "failed"
         meeting.error_message = f"Failed to start bot: {e}"
@@ -143,11 +145,7 @@ def retry_meeting(
         db.commit()
         raise HTTPException(500, f"Error communicating with storage: {e}")
 
-    transcription_executor.submit(
-        transcribe_recording,
-        str(meeting.id),
-        storage_path,
-    )
+    submit_transcription(str(meeting.id), storage_path)
     
     return {"status": "retrying"}
 

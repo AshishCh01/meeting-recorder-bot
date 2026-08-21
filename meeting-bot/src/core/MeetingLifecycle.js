@@ -59,13 +59,23 @@ export async function runMeetingLifecycle(session) {
       try {
         const storageKey = RecordingFile.storageKeyFor(session.userId, session.meetingId);
         await SupabaseUploader.upload(localPath, storageKey);
-        fs.unlinkSync(localPath);
         uploadedStorageKey = storageKey;
-        console.log('[Lifecycle] 5. Upload successful, local file cleaned up.');
+        console.log('[Lifecycle] 5. Upload successful.');
         session.markCompleted();
       } catch (uploadErr) {
         console.error('[Lifecycle] 5. Upload failed:', uploadErr.message);
         session.markFailed(`Upload failed: ${uploadErr.message}`);
+      }
+
+      // Cleanup is best-effort and deliberately separate from the
+      // upload's success/failure - a locked file (e.g. ffmpeg not yet
+      // having released the handle, seen on Windows) shouldn't get
+      // reported as an upload failure when the upload itself succeeded.
+      try {
+        fs.unlinkSync(localPath);
+        console.log('[Lifecycle] Local recording file cleaned up.');
+      } catch (cleanupErr) {
+        console.error('[Lifecycle] Could not delete local recording file:', cleanupErr.message);
       }
     } else if (localPath && session.status === 'failed') {
       console.log('[Lifecycle] 4. Session failed — skipping upload, keeping local file for debug.');

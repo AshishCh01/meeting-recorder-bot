@@ -22,3 +22,13 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+
+# Security and Auth
+auth.json
+.env
+
+# Media
+recordings/
+*.m4a
+*.mp4

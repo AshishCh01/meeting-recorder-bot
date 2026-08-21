@@ -48,3 +48,11 @@ browser-profiles/
 .vscode/
 .idea/
 .DS_Store
+
+meeting-bot/auth.json
+
+# Manual local-only auth-generation tool - launches a headed Chrome
+# profile at a hardcoded Windows path (C:\chrome-bot-profile) and
+# waits on interactive terminal input. Never runs inside the deployed
+# Linux container, no reason to ship it in the image.
+generate-auth.cjs

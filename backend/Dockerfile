@@ -15,8 +15,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Container processes must not run as root - create an unprivileged
+# user and hand ownership of /app to it before switching.
+RUN useradd --create-home --shell /bin/bash appuser \
+    && chown -R appuser:appuser /app
+
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
+
+USER appuser
 
 # Run migrations, then start the API. Safe to run on every boot -
 # Alembic no-ops if the schema is already current.

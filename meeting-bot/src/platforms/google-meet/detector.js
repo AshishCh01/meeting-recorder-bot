@@ -63,3 +63,17 @@ export function hasNavigatedAwayFromMeeting(page, originalMeetingUrl) {
     return false;
   }
 }
+
+
+export async function isAuthExpired(page) {
+  try {
+    const bodyText = await page.innerText('body', { timeout: 1000 });
+    // Covers both known failure screens we've seen:
+    // 1. "Choose an account" picker showing "Signed out" next to the bot account
+    // 2. Google's automation-block screen ("Couldn't sign you in")
+    const authExpiredRegex = /choose an account|signed out|couldn't sign you in|this browser or app may not be secure/i;
+    return authExpiredRegex.test(bodyText);
+  } catch {
+    return false;
+  }
+}

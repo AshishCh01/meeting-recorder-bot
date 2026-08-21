@@ -40,6 +40,12 @@ ehthumbs.db
 Thumbs.db
 .direnv/
 
+# Editor/OS noise (frontend/.gitignore and the *.dockerignore files
+# already have this - added here too since backend/ and meeting-bot/
+# have no .gitignore of their own and rely on this root one)
+.vscode/
+.idea/
+
 # Project specifics
 recordings/
 !recordings/.gitkeep
@@ -64,3 +70,10 @@ google-meet-admission-timeout.png
 google-meet-alone.png
 
 repomix-output.xml
+
+auth.json
+
+meeting-bot/auth.json
+
+# Audit reports that may quote real secret values found in scans
+docs/secrets-audit.md

@@ -9,6 +9,7 @@ import {
   getParticipantCount,
   isAloneByText,
   hasNavigatedAwayFromMeeting,
+  isAuthExpired,
 } from './detector.js';
 
 const ALONE_GRACE_PERIOD_MS = 30000; // 30s — shorter now that detection is reliable
@@ -21,12 +22,34 @@ export class GoogleMeetBot extends MeetingBot {
   }
 
   async join() {
+    // Defense-in-depth: don't trust that upstream (platform_detector.py)
+    // already confirmed this is really a Google Meet link - re-check the
+    // exact host right before the one line that actually navigates a
+    // real, authenticated browser there.
+    let hostname;
+    try {
+      hostname = new URL(this.session.meetingUrl).hostname.toLowerCase();
+    } catch {
+      throw new Error(`Refusing to navigate — not a valid URL: ${this.session.meetingUrl}`);
+    }
+    if (hostname !== 'meet.google.com') {
+      throw new Error(`Refusing to navigate — expected meet.google.com, got: ${hostname}`);
+    }
+
     this.context = await BrowserManager.launch('google-meet');
     this.page = await this.context.newPage();
 
     console.log(`[GoogleMeetBot] Navigating to ${this.session.meetingUrl}`);
     await this.page.goto(this.session.meetingUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await this.page.waitForTimeout(5000);
+
+    // Pre-flight auth check — catch an expired/invalid auth.json session
+    // immediately with a clear error, instead of failing later with a
+    // vague "join button not found" timeout.
+    if (await isAuthExpired(this.page)) {
+      await this.page.screenshot({ path: 'google-meet-auth-expired.png' }).catch(() => {});
+      throw new Error('AUTH_EXPIRED: Google session in auth.json is no longer valid — regenerate auth.json');
+    }
 
     // Dismiss any "Got it" tooltips or popups if present
     const gotItBtn = this.page.locator('button:has-text("Got it"), span:has-text("Got it")').first();

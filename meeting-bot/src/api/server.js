@@ -17,8 +17,18 @@ app.use(express.json());
 let activeMeeting = null;
 
 function timingSafeTokenEqual(provided, expected) {
-  const a = Buffer.from(provided || '', 'utf8');
-  const b = Buffer.from(expected || '', 'utf8');
+  // An unset/empty server secret or an unset/empty provided token must
+  // never match anything. Without this check, `Buffer.from(expected ||
+  // '', ...)` turned an unset BEARER_TOKEN into a zero-length buffer,
+  // and a request sent with NO Authorization header at all produced an
+  // equally zero-length `provided` buffer - crypto.timingSafeEqual
+  // returns true for two zero-length buffers, so auth silently passed
+  // with no credentials presented whatsoever.
+  if (!expected || !provided) {
+    return false;
+  }
+  const a = Buffer.from(provided, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
   // Buffers of different length would throw in timingSafeEqual, so pad
   // the shorter one — this still fails the comparison, just safely.
   if (a.length !== b.length) {
@@ -42,11 +52,20 @@ function requireAuth(req, res, next) {
   next();
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function makeJoinHandler(platform) {
   return (req, res) => {
     const { url, meetingId, userId } = req.body;
     if (!url || !meetingId || !userId) {
       return res.status(400).json({ error: 'url, meetingId, and userId are required' });
+    }
+
+    // Defense-in-depth: meetingId/userId end up in local file paths
+    // (RecordingFile.pathFor) and Supabase Storage keys - don't trust
+    // their shape just because the caller holds the bearer token.
+    if (!UUID_RE.test(meetingId) || !UUID_RE.test(userId)) {
+      return res.status(400).json({ error: 'meetingId and userId must be UUIDs' });
     }
 
     if (activeMeeting) {
