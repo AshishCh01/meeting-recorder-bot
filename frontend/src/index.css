@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --color-brand-blue: #0B4FB4;
   --color-brand-blue-light: #3FC9D6;
@@ -12,6 +14,9 @@
   --color-border: #D9E1E9;
   --color-border-strong: #E4E9EF;
   --color-sidebar: #FAFCFD;
+  --color-surface: #FFFFFF;
+  --color-surface-hover: #FFFFFF;
+  --color-page: #F8FAFC;
 
   --color-status-done-bg: #EAF4FD;
   --color-status-done-fg: #0B4FB4;
@@ -26,8 +31,37 @@
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
 }
 
+/* Dark mode: same token names, inverted values (screen 06 of the design
+   reference). Utilities like bg-sidebar/text-body/border-line read these
+   custom properties, so overriding them here re-themes the whole app
+   without touching component classes. */
+.dark {
+  color-scheme: dark;
+
+  --color-brand-dark: #F2F5F8;
+  --color-body: #A9B5C1;
+  --color-muted: #7E8B98;
+  --color-faint: #6F7C89;
+  --color-line: #232E3A;
+  --color-border: #2C3845;
+  --color-border-strong: #232E3A;
+  --color-sidebar: #131C25;
+  --color-surface: #141D26;
+  --color-surface-hover: #1B2530;
+  --color-page: #0F1720;
+
+  --color-status-done-bg: #16324F;
+  --color-status-done-fg: #6FD3E8;
+  --color-status-processing-bg: #3A2E14;
+  --color-status-processing-fg: #E4B45C;
+  --color-status-failed-bg: #3A1B1B;
+  --color-status-failed-fg: #E48C8C;
+  --color-status-muted-bg: #232E3A;
+  --color-status-muted-fg: #A9B5C1;
+}
+
 @layer base {
   body {
-    @apply bg-slate-50 text-slate-800 antialiased font-sans;
+    @apply bg-page text-body antialiased font-sans transition-colors duration-200;
   }
 }

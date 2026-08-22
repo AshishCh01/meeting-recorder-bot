@@ -1,7 +1,7 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Send, Loader2 } from 'lucide-react';
-import meetiqLogo from '../assets/MeetIQ.png.png';
+import meetiqLogo from '../assets/logo.png';
 import { useMeetingChat } from '../hooks/useMeetingChat';
 
 const SUGGESTIONS = ['Summarize the decisions', 'What are the action items?', 'Any risks mentioned?'];
@@ -35,7 +35,7 @@ export const ChatInterface = ({ meetingId }) => {
                 className={`max-w-[88%] px-4 py-3 rounded-2xl text-[14.5px] leading-relaxed border ${
                   isUser
                     ? 'bg-brand-blue text-white border-brand-blue'
-                    : 'bg-white text-brand-dark border-border-strong'
+                    : 'bg-surface text-brand-dark border-border-strong'
                 }`}
               >
                 {isUser ? (
@@ -52,7 +52,7 @@ export const ChatInterface = ({ meetingId }) => {
 
         {loading && (
           <div className="flex justify-start">
-            <div className="bg-white border border-border-strong rounded-2xl px-4 py-3.5 flex items-center gap-1.5">
+            <div className="bg-surface border border-border-strong rounded-2xl px-4 py-3.5 flex items-center gap-1.5">
               <div className="w-2 h-2 bg-brand-blue/40 rounded-full animate-bounce" />
               <div className="w-2 h-2 bg-brand-blue/60 rounded-full animate-bounce" style={{ animationDelay: '0.15s' }} />
               <div className="w-2 h-2 bg-brand-blue rounded-full animate-bounce" style={{ animationDelay: '0.3s' }} />
@@ -70,7 +70,7 @@ export const ChatInterface = ({ meetingId }) => {
               key={s}
               onClick={() => sendMessage(s)}
               disabled={loading}
-              className="px-2.5 py-1.5 rounded-full border border-border bg-white text-xs font-semibold text-body hover:border-brand-blue/40 disabled:opacity-50 transition-colors"
+              className="px-2.5 py-1.5 rounded-full border border-border bg-surface text-xs font-semibold text-body hover:border-brand-blue/40 disabled:opacity-50 transition-colors"
             >
               {s}
             </button>
@@ -83,7 +83,7 @@ export const ChatInterface = ({ meetingId }) => {
             onChange={(e) => setInput(e.target.value)}
             disabled={loading}
             placeholder="Ask anything about this call…"
-            className="flex-1 h-11 px-3.5 border border-border rounded-xl bg-white text-sm text-brand-dark placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-brand-blue/20 focus:border-brand-blue transition-all disabled:opacity-50"
+            className="flex-1 h-11 px-3.5 border border-border rounded-xl bg-surface text-sm text-brand-dark placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-brand-blue/20 focus:border-brand-blue transition-all disabled:opacity-50"
           />
           <button
             type="submit"

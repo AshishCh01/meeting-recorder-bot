@@ -7,7 +7,7 @@ export const DeleteConfirmDialog = ({ meeting, deleting, onConfirm, onCancel }) 
 
   return (
     <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl w-full max-w-sm shadow-xl overflow-hidden">
+      <div className="bg-surface rounded-2xl w-full max-w-sm shadow-xl overflow-hidden">
         <div className="p-6">
           <h2 className="text-lg font-bold text-brand-dark">Delete meeting?</h2>
           <p className="mt-2 text-sm text-body">

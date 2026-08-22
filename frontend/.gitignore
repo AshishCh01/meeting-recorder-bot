@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Design reference export - not source code, not needed in the repo
+design/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

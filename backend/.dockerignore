@@ -32,6 +32,9 @@ test.db
 tests/
 scripts/
 
+# Docs - not needed at build time
+docs/
+
 # Local recordings - not needed to build the image, and shouldn't
 # be baked into a layer if a local checkout happens to have any
 recordings/

@@ -69,9 +69,9 @@ export const MeetingDetails = ({ meeting, onRetry, onDeleteRequest }) => {
     : '';
 
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-white">
+    <div className="flex flex-col h-full overflow-hidden bg-surface">
       {/* Header */}
-      <div className="flex-none px-5 md:px-7 py-4 md:py-5 border-b border-line flex flex-col gap-3.5">
+      <div className="flex-none px-5 lg:px-7 py-4 lg:py-5 border-b border-line flex flex-col gap-3.5">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-2.5 text-[13px] text-muted min-w-0">
             <Link to="/dashboard" className="font-bold text-brand-blue whitespace-nowrap">← Meetings</Link>
@@ -88,28 +88,28 @@ export const MeetingDetails = ({ meeting, onRetry, onDeleteRequest }) => {
                 onClick={handleDownloadPDF}
                 disabled={isDownloading}
                 title="Export as PDF"
-                className="px-2.5 md:px-3.5 py-2 border border-border rounded-lg text-[13px] font-bold text-brand-dark disabled:opacity-50 flex items-center gap-1.5"
+                className="px-2.5 lg:px-3.5 py-2 border border-border rounded-lg text-[13px] font-bold text-brand-dark disabled:opacity-50 flex items-center gap-1.5"
               >
                 {isDownloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                <span className="hidden md:inline">Export</span>
+                <span className="hidden lg:inline">Export</span>
               </button>
             )}
             <button
               onClick={() => onDeleteRequest(meeting)}
               title="Delete meeting"
-              className="px-2.5 md:px-3.5 py-2 border border-border rounded-lg text-[13px] font-bold text-brand-dark flex items-center gap-1.5"
+              className="px-2.5 lg:px-3.5 py-2 border border-border rounded-lg text-[13px] font-bold text-brand-dark flex items-center gap-1.5"
             >
               <Trash2 className="w-4 h-4" />
-              <span className="hidden md:inline">Delete</span>
+              <span className="hidden lg:inline">Delete</span>
             </button>
           </div>
         </div>
 
         <div className="min-w-0">
-          <h1 className="text-xl md:text-[26px] font-extrabold tracking-tight text-brand-dark leading-tight">{title}</h1>
+          <h1 className="text-xl lg:text-[26px] font-extrabold tracking-tight text-brand-dark leading-tight">{title}</h1>
           <div className="flex items-center gap-2.5 mt-2 flex-wrap">
             <StatusBadge status={meeting.status} />
-            <span className="text-[13px] md:text-[13.5px] text-muted">
+            <span className="text-[13px] lg:text-[13.5px] text-muted">
               {formatPlatform(meeting.platform)}
               {metaDateTime ? ` · ${metaDateTime}` : ''} · {formatDuration(meeting.duration_seconds)}
             </span>
@@ -119,7 +119,7 @@ export const MeetingDetails = ({ meeting, onRetry, onDeleteRequest }) => {
         <AudioPlayer src={meeting.audio_playback_url} />
 
         {meeting.status === 'failed' && (
-          <div className="p-4 bg-status-failed-bg border border-red-100 rounded-xl flex items-start gap-3">
+          <div className="p-4 bg-status-failed-bg border border-red-100 dark:border-red-500/20 rounded-xl flex items-start gap-3">
             <AlertCircle className="w-5 h-5 text-status-failed-fg mt-0.5 flex-none" />
             <div className="flex-1 min-w-0">
               <h3 className="text-sm font-bold text-status-failed-fg">Processing failed</h3>
@@ -130,7 +130,7 @@ export const MeetingDetails = ({ meeting, onRetry, onDeleteRequest }) => {
             <button
               onClick={handleRetryClick}
               disabled={isRetrying}
-              className="flex-none px-3.5 py-2 bg-white text-status-failed-fg text-sm font-bold border border-red-200 rounded-lg disabled:opacity-50 flex items-center gap-2"
+              className="flex-none px-3.5 py-2 bg-surface text-status-failed-fg text-sm font-bold border border-red-200 dark:border-red-500/20 rounded-lg disabled:opacity-50 flex items-center gap-2"
             >
               <RefreshCw className={`w-4 h-4 ${isRetrying ? 'animate-spin' : ''}`} />
               {isRetrying ? 'Retrying…' : 'Retry'}
@@ -148,8 +148,8 @@ export const MeetingDetails = ({ meeting, onRetry, onDeleteRequest }) => {
       </div>
 
       {/* Tabs */}
-      <div className="flex-none px-5 md:px-7 pt-3 md:pt-0">
-        <div className="hidden md:flex gap-6 border-b border-line -mb-px">
+      <div className="flex-none px-5 lg:px-7 pt-3 lg:pt-0">
+        <div className="hidden lg:flex gap-6 border-b border-line -mb-px">
           {TABS.map((tab) => (
             <button
               key={tab.id}
@@ -165,13 +165,13 @@ export const MeetingDetails = ({ meeting, onRetry, onDeleteRequest }) => {
             </button>
           ))}
         </div>
-        <div className="md:hidden flex gap-1.5 bg-status-muted-bg rounded-[10px] p-1 mb-3">
+        <div className="lg:hidden flex gap-1.5 bg-status-muted-bg rounded-[10px] p-1 mb-3">
           {TABS.map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
               className={`flex-1 text-center py-2 rounded-lg text-[13px] font-bold transition-colors ${
-                activeTab === tab.id ? 'bg-white text-brand-dark shadow-sm' : 'text-body'
+                activeTab === tab.id ? 'bg-surface text-brand-dark shadow-sm' : 'text-body'
               }`}
             >
               {tab.id === 'action_items' ? `Actions · ${actionCount}` : tab.label}
@@ -181,7 +181,7 @@ export const MeetingDetails = ({ meeting, onRetry, onDeleteRequest }) => {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto px-5 md:px-7 pt-5 pb-44 md:pb-5">
+      <div className="flex-1 overflow-y-auto px-5 lg:px-7 pt-5 pb-44 lg:pb-5">
         {activeTab === 'summary' && <SummaryTab summary={summary} keyPoints={key_points} conclusion={conclusion} />}
         {activeTab === 'action_items' && <ActionItemsList actionItems={action_items} />}
         {activeTab === 'transcript' && <TranscriptTab conversation={conversation} />}

@@ -64,7 +64,7 @@ export const AudioPlayer = ({ src }) => {
       />
 
       {/* Desktop player */}
-      <div className="hidden md:flex items-center gap-4 px-4 py-3.5 border border-border-strong rounded-xl bg-sidebar">
+      <div className="hidden lg:flex items-center gap-4 px-4 py-3.5 border border-border-strong rounded-xl bg-sidebar">
         <button
           onClick={togglePlay}
           className="flex-none w-9 h-9 rounded-full bg-linear-to-br from-brand-blue to-brand-blue-light text-white flex items-center justify-center"
@@ -95,7 +95,7 @@ export const AudioPlayer = ({ src }) => {
       </div>
 
       {/* Mobile player */}
-      <div className="flex md:hidden items-center gap-3 px-3 py-2.5 border border-border-strong rounded-xl bg-sidebar">
+      <div className="flex lg:hidden items-center gap-3 px-3 py-2.5 border border-border-strong rounded-xl bg-sidebar">
         <button
           onClick={togglePlay}
           className="flex-none w-8 h-8 rounded-full bg-linear-to-br from-brand-blue to-brand-blue-light text-white flex items-center justify-center text-xs"

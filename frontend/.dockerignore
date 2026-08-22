@@ -23,3 +23,6 @@ build/
 
 # Docs not needed at build time
 README.md
+
+# Design reference export - large, not needed to build the app
+design/

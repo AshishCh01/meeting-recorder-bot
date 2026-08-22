@@ -86,7 +86,7 @@ export const MeetingView = () => {
   if (error || !meeting) {
     return (
       <Layout>
-        <div className="bg-red-50 text-red-600 p-6 rounded-xl border border-red-100">
+        <div className="bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 p-6 rounded-xl border border-red-100 dark:border-red-500/20">
           {error || 'Meeting not found'}
         </div>
       </Layout>
@@ -95,13 +95,13 @@ export const MeetingView = () => {
 
   return (
     <Layout>
-      <div className="h-[calc(100vh-13rem)] md:h-[calc(100vh-4rem)] flex bg-white border border-border-strong rounded-2xl overflow-hidden shadow-sm">
+      <div className="h-[calc(100vh-13rem)] lg:h-[calc(100vh-4rem)] flex bg-surface border border-border-strong rounded-2xl overflow-hidden shadow-sm">
         <div className="flex-1 min-w-0">
           <MeetingDetails meeting={meeting} onRetry={handleRetry} onDeleteRequest={setDeleteTarget} />
         </div>
 
         {/* Desktop: permanent chat column */}
-        <div className="hidden md:block w-105 flex-none border-l border-line">
+        <div className="hidden lg:block w-105 flex-none border-l border-line">
           <ChatInterface meetingId={meeting.id} />
         </div>
       </div>

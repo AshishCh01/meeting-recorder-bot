@@ -29,7 +29,7 @@ export const MeetingRow = ({ meeting, onDeleteRequest, onRetry, retrying }) => {
         <button
           onClick={handleRetry}
           disabled={retrying}
-          className="px-2.5 py-1 bg-red-50 text-red-600 text-xs font-semibold rounded-lg hover:bg-red-100 transition-colors border border-red-200 flex items-center gap-1.5 disabled:opacity-50"
+          className="px-2.5 py-1 bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 text-xs font-semibold rounded-lg hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors border border-red-200 dark:border-red-500/20 flex items-center gap-1.5 disabled:opacity-50"
         >
           {retrying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
           {retrying ? 'Retrying' : 'Retry'}
@@ -38,7 +38,7 @@ export const MeetingRow = ({ meeting, onDeleteRequest, onRetry, retrying }) => {
       <button
         onClick={handleDelete}
         title="Delete meeting"
-        className="p-1.5 text-faint hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+        className="p-1.5 text-faint hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-lg transition-colors"
       >
         <Trash2 className="w-4 h-4" />
       </button>
@@ -51,7 +51,7 @@ export const MeetingRow = ({ meeting, onDeleteRequest, onRetry, retrying }) => {
       className="group block rounded-xl border border-line hover:border-brand-blue/30 hover:bg-sidebar transition-colors mb-2"
     >
       {/* Desktop row */}
-      <div className="hidden md:grid grid-cols-[1fr_130px_90px_150px_auto] gap-4 items-center px-4 py-4">
+      <div className="hidden lg:grid grid-cols-[1fr_130px_90px_150px_auto] gap-4 items-center px-4 py-4">
         <div className="flex items-center gap-3 min-w-0">
           <span className="flex-none w-9 h-9 rounded-lg bg-status-done-bg text-status-done-fg text-[11px] font-extrabold flex items-center justify-center">
             {abbr}
@@ -67,7 +67,7 @@ export const MeetingRow = ({ meeting, onDeleteRequest, onRetry, retrying }) => {
       </div>
 
       {/* Mobile row */}
-      <div className="md:hidden flex items-start gap-3 px-3 py-3">
+      <div className="lg:hidden flex items-start gap-3 px-3 py-3">
         <span className="flex-none w-8 h-8 rounded-lg bg-status-done-bg text-status-done-fg text-[10.5px] font-extrabold flex items-center justify-center">
           {abbr}
         </span>

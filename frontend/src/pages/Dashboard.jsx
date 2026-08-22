@@ -152,7 +152,7 @@ export const Dashboard = () => {
               className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
                 statusFilter === f.key
                   ? 'bg-brand-dark text-white border-brand-dark'
-                  : 'bg-white text-body border-border-strong hover:border-brand-blue/40'
+                  : 'bg-surface text-body border-border-strong hover:border-brand-blue/40'
               }`}
             >
               {f.label}
@@ -163,7 +163,7 @@ export const Dashboard = () => {
 
       {isModalOpen && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-full max-w-md shadow-xl overflow-hidden">
+          <div className="bg-surface rounded-2xl w-full max-w-md shadow-xl overflow-hidden">
             <div className="px-6 py-4 border-b border-line">
               <h2 className="text-lg font-bold text-brand-dark">Record New Meeting</h2>
             </div>
@@ -177,7 +177,7 @@ export const Dashboard = () => {
                 value={meetingUrl}
                 onChange={(e) => setMeetingUrl(e.target.value)}
               />
-              {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+              {error && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{error}</p>}
               <div className="mt-6 flex justify-end gap-3">
                 <button
                   type="button"
