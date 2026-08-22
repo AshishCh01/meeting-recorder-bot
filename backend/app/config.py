@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     watchdog_enabled: bool = True
     watchdog_sweep_interval_minutes: int = 5
     watchdog_joining_ttl_minutes: int = 10
+    # Safety net only - meeting-bot's own waitForAdmission() times out at 5
+    # minutes and reports failure itself. This exists in case the bot
+    # process dies before it can report that.
+    watchdog_admission_ttl_minutes: int = 10
     max_recording_duration_minutes: int = 90
     watchdog_recording_margin_minutes: int = 15
     watchdog_uploading_ttl_minutes: int = 20

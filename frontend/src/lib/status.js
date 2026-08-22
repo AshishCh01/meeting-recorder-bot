@@ -5,6 +5,7 @@
 const STATUS_META = {
   scheduled: { label: 'Scheduled', tone: 'muted' },
   joining: { label: 'Joining', tone: 'processing' },
+  waiting_for_admission: { label: 'Waiting for admission', tone: 'processing' },
   recording: { label: 'Recording', tone: 'processing' },
   uploading: { label: 'Uploading', tone: 'processing' },
   transcribing: { label: 'Transcribing', tone: 'processing' },

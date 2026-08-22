@@ -1,14 +1,21 @@
+const DEFAULT_BOT_NAME = 'MeetIQ Notetaker';
+
 export class MeetingSession {
-  constructor({ meetingId, meetingUrl, platform, userId }) {
+  constructor({ meetingId, meetingUrl, platform, userId, botDisplayName }) {
     this.meetingId = meetingId;
     this.meetingUrl = meetingUrl;
     this.platform = platform;
     this.userId = userId;
-    this.status = 'joining'; // joining | recording | uploading | completed | failed
+    this.botName = botDisplayName || DEFAULT_BOT_NAME;
+    this.status = 'joining'; // joining | waiting_for_admission | recording | uploading | completed | failed
     this.startedAt = null;
     this.endedAt = null;
     this.errorMessage = null;
     this.recordingFilePath = null; // local temp path, set by RecordingFile
+  }
+
+  markWaitingForAdmission() {
+    this.status = 'waiting_for_admission';
   }
 
   markRecording() {

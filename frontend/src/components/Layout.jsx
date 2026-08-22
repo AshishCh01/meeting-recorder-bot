@@ -11,16 +11,17 @@ export const Layout = ({ children }) => {
 
   const navigation = [
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
+    { name: 'Settings', href: '/settings', icon: Settings },
   ];
 
-  // "Meetings" is the only tab with a real page today - the others are
+  // "Meetings" and "Settings" have real pages - "Upcoming"/"Ask AI" are
   // shown as muted placeholders (not Links) so the mobile nav matches the
   // design reference without linking anywhere that 404s.
   const mobileNavItems = [
     { name: 'Meetings', href: '/dashboard', icon: LayoutDashboard, active: true },
     { name: 'Upcoming', icon: CalendarClock, active: false },
     { name: 'Ask AI', icon: Sparkles, active: false },
-    { name: 'Settings', icon: Settings, active: false },
+    { name: 'Settings', href: '/settings', icon: Settings, active: true },
   ];
 
   return (

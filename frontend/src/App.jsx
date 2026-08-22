@@ -6,6 +6,7 @@ import { Login } from './pages/Login';
 import { Register } from './pages/Register';
 import { Dashboard } from './pages/Dashboard';
 import { MeetingView } from './pages/MeetingView';
+import { Settings } from './pages/Settings';
 
 function App() {
   return (
@@ -22,13 +23,21 @@ function App() {
               </ProtectedRoute>
             } 
           />
-          <Route 
-            path="/meetings/:id" 
+          <Route
+            path="/meetings/:id"
             element={
               <ProtectedRoute>
                 <MeetingView />
               </ProtectedRoute>
-            } 
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <ProtectedRoute>
+                <Settings />
+              </ProtectedRoute>
+            }
           />
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
         </Routes>

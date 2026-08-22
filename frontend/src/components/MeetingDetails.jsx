@@ -15,9 +15,10 @@ const TABS = [
   { id: 'transcript', label: 'Transcript' },
 ];
 
-const PROCESSING_STATUSES = ['joining', 'recording', 'uploading', 'transcribing'];
+const PROCESSING_STATUSES = ['joining', 'waiting_for_admission', 'recording', 'uploading', 'transcribing'];
 const PROCESSING_LABEL = {
   joining: 'Bot is joining the meeting…',
+  waiting_for_admission: 'Waiting for the host to admit MeetIQ…',
   recording: 'Recording in progress…',
   uploading: 'Uploading recording…',
   transcribing: 'Transcribing and generating insights…',

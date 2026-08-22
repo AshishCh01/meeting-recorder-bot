@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
-from app.api import chat, meetings, webhooks
+from app.api import chat, meetings, users, webhooks
 from app.db.database import SessionLocal
 from app.services.watchdog import sweep_stale_meetings
 
@@ -60,6 +60,7 @@ app.add_middleware(
 app.include_router(meetings.router)
 app.include_router(webhooks.router)
 app.include_router(chat.router)
+app.include_router(users.router)
 
 
 @app.get("/health")

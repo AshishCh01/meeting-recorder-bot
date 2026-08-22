@@ -33,7 +33,17 @@ class ChatResponse(BaseModel):
 class RecordingCompleteWebhook(BaseModel):
     user_id: str
     meeting_id: str
-    status: str  # "completed" | "failed"
+    status: str  # "completed" | "failed" | "waiting_for_admission"
     recording_path: Optional[str] = None  # path inside the Supabase bucket
     duration_seconds: Optional[int] = None
     error_message: Optional[str] = None
+
+
+class UserSettingsUpdate(BaseModel):
+    bot_display_name: str = Field(min_length=1, max_length=50)
+
+
+class UserSettings(BaseModel):
+    id: str
+    email: str
+    bot_display_name: str

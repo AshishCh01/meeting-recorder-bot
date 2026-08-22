@@ -11,6 +11,7 @@ class User(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email = Column(String, unique=True, index=True, nullable=False)
+    bot_display_name = Column(String, nullable=False, server_default="MeetIQ Notetaker")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     meetings = relationship("Meeting", back_populates="user")

@@ -56,7 +56,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 function makeJoinHandler(platform) {
   return (req, res) => {
-    const { url, meetingId, userId } = req.body;
+    const { url, meetingId, userId, botDisplayName } = req.body;
     if (!url || !meetingId || !userId) {
       return res.status(400).json({ error: 'url, meetingId, and userId are required' });
     }
@@ -74,7 +74,7 @@ function makeJoinHandler(platform) {
     
     activeMeeting = meetingId;
 
-    const session = new MeetingSession({ meetingId, meetingUrl: url, platform, userId });
+    const session = new MeetingSession({ meetingId, meetingUrl: url, platform, userId, botDisplayName });
 
     res.status(202).json({ status: 'accepted', meetingId });
 

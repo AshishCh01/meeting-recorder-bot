@@ -20,9 +20,14 @@ export async function runMeetingLifecycle(session) {
 
   try {
     await bot.join();
+
+    session.markWaitingForAdmission();
+    notifyStatusUpdate(session); // fire-and-forget, never rejects
+
     await bot.waitForAdmission();
 
     session.markRecording();
+    notifyStatusUpdate(session); // fire-and-forget, never rejects
     recorder.start();
 
     const MAX_MEETING_MINUTES = Number(process.env.MAX_RECORDING_DURATION_MINUTES || 90);
@@ -85,6 +90,31 @@ export async function runMeetingLifecycle(session) {
 
     await notifyBackend(session, uploadedStorageKey);
     console.log(`[Lifecycle] Done. Meeting ${session.meetingId} status: ${session.status}`);
+  }
+}
+
+// Best-effort progress ping, distinct from notifyBackend() below - a single
+// attempt, no retries. If it's lost, nothing gets stuck: the meeting just
+// won't show "waiting for admission" in the UI, and the final
+// completed/failed webhook still lands normally at the end of the lifecycle.
+async function notifyStatusUpdate(session) {
+  // Captured up front - session.status can mutate before this fire-and-forget
+  // call's response comes back (e.g. join is admitted almost instantly), which
+  // would otherwise make these logs report the wrong status.
+  const statusAtCallTime = session.status;
+  try {
+    await axios.post(process.env.BACKEND_WEBHOOK_URL, {
+      user_id: session.userId,
+      meeting_id: session.meetingId,
+      status: statusAtCallTime,
+    }, {
+      headers: {
+        Authorization: `Bearer ${process.env.BEARER_TOKEN}`
+      }
+    });
+    console.log(`[Lifecycle] Status update sent: ${statusAtCallTime}`);
+  } catch (err) {
+    console.error(`[Lifecycle] Status update (${statusAtCallTime}) failed:`, err.message);
   }
 }
 

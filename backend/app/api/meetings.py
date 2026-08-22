@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Response
 from sqlalchemy.orm import Session
 from app.db.database import get_db
-from app.db.models import Meeting, MeetingChunk
+from app.db.models import Meeting, MeetingChunk, User
 from app.api.auth import get_current_user
 from app.models.meeting import MeetingCreate
 from app.services.platform_detector import detect_platform
@@ -56,7 +56,8 @@ def create_meeting(
     try:
         meeting.status = "joining"
         db.commit()
-        trigger_bot_join(platform, meeting_url, str(meeting.id), user_id)
+        db_user = db.query(User).filter(User.id == user_id).first()
+        trigger_bot_join(platform, meeting_url, str(meeting.id), user_id, db_user.bot_display_name)
     except Exception as e:
         meeting.status = "failed"
         meeting.error_message = f"Failed to start bot: {e}"

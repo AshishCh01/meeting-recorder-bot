@@ -131,7 +131,7 @@ export class ZoomBot extends MeetingBot {
 
       if (visible) {
         await el.click();
-        await el.fill('Meeting Recorder Bot');
+        await el.fill(this.session.botName);
         const value = await el.inputValue();
         console.log('[ZoomBot] Name filled successfully. Value:', value);
         filled = true;
@@ -155,7 +155,7 @@ export class ZoomBot extends MeetingBot {
     console.log('[ZoomBot] Step 4 saved after clicking Join');
   }
 
-  async waitForAdmission(timeoutMs = 120000) {
+  async waitForAdmission(timeoutMs = 300000) {
     console.log('[ZoomBot] Waiting to be admitted...');
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -166,7 +166,10 @@ export class ZoomBot extends MeetingBot {
       await this.page.waitForTimeout(2000);
     }
     await this.page.screenshot({ path: 'zoom-admission-timeout.png' });
-    throw new Error('Not admitted to the Zoom meeting within the timeout window');
+    throw new Error(
+      'Nobody admitted the bot to the Zoom meeting within 5 minutes. Ask the ' +
+      'host to let it in from the waiting room next time.'
+    );
   }
 
   async isStillInMeeting() {

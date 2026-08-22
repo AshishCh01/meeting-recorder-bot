@@ -90,7 +90,7 @@ export class GoogleMeetBot extends MeetingBot {
       await nameInput.waitFor({ state: 'visible', timeout: 10000 });
       console.log('[GoogleMeetBot] Name input located. Filling bot name...');
       await nameInput.click();
-      await nameInput.fill('Meeting Recorder Bot');
+      await nameInput.fill(this.session.botName);
       await this.page.waitForTimeout(1000);
     } catch {
       console.log('[GoogleMeetBot] No name input required or visible, proceeding to join...');
@@ -108,7 +108,7 @@ export class GoogleMeetBot extends MeetingBot {
     await this.page.screenshot({ path: 'google-meet-after-join-click.png' }).catch(() => {});
   }
 
-  async waitForAdmission(timeoutMs = 120000) {
+  async waitForAdmission(timeoutMs = 300000) {
     const start = Date.now();
     let consecutiveHits = 0;
     const REQUIRED_HITS = 2; // debounce: require the signal to hold across 2 polls (~4s) before trusting it
@@ -128,7 +128,10 @@ export class GoogleMeetBot extends MeetingBot {
       await this.page.waitForTimeout(2000);
     }
     await this.page.screenshot({ path: 'google-meet-admission-timeout.png' }).catch(() => {});
-    throw new Error('Not admitted to the meeting within the timeout window');
+    throw new Error(
+      'Nobody admitted the bot to the meeting within 5 minutes. Ask the host ' +
+      'to let it in from the participant/waiting-room list next time.'
+    );
   }
 
   async isStillInMeeting() {

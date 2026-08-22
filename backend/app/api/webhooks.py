@@ -32,6 +32,29 @@ def recording_complete(
     if str(meeting.user_id) != payload.user_id:
         raise HTTPException(409, "meeting_id does not belong to payload.user_id")
 
+    # Best-effort progress pings from mid-lifecycle (not the final
+    # completed/failed report). Both are fire-and-forget and sent moments
+    # apart, so an out-of-order response could otherwise race "recording"
+    # backward to "waiting_for_admission" - exclude states already past
+    # each ping's point in the lifecycle to keep status moving forward only.
+    if payload.status == "waiting_for_admission":
+        db.execute(
+            update(Meeting)
+            .where(Meeting.id == payload.meeting_id, Meeting.status.notin_(["recording", "transcribing", "completed", "failed"]))
+            .values(status="waiting_for_admission")
+        )
+        db.commit()
+        return {"status": "received"}
+
+    if payload.status == "recording":
+        db.execute(
+            update(Meeting)
+            .where(Meeting.id == payload.meeting_id, Meeting.status.notin_(["transcribing", "completed", "failed"]))
+            .values(status="recording")
+        )
+        db.commit()
+        return {"status": "received"}
+
     if payload.status == "completed" and payload.recording_path:
         try:
             signed_url = get_signed_recording_url(payload.recording_path)

@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 def _ttl_minutes_for(status: str) -> int:
     if status == "joining":
         return settings.watchdog_joining_ttl_minutes
+    if status == "waiting_for_admission":
+        return settings.watchdog_admission_ttl_minutes
     if status == "recording":
         return settings.max_recording_duration_minutes + settings.watchdog_recording_margin_minutes
     if status == "uploading":
@@ -22,7 +24,7 @@ def _ttl_minutes_for(status: str) -> int:
     raise ValueError(f"No TTL defined for status: {status}")
 
 
-_NON_TERMINAL_STATUSES = ("joining", "recording", "uploading", "transcribing")
+_NON_TERMINAL_STATUSES = ("joining", "waiting_for_admission", "recording", "uploading", "transcribing")
 
 
 def sweep_stale_meetings(db: Session) -> int:
