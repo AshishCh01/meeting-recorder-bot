@@ -26,6 +26,10 @@ client = genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOp
 RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
+        "title": {
+            "type": "string",
+            "description": "A short, descriptive title for the meeting, under 60 characters. Should reflect the main topic discussed, not a generic label like 'Meeting'."
+        },
         "summary": {
             "type": "string",
             "description": "A concise 3-5 sentence overview of what the audio covers."
@@ -45,6 +49,11 @@ RESPONSE_SCHEMA = {
                     "owner": {
                         "type": "string",
                         "description": "Who is responsible, if stated or implied. Otherwise 'Unspecified'."
+                    },
+                    "due_date": {
+                        "type": "string",
+                        "nullable": True,
+                        "description": "Due date or deadline for this item, in whatever form the transcript states it (e.g. 'Friday', 'next week', '2026-09-01'). Null if no due date was mentioned."
                     },
                     "timestamp": {
                         "type": "string",
@@ -74,7 +83,7 @@ RESPONSE_SCHEMA = {
             }
         }
     },
-    "required": ["summary", "key_points", "action_items", "conclusion", "conversation"]
+    "required": ["title", "summary", "key_points", "action_items", "conclusion", "conversation"]
 }
 
 PROMPT = """
@@ -101,14 +110,19 @@ Requirements for speaker identification:
 5. Provide accurate start/end timestamps for each segment (MM:SS format).
 
 Requirements for content analysis:
-6. summary: A concise 3-5 sentence overview of the whole audio.
-7. key_points: The main ideas, arguments, options, or topics discussed,
+6. title: A short, descriptive title for the meeting, under 60 characters,
+   reflecting the main topic actually discussed. Do not use a generic
+   placeholder like "Meeting" or "Recording".
+7. summary: A concise 3-5 sentence overview of the whole audio.
+8. key_points: The main ideas, arguments, options, or topics discussed,
    as short standalone bullet points (not full transcript lines).
-8. action_items: Any concrete tasks, decisions, or follow-ups mentioned,
+9. action_items: Any concrete tasks, decisions, or follow-ups mentioned,
    with an owner if one is stated or clearly implied by context (otherwise
-   "Unspecified") and a timestamp of where it was mentioned. Return an
-   empty array if the audio has no action items.
-9. conclusion: How the conversation resolves or wraps up — the final
+   "Unspecified"), a due date if one is stated or clearly implied (e.g. a
+   day, date, or deadline) or null if none was mentioned, and a timestamp
+   of where it was mentioned. Return an empty array if the audio has no
+   action items.
+10. conclusion: How the conversation resolves or wraps up — the final
    takeaway, decision, or closing thought.
 """
 
@@ -197,21 +211,26 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
             # Phase 1, Step 3: Silence Detection
             if _is_audio_silent(tmp_path):
                 print("[transcription] Audio is completely silent. Skipping Gemini API to prevent hallucinations.")
-                
+
+                meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+                date_str = meeting.created_at.strftime("%b %d, %Y") if meeting and meeting.created_at else time.strftime("%b %d, %Y")
+                title = f"Silent recording - {date_str}"
+
                 silent_result = {
+                    "title": title,
                     "summary": "This meeting recording was completely silent.",
                     "key_points": ["No audio was detected during the recording (possibly everyone was muted or the meeting was empty)."],
                     "action_items": [],
                     "conclusion": "No discussion took place.",
                     "conversation": []
                 }
-                
-                meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+
                 if meeting:
                     meeting.transcript = silent_result
+                    meeting.title = title
                     meeting.status = "completed"
                     db.commit()
-                
+
                 return silent_result
 
             print("[transcription] Uploading to Gemini File API...")
@@ -264,6 +283,7 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
             meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
             if meeting:
                 meeting.transcript = result
+                meeting.title = (result.get("title") or "").strip()[:60] or None
                 meeting.status = "completed"
                 db.commit()
 
@@ -291,6 +311,7 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
                     meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
                     if meeting:
                         meeting.transcript = result
+                        meeting.title = (result.get("title") or "").strip()[:60] or None
                         meeting.status = "completed"
                         meeting.error_message = f"Transcribed via Sarvam AI fallback (Gemini {code_str} unavailable)"
                         db.commit()

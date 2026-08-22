@@ -1,12 +1,33 @@
 @import "tailwindcss";
 
 @theme {
-  --color-brand-blue: #0052FF;
+  --color-brand-blue: #0B4FB4;
+  --color-brand-blue-light: #3FC9D6;
   --color-brand-dark: #0F172A;
+
+  --color-body: #4A5763;
+  --color-muted: #7C8A97;
+  --color-faint: #9BA7B3;
+  --color-line: #EDF1F5;
+  --color-border: #D9E1E9;
+  --color-border-strong: #E4E9EF;
+  --color-sidebar: #FAFCFD;
+
+  --color-status-done-bg: #EAF4FD;
+  --color-status-done-fg: #0B4FB4;
+  --color-status-processing-bg: #FDF3E3;
+  --color-status-processing-fg: #8A5A00;
+  --color-status-failed-bg: #FDECEC;
+  --color-status-failed-fg: #A32B2B;
+  --color-status-muted-bg: #F2F5F8;
+  --color-status-muted-fg: #5B6875;
+
+  --font-sans: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
 }
 
 @layer base {
   body {
-    @apply bg-slate-50 text-slate-800 antialiased;
+    @apply bg-slate-50 text-slate-800 antialiased font-sans;
   }
 }

@@ -96,6 +96,7 @@ ANALYSIS_SCHEMA = {
     "schema": {
         "type": "object",
         "properties": {
+            "title": {"type": "string", "description": "Short, descriptive title for the meeting, under 60 characters, reflecting the main topic actually discussed. Not a generic label like 'Meeting'."},
             "summary": {"type": "string", "description": "3-5 sentence overview of what the audio covers"},
             "key_points": {
                 "type": "array",
@@ -110,15 +111,19 @@ ANALYSIS_SCHEMA = {
                     "properties": {
                         "item": {"type": "string"},
                         "owner": {"type": "string", "description": "Who is responsible, or 'Unspecified'"},
+                        "due_date": {
+                            "type": ["string", "null"],
+                            "description": "Due date or deadline for this item, in whatever form the transcript states it (e.g. 'Friday', '2026-09-01'). Null if no due date was mentioned.",
+                        },
                         "timestamp": {"type": "string", "description": "MM:SS if identifiable, else empty string"},
                     },
-                    "required": ["item", "owner", "timestamp"],
+                    "required": ["item", "owner", "due_date", "timestamp"],
                     "additionalProperties": False,
                 },
             },
             "conclusion": {"type": "string", "description": "How the conversation wraps up"},
         },
-        "required": ["summary", "key_points", "action_items", "conclusion"],
+        "required": ["title", "summary", "key_points", "action_items", "conclusion"],
         "additionalProperties": False,
     },
 }
@@ -127,11 +132,15 @@ ANALYSIS_SCHEMA = {
 def _build_analysis(transcript_text: str) -> dict:
     system_prompt = (
         "You are analyzing a transcript of spoken audio (podcast, meeting, "
-        "or conversation). Extract a summary, key points, action items, and "
-        "a conclusion. key_points are the main ideas/arguments/options "
-        "discussed, not transcript lines. action_items are only concrete "
-        "tasks/decisions/follow-ups actually mentioned - do not invent any; "
-        "return an empty array if there are none."
+        "or conversation). Extract a title, summary, key points, action "
+        "items, and a conclusion. title is a short descriptive title under "
+        "60 characters reflecting the main topic actually discussed - not a "
+        "generic label like 'Meeting'. key_points are the main ideas/"
+        "arguments/options discussed, not transcript lines. action_items are "
+        "only concrete tasks/decisions/follow-ups actually mentioned - do "
+        "not invent any; return an empty array if there are none. Each "
+        "action item may have a due_date if one is stated or clearly "
+        "implied (a day, date, or deadline), otherwise null."
     )
 
     client = get_sarvam_client()
@@ -154,7 +163,7 @@ def _build_analysis(transcript_text: str) -> dict:
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        return {"summary": raw, "key_points": [], "action_items": [], "conclusion": "", "_parse_error": True}
+        return {"title": "", "summary": raw, "key_points": [], "action_items": [], "conclusion": "", "_parse_error": True}
 
 
 def transcribe_with_sarvam_fallback(audio_path: str) -> dict:
@@ -170,6 +179,7 @@ def transcribe_with_sarvam_fallback(audio_path: str) -> dict:
     analysis = _build_analysis(transcript_text)
 
     result = {
+        "title": analysis.get("title", ""),
         "summary": analysis.get("summary", ""),
         "key_points": analysis.get("key_points", []),
         "action_items": analysis.get("action_items", []),

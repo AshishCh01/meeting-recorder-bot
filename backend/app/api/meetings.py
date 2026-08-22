@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Response
 from sqlalchemy.orm import Session
 from app.db.database import get_db
-from app.db.models import Meeting
+from app.db.models import Meeting, MeetingChunk
 from app.api.auth import get_current_user
 from app.models.meeting import MeetingCreate
 from app.services.platform_detector import detect_platform
@@ -19,6 +19,7 @@ def meeting_to_dict(m: Meeting):
         "id": str(m.id),
         "user_id": str(m.user_id) if m.user_id else None,
         "meeting_url": m.meeting_url,
+        "title": m.title or m.meeting_url,
         "platform": m.platform,
         "status": m.status,
         "recording_url": m.recording_url,
@@ -148,6 +149,31 @@ def retry_meeting(
     submit_transcription(str(meeting.id), storage_path)
     
     return {"status": "retrying"}
+
+
+@router.delete("/{meeting_id}")
+def delete_meeting(
+    meeting_id: str,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user)
+):
+    meeting = db.query(Meeting).filter(Meeting.id == meeting_id, Meeting.user_id == user_id).first()
+    if not meeting:
+        raise HTTPException(404, "Meeting not found")
+
+    storage_path = f"{meeting.user_id}/{meeting.id}/recording.m4a"
+    try:
+        supabase.storage.from_(settings.supabase_recordings_bucket).remove([storage_path])
+    except Exception as e:
+        # Not fatal - meetings that never finished recording (e.g. "scheduled"
+        # or "failed" status) have no storage object to begin with.
+        print(f"[meetings] Warning: failed to delete storage object {storage_path}: {e}")
+
+    db.query(MeetingChunk).filter(MeetingChunk.meeting_id == meeting.id).delete()
+    db.delete(meeting)
+    db.commit()
+
+    return {"status": "deleted"}
 
 
 @router.get("/{meeting_id}/export-pdf")

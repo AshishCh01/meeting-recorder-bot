@@ -21,6 +21,7 @@ class Meeting(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     meeting_url = Column(String, nullable=False)
+    title = Column(String, nullable=True)
     platform = Column(String, nullable=False)
     status = Column(String, nullable=False, default="scheduled")
     recording_url = Column(String, nullable=True)

@@ -1,16 +1,21 @@
 import React, { useEffect, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { MeetingDetails } from '../components/MeetingDetails';
 import { ChatInterface } from '../components/ChatInterface';
-import { ArrowLeft, Loader2 } from 'lucide-react';
+import { MobileChatSheet } from '../components/meeting/MobileChatSheet';
+import { DeleteConfirmDialog } from '../components/DeleteConfirmDialog';
+import { Loader2 } from 'lucide-react';
 import api from '../lib/api';
 
 export const MeetingView = () => {
   const { id } = useParams();
+  const navigate = useNavigate();
   const [meeting, setMeeting] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     let intervalId;
@@ -51,7 +56,20 @@ export const MeetingView = () => {
       setMeeting(prev => ({ ...prev, status: 'transcribing', error_message: null }));
     } catch (err) {
       console.error(err);
-      alert("Retry failed to initiate.");
+      alert('Retry failed to initiate.');
+    }
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await api.delete(`/meetings/${deleteTarget.id}`);
+      navigate('/dashboard');
+    } catch (err) {
+      console.error('Delete failed', err);
+      alert('Failed to delete meeting.');
+      setDeleting(false);
     }
   };
 
@@ -77,27 +95,26 @@ export const MeetingView = () => {
 
   return (
     <Layout>
-      <div className="mb-6 flex items-center">
-        <Link to="/dashboard" className="text-slate-400 hover:text-brand-blue transition-colors flex items-center text-sm font-medium mr-4">
-          <ArrowLeft className="w-4 h-4 mr-1" />
-          Back
-        </Link>
-        <h1 className="text-2xl font-bold text-brand-dark tracking-tight truncate flex-1">
-          {meeting.title || 'Recorded Meeting'}
-        </h1>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 h-[calc(100vh-140px)]">
-        {/* Left Pane: Static Details */}
-        <div className="h-full overflow-hidden">
-          <MeetingDetails meeting={meeting} onRetry={handleRetry} />
+      <div className="h-[calc(100vh-13rem)] md:h-[calc(100vh-4rem)] flex bg-white border border-border-strong rounded-2xl overflow-hidden shadow-sm">
+        <div className="flex-1 min-w-0">
+          <MeetingDetails meeting={meeting} onRetry={handleRetry} onDeleteRequest={setDeleteTarget} />
         </div>
 
-        {/* Right Pane: AI Chat */}
-        <div className="h-full overflow-hidden">
+        {/* Desktop: permanent chat column */}
+        <div className="hidden md:block w-105 flex-none border-l border-line">
           <ChatInterface meetingId={meeting.id} />
         </div>
       </div>
+
+      {/* Mobile: drag-up chat sheet */}
+      <MobileChatSheet meetingId={meeting.id} meetingTitle={meeting.title || meeting.meeting_url} />
+
+      <DeleteConfirmDialog
+        meeting={deleteTarget}
+        deleting={deleting}
+        onConfirm={handleDeleteConfirm}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </Layout>
   );
 };

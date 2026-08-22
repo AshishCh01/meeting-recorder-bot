@@ -93,7 +93,7 @@ export const Register = () => {
           <button 
             type="submit" 
             disabled={loading || success}
-            className="w-full py-3 px-4 mt-2 flex justify-center items-center bg-brand-blue hover:bg-blue-700 text-white font-medium rounded-xl shadow-lg shadow-brand-blue/25 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full py-3 px-4 mt-2 flex justify-center items-center bg-brand-blue hover:opacity-90 text-white font-medium rounded-xl shadow-lg shadow-brand-blue/25 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Sign Up'}
           </button>
@@ -101,7 +101,7 @@ export const Register = () => {
 
         <p className="mt-8 text-center text-sm text-slate-500">
           Already have an account?{' '}
-          <Link to="/login" className="font-medium text-brand-blue hover:text-blue-700 transition-colors">
+          <Link to="/login" className="font-medium text-brand-blue hover:opacity-80 transition-opacity">
             Sign in
           </Link>
         </p>
