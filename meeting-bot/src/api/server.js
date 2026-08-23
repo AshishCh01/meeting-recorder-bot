@@ -15,6 +15,7 @@ app.use(express.json());
 // AudioRouter is refactored to be per-session, only one meeting may be
 // active system-wide at a time.
 let activeMeeting = null;
+let activeSession = null; // MeetingSession for activeMeeting, so /stop has something to cancel
 
 function timingSafeTokenEqual(provided, expected) {
   // An unset/empty server secret or an unset/empty provided token must
@@ -75,6 +76,7 @@ function makeJoinHandler(platform) {
     activeMeeting = meetingId;
 
     const session = new MeetingSession({ meetingId, meetingUrl: url, platform, userId, botDisplayName });
+    activeSession = session;
 
     res.status(202).json({ status: 'accepted', meetingId });
 
@@ -84,6 +86,7 @@ function makeJoinHandler(platform) {
       })
       .finally(() => {
         activeMeeting = null;
+        activeSession = null;
         console.log(`[${platform}] meeting ${meetingId} handler finished.`);
       });
   };
@@ -92,6 +95,20 @@ function makeJoinHandler(platform) {
 app.post('/google/join', requireAuth, makeJoinHandler('google'));
 app.post('/zoom/join', requireAuth, makeJoinHandler('zoom'));
 app.post('/teams/join', requireAuth, makeJoinHandler('teams'));
+
+app.post('/stop', requireAuth, (req, res) => {
+  const { meetingId } = req.body;
+  if (!activeMeeting || !activeSession) {
+    return res.status(404).json({ error: 'No active meeting to stop' });
+  }
+  if (meetingId && meetingId !== activeMeeting) {
+    return res.status(409).json({ error: `Active meeting is ${activeMeeting}, not ${meetingId}` });
+  }
+
+  console.log(`[server] Stop requested for meeting ${activeMeeting}`);
+  activeSession.requestCancel();
+  res.json({ status: 'stopping', meetingId: activeMeeting });
+});
 
 app.get('/health', (req, res) => {
   res.json({

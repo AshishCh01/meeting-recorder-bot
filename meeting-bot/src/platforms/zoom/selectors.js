@@ -28,4 +28,6 @@ export const ZOOM_SELECTORS = {
   ],
 
   meetingEndedText: /This meeting has been ended|meeting has ended|left the meeting|ended by host/i,
+
+  botBlockedText: /Automated bots aren.t allowed to join this meeting/i,
 };

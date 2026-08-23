@@ -5,7 +5,8 @@ from app.db.models import Meeting, MeetingChunk, User
 from app.api.auth import get_current_user
 from app.models.meeting import MeetingCreate
 from app.services.platform_detector import detect_platform
-from app.services.bot_service import trigger_bot_join
+from app.services.bot_service import trigger_bot_join, stop_bot
+import httpx
 from app.services.storage_service import get_signed_recording_url
 from app.services.transcription_service import submit_transcription
 from app.db.supabase import supabase
@@ -73,19 +74,7 @@ def list_meetings(
     user_id: str = Depends(get_current_user)
 ):
     meetings = db.query(Meeting).filter(Meeting.user_id == user_id).order_by(Meeting.created_at.desc()).all()
-    results = []
-
-    for meeting in meetings:
-        m_dict = meeting_to_dict(meeting)
-        if m_dict.get("status") == "completed":
-            storage_path = f"{m_dict['user_id']}/{m_dict['id']}/recording.m4a"
-            try:
-                m_dict["audio_playback_url"] = get_signed_recording_url(storage_path, expires_in=3600)
-            except Exception:
-                pass
-        results.append(m_dict)
-
-    return results
+    return [meeting_to_dict(m) for m in meetings]
 
 
 @router.get("/{meeting_id}")
@@ -152,6 +141,34 @@ def retry_meeting(
     return {"status": "retrying"}
 
 
+@router.post("/{meeting_id}/stop")
+def stop_meeting(
+    meeting_id: str,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user)
+):
+    meeting = db.query(Meeting).filter(Meeting.id == meeting_id, Meeting.user_id == user_id).first()
+    if not meeting:
+        raise HTTPException(404, "Meeting not found")
+
+    if meeting.status not in ("joining", "waiting_for_admission", "recording"):
+        raise HTTPException(409, "Meeting is not currently active - nothing to stop.")
+
+    try:
+        stop_bot(meeting_id)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(409, "Bot has no active session for this meeting - it may have just finished on its own.")
+        raise HTTPException(502, f"Could not stop recording bot: {e.response.text}")
+    except Exception as e:
+        raise HTTPException(502, f"Could not stop recording bot: {e}")
+
+    # meeting-bot reports the resulting "failed" status via its usual
+    # webhook once it finishes unwinding (closing the browser, stopping
+    # ffmpeg) - not set here, to avoid racing that webhook.
+    return {"status": "stopping"}
+
+
 @router.delete("/{meeting_id}")
 def delete_meeting(
     meeting_id: str,
@@ -161,6 +178,17 @@ def delete_meeting(
     meeting = db.query(Meeting).filter(Meeting.id == meeting_id, Meeting.user_id == user_id).first()
     if not meeting:
         raise HTTPException(404, "Meeting not found")
+
+    if meeting.status in ("joining", "waiting_for_admission", "recording"):
+        try:
+            stop_bot(meeting_id)
+        except Exception as e:
+            # Not fatal - the bot may have already finished on its own between
+            # the status check above and this call. Deletion proceeds either
+            # way, since leaving the bot running would otherwise record a
+            # meeting the user just deleted, with no meeting row left for its
+            # completion webhook to report back to.
+            print(f"[meetings] Warning: failed to stop bot for meeting {meeting_id} before delete: {e}")
 
     storage_path = f"{meeting.user_id}/{meeting.id}/recording.m4a"
     try:

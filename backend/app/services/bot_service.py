@@ -31,3 +31,22 @@ def trigger_bot_join(platform: str, meeting_url: str, meeting_id: str, user_id: 
     )
     response.raise_for_status()
     return response.json()
+
+
+def stop_bot(meeting_id: str) -> dict:
+    """
+    Asks meeting-bot to abandon whatever it's currently doing for
+    meeting_id (waiting for admission, or mid-recording) and shut down
+    cleanly. meeting-bot reports the resulting "failed" status back via
+    its usual webhook, same as any other in-flight failure.
+    """
+    response = httpx.post(
+        f"{settings.meeting_bot_url}/stop",
+        json={"meetingId": meeting_id},
+        headers={
+            "Authorization": f"Bearer {settings.meeting_bot_bearer_token}"
+        },
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()

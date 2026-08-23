@@ -52,15 +52,13 @@ recordings/
 browser-profiles/
 transcript.json
 test_file.ps
+backend/test.db
 
-# specific screenshots
-meeting-bot/zoom-no-input.png
-meeting-bot/zoom-step1.png
-meeting-bot/zoom-step2-direct.png
-meeting-bot/zoom-step2-no-link.png
-meeting-bot/zoom-step2.png
-meeting-bot/zoom-step3.png
-meeting-bot/zoom-step4.png
+# debug screenshots - these capture real meeting content (see
+# DEBUG_SCREENSHOTS in meeting-bot/.env.example) and must never be
+# committed regardless of what filename a future selector-hunting
+# session happens to write.
+meeting-bot/*.png
 zoom-admission-timeout.png
 
 
@@ -72,8 +70,10 @@ google-meet-alone.png
 repomix-output.xml
 
 auth.json
+zoom-auth.json
 
 meeting-bot/auth.json
+meeting-bot/zoom-auth.json
 
 # Audit reports that may quote real secret values found in scans
 docs/secrets-audit.md

@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.exc import OperationalError
 from app.config import settings
 from app.api import chat, meetings, users, webhooks
 from app.db.database import SessionLocal
@@ -25,6 +26,12 @@ async def _watchdog_loop():
                 await asyncio.to_thread(sweep_stale_meetings, db)
             finally:
                 db.close()
+        except OperationalError as e:
+            # DB connectivity blips (e.g. transient DNS resolution
+            # failures reaching the Supabase pooler) are expected and
+            # self-heal on the next sweep - a one-line warning is enough,
+            # a full traceback every interval is just noise.
+            logger.warning("[watchdog] sweep failed: DB connection error (%s) - will retry next cycle", e)
         except Exception:
             logger.exception("[watchdog] sweep failed")
         await asyncio.sleep(interval_seconds)

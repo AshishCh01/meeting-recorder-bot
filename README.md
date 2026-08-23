@@ -2,7 +2,7 @@
 
 ## 1. What it is
 
-An app that joins your Google Meet / Zoom / Teams calls as an automated bot, records the audio, transcribes it, and gives you a searchable summary with action items and a chat interface to ask questions about what was said.
+An app that joins your Google Meet / Zoom calls as an automated bot, records the audio, transcribes it, and gives you a searchable summary with action items and a chat interface to ask questions about what was said.
 
 Three services work together:
 

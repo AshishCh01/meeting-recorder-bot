@@ -8,6 +8,7 @@ from google.genai import types, errors
 from app.config import settings
 from app.rag.agent import INSTRUCTION
 from app.rag.tools import get_meeting_summary, get_action_items, search_by_speaker, search_transcript
+from app.services.cost_tracker import gemini_generation_cost, log_cost
 
 class LRUSessionCache:
     def __init__(self, capacity: int = 500):
@@ -116,9 +117,23 @@ async def ask_question(meeting_id: str, question: str, session_id: str | None = 
     
         MAX_TOOL_ITERATIONS = 6
         loop_count = 0
+        prompt_tokens_total = 0
+        output_tokens_total = 0
+
+        def _log_chat_cost():
+            cost = gemini_generation_cost(prompt_tokens_total, output_tokens_total)
+            log_cost(
+                "chat",
+                meeting=meeting_id,
+                in_tok=prompt_tokens_total,
+                out_tok=output_tokens_total,
+                tool_calls=len(tools_used),
+                usd=f"{cost:.6f}",
+            )
 
         while True:
             if loop_count >= MAX_TOOL_ITERATIONS:
+                _log_chat_cost()
                 return {
                     "session_id": sid,
                     "answer": "I'm having trouble finding the exact information you requested. Could you try rephrasing your question?",
@@ -143,7 +158,12 @@ async def ask_question(meeting_id: str, question: str, session_id: str | None = 
                             "tools_used": tools_used,
                         }
                     await asyncio.sleep((2 ** attempt) + 0.5)
-    
+
+            usage = response.usage_metadata
+            if usage:
+                prompt_tokens_total += usage.prompt_token_count or 0
+                output_tokens_total += usage.candidates_token_count or 0
+
             if not response.candidates:
                 raise ValueError("No candidates returned from the model.")
                 
@@ -197,7 +217,8 @@ async def ask_question(meeting_id: str, question: str, session_id: str | None = 
             for part in candidate.content.parts:
                 if getattr(part, "text", None):
                     answer += part.text
-    
+
+            _log_chat_cost()
             return {
                 "session_id": sid,
                 "answer": answer,

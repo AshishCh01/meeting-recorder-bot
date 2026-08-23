@@ -60,6 +60,18 @@ export const MeetingView = () => {
     }
   };
 
+  const handleStop = async () => {
+    try {
+      await api.post(`/meetings/${id}/stop`);
+      // Actual "failed" status lands via meeting-bot's webhook once it
+      // finishes shutting down (closing the browser, stopping ffmpeg) -
+      // the 5s poll above picks that up, no need to set it optimistically.
+    } catch (err) {
+      console.error(err);
+      alert(err.response?.data?.detail || 'Failed to stop the bot.');
+    }
+  };
+
   const handleDeleteConfirm = async () => {
     if (!deleteTarget) return;
     setDeleting(true);
@@ -97,7 +109,7 @@ export const MeetingView = () => {
     <Layout>
       <div className="h-[calc(100vh-13rem)] lg:h-[calc(100vh-4rem)] flex bg-surface border border-border-strong rounded-2xl overflow-hidden shadow-sm">
         <div className="flex-1 min-w-0">
-          <MeetingDetails meeting={meeting} onRetry={handleRetry} onDeleteRequest={setDeleteTarget} />
+          <MeetingDetails meeting={meeting} onRetry={handleRetry} onStop={handleStop} onDeleteRequest={setDeleteTarget} />
         </div>
 
         {/* Desktop: permanent chat column */}

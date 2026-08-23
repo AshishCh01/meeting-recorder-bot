@@ -151,7 +151,7 @@ export const Dashboard = () => {
               onClick={() => setStatusFilter(f.key)}
               className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
                 statusFilter === f.key
-                  ? 'bg-brand-dark text-white border-brand-dark'
+                  ? 'bg-brand-blue text-white border-brand-blue'
                   : 'bg-surface text-body border-border-strong hover:border-brand-blue/40'
               }`}
             >

@@ -12,6 +12,14 @@ export class MeetingSession {
     this.endedAt = null;
     this.errorMessage = null;
     this.recordingFilePath = null; // local temp path, set by RecordingFile
+    this.cancelRequested = false;
+  }
+
+  // Signals the lifecycle's admission-wait and in-meeting polling loops to
+  // bail out at their next check, so a stuck/slow join can be aborted from
+  // outside instead of running until it times out on its own.
+  requestCancel() {
+    this.cancelRequested = true;
   }
 
   markWaitingForAdmission() {

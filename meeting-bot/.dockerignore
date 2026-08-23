@@ -49,10 +49,20 @@ browser-profiles/
 .idea/
 .DS_Store
 
-meeting-bot/auth.json
+# Auth session files - supplied at runtime via the docker-compose bind
+# mount (./meeting-bot/auth.json and zoom-auth.json), never baked into
+# the image. NOTE: this used to read "meeting-bot/auth.json", which is
+# wrong for a .dockerignore that already lives inside the meeting-bot/
+# build context (paths here are relative to that context root, not the
+# repo root) - it never matched anything, so every build was silently
+# copying the real Google (and now Zoom) session cookies into the image
+# layer. Fixed to the correct context-relative paths below.
+auth.json
+zoom-auth.json
 
-# Manual local-only auth-generation tool - launches a headed Chrome
-# profile at a hardcoded Windows path (C:\chrome-bot-profile) and
-# waits on interactive terminal input. Never runs inside the deployed
-# Linux container, no reason to ship it in the image.
+# Manual local-only auth-generation tools - launch a headed Chrome
+# profile at a hardcoded Windows path (C:\chrome-bot-profile[-zoom]) and
+# wait on interactive terminal input. Never run inside the deployed
+# Linux container, no reason to ship them in the image.
 generate-auth.cjs
+generate-zoom-auth.cjs

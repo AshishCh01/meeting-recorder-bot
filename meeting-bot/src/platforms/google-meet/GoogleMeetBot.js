@@ -1,7 +1,7 @@
 // meeting-bot/src/platforms/google-meet/GoogleMeetBot.js
 
 import { MeetingBot } from '../../core/MeetingBot.js';
-import { BrowserManager, resolveAuthStatePath } from '../../core/BrowserManager.js';
+import { BrowserManager, resolveAuthStatePath, debugScreenshot } from '../../core/BrowserManager.js';
 import { GOOGLE_MEET_SELECTORS } from './selectors.js';
 import {
   isAdmitted,
@@ -48,7 +48,7 @@ export class GoogleMeetBot extends MeetingBot {
     // immediately with a clear error, instead of failing later with a
     // vague "join button not found" timeout.
     if (await isAuthExpired(this.page)) {
-      await this.page.screenshot({ path: 'google-meet-auth-expired.png' }).catch(() => {});
+      await debugScreenshot(this.page, 'google-meet-auth-expired.png');
       throw new Error('AUTH_EXPIRED: Google session in auth.json is no longer valid — regenerate auth.json');
     }
 
@@ -59,7 +59,7 @@ export class GoogleMeetBot extends MeetingBot {
     // timeout waiting for an admission that was never coming, because
     // the anonymous join request gets flatly denied within seconds.
     if (await isAnonymousSession(this.page)) {
-      await this.page.screenshot({ path: 'google-meet-anonymous-session.png' }).catch(() => {});
+      await debugScreenshot(this.page, 'google-meet-anonymous-session.png');
       throw new Error(
         'AUTH_EXPIRED: auth.json did not authenticate — Meet is showing the ' +
         'anonymous "Ask to join" flow with a Sign in prompt. This can happen ' +
@@ -96,7 +96,7 @@ export class GoogleMeetBot extends MeetingBot {
       console.log('[GoogleMeetBot] No name input required or visible, proceeding to join...');
     }
 
-    await this.page.screenshot({ path: 'google-meet-prejoin.png' }).catch(() => {});
+    await debugScreenshot(this.page, 'google-meet-prejoin.png');
 
     // Locate and click the join button
     console.log('[GoogleMeetBot] Clicking Join / Ask to join button...');
@@ -105,7 +105,7 @@ export class GoogleMeetBot extends MeetingBot {
     await joinBtn.click({ force: true });
 
     await this.page.waitForTimeout(2000);
-    await this.page.screenshot({ path: 'google-meet-after-join-click.png' }).catch(() => {});
+    await debugScreenshot(this.page, 'google-meet-after-join-click.png');
   }
 
   async waitForAdmission(timeoutMs = 300000) {
@@ -114,6 +114,9 @@ export class GoogleMeetBot extends MeetingBot {
     const REQUIRED_HITS = 2; // debounce: require the signal to hold across 2 polls (~4s) before trusting it
 
     while (Date.now() - start < timeoutMs) {
+      if (this.session.cancelRequested) {
+        throw new Error('Cancelled by user while waiting for admission');
+      }
       if (await isAdmitted(this.page)) {
         consecutiveHits++;
         console.log(`[GoogleMeetBot] In-call signal detected (${consecutiveHits}/${REQUIRED_HITS})...`);
@@ -127,7 +130,7 @@ export class GoogleMeetBot extends MeetingBot {
       }
       await this.page.waitForTimeout(2000);
     }
-    await this.page.screenshot({ path: 'google-meet-admission-timeout.png' }).catch(() => {});
+    await debugScreenshot(this.page, 'google-meet-admission-timeout.png');
     throw new Error(
       'Nobody admitted the bot to the meeting within 5 minutes. Ask the host ' +
       'to let it in from the participant/waiting-room list next time.'

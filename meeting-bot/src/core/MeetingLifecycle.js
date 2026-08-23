@@ -33,7 +33,7 @@ export async function runMeetingLifecycle(session) {
     const MAX_MEETING_MINUTES = Number(process.env.MAX_RECORDING_DURATION_MINUTES || 90);
     const hardDeadline = Date.now() + MAX_MEETING_MINUTES * 60 * 1000;
 
-    while (await bot.isStillInMeeting()) {
+    while (!session.cancelRequested && await bot.isStillInMeeting()) {
       if (Date.now() > hardDeadline) {
         console.log(`[Lifecycle] Hit ${MAX_MEETING_MINUTES}-minute hard cap — forcing exit`);
         break;
@@ -41,8 +41,13 @@ export async function runMeetingLifecycle(session) {
       await new Promise((r) => setTimeout(r, 10000));
     }
 
-    session.markUploading();
-    console.log('[Lifecycle] Meeting ended naturally. Initiating shutdown...');
+    if (session.cancelRequested) {
+      console.log('[Lifecycle] Cancelled by user request.');
+      session.markFailed('Cancelled by user');
+    } else {
+      session.markUploading();
+      console.log('[Lifecycle] Meeting ended naturally. Initiating shutdown...');
+    }
 
   } catch (err) {
     console.log('[Lifecycle] Process interrupted or errored:', err.message);

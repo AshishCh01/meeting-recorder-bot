@@ -1,7 +1,7 @@
 import { MeetingBot } from '../../core/MeetingBot.js';
-import { BrowserManager } from '../../core/BrowserManager.js';
+import { BrowserManager, resolveAuthStatePath, debugScreenshot } from '../../core/BrowserManager.js';
 import { ZOOM_SELECTORS } from './selectors.js';
-import { isAdmitted, hasMeetingEnded } from './detector.js';
+import { isAdmitted, hasMeetingEnded, isBotBlocked } from './detector.js';
 
 const ALONE_GRACE_PERIOD_MS = 60000;
 
@@ -90,8 +90,16 @@ export class ZoomBot extends MeetingBot {
     console.log('[ZoomBot] Navigating directly to web client...');
     await this.page.goto(directUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await this.page.waitForTimeout(4000);
-    await this.page.screenshot({ path: 'zoom-step1.png' });
+    await debugScreenshot(this.page, 'zoom-step1.png');
     console.log('[ZoomBot] Step 1 loaded. URL:', this.page.url());
+
+    // The session just proved itself live - persist whatever fresh
+    // rotation cookies Zoom issued during this load back to zoom-auth.json,
+    // extending how long the session stays usable before it goes stale
+    // again (mirrors the same refresh GoogleMeetBot does for auth.json).
+    await this.context.storageState({ path: resolveAuthStatePath('zoom') }).catch((err) => {
+      console.log('[ZoomBot] Warning: could not refresh zoom-auth.json:', err.message);
+    });
 
     // Handle interstitial if we landed on it instead of directly on join page
     const browserButton = this.page.locator(ZOOM_SELECTORS.joinFromBrowserButton);
@@ -99,11 +107,11 @@ export class ZoomBot extends MeetingBot {
       console.log('[ZoomBot] Interstitial detected — clicking "Join from browser"...');
       await browserButton.click();
       await this.page.waitForTimeout(8000);
-      await this.page.screenshot({ path: 'zoom-step2.png' });
+      await debugScreenshot(this.page, 'zoom-step2.png');
       console.log('[ZoomBot] Step 2 done. URL:', this.page.url());
     } else {
       console.log('[ZoomBot] No interstitial — already on join page');
-      await this.page.screenshot({ path: 'zoom-step2-direct.png' });
+      await debugScreenshot(this.page, 'zoom-step2-direct.png');
     }
 
     await this.page.waitForTimeout(3000);
@@ -143,7 +151,7 @@ export class ZoomBot extends MeetingBot {
       console.log('[ZoomBot] Could not fill name field — check zoom-step2.png for what is on screen');
     }
 
-    await this.page.screenshot({ path: 'zoom-step3.png' });
+    await debugScreenshot(this.page, 'zoom-step3.png');
     console.log('[ZoomBot] Step 3 saved. Clicking Join...');
 
     // Click Join in the correct frame context
@@ -151,7 +159,7 @@ export class ZoomBot extends MeetingBot {
     console.log('[ZoomBot] Clicked Join');
 
     await this.page.waitForTimeout(4000);
-    await this.page.screenshot({ path: 'zoom-step4.png' });
+    await debugScreenshot(this.page, 'zoom-step4.png');
     console.log('[ZoomBot] Step 4 saved after clicking Join');
   }
 
@@ -159,13 +167,24 @@ export class ZoomBot extends MeetingBot {
     console.log('[ZoomBot] Waiting to be admitted...');
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
+      if (this.session.cancelRequested) {
+        throw new Error('Cancelled by user while waiting for admission');
+      }
+      if (await isBotBlocked(this.page)) {
+        await debugScreenshot(this.page, 'zoom-bot-blocked.png');
+        throw new Error(
+          'Zoom rejected this as an automated bot ("Automated bots aren\'t allowed ' +
+          'to join this meeting"). Zoom flags anonymous guest joins from automated ' +
+          'browsers like this - it was never actually let into the meeting.'
+        );
+      }
       if (await isAdmitted(this.page)) {
         console.log('[ZoomBot] Admitted into the meeting');
         return true;
       }
       await this.page.waitForTimeout(2000);
     }
-    await this.page.screenshot({ path: 'zoom-admission-timeout.png' });
+    await debugScreenshot(this.page, 'zoom-admission-timeout.png');
     throw new Error(
       'Nobody admitted the bot to the Zoom meeting within 5 minutes. Ask the ' +
       'host to let it in from the waiting room next time.'

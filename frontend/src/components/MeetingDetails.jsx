@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertCircle, RefreshCw, Loader2, Download, Trash2 } from 'lucide-react';
+import { AlertCircle, RefreshCw, Loader2, Download, Trash2, Square } from 'lucide-react';
 import { StatusBadge } from './StatusBadge';
 import { AudioPlayer } from './meeting/AudioPlayer';
 import { SummaryTab } from './meeting/SummaryTab';
@@ -16,6 +16,10 @@ const TABS = [
 ];
 
 const PROCESSING_STATUSES = ['joining', 'waiting_for_admission', 'recording', 'uploading', 'transcribing'];
+// Only these are still controlled by the meeting-bot process - once it's
+// past "recording" (uploading/transcribing), the bot has already left and
+// there's nothing left for a stop request to interrupt.
+const STOPPABLE_STATUSES = ['joining', 'waiting_for_admission', 'recording'];
 const PROCESSING_LABEL = {
   joining: 'Bot is joining the meeting…',
   waiting_for_admission: 'Waiting for the host to admit MeetIQ…',
@@ -24,10 +28,11 @@ const PROCESSING_LABEL = {
   transcribing: 'Transcribing and generating insights…',
 };
 
-export const MeetingDetails = ({ meeting, onRetry, onDeleteRequest }) => {
+export const MeetingDetails = ({ meeting, onRetry, onStop, onDeleteRequest }) => {
   const [activeTab, setActiveTab] = useState('summary');
   const [isRetrying, setIsRetrying] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
 
   const handleDownloadPDF = async () => {
     setIsDownloading(true);
@@ -53,6 +58,12 @@ export const MeetingDetails = ({ meeting, onRetry, onDeleteRequest }) => {
     setIsRetrying(true);
     if (onRetry) await onRetry();
     setIsRetrying(false);
+  };
+
+  const handleStopClick = async () => {
+    setIsStopping(true);
+    if (onStop) await onStop();
+    setIsStopping(false);
   };
 
   const transcriptData = meeting?.transcript || {};
@@ -143,6 +154,17 @@ export const MeetingDetails = ({ meeting, onRetry, onDeleteRequest }) => {
             <Loader2 className="w-6 h-6 text-brand-blue animate-spin" />
             <h3 className="text-sm font-bold text-brand-dark">{PROCESSING_LABEL[meeting.status]}</h3>
             <p className="text-xs text-muted">This page will update automatically when finished.</p>
+            {STOPPABLE_STATUSES.includes(meeting.status) && (
+              <button
+                onClick={handleStopClick}
+                disabled={isStopping}
+                title="Stop the bot and abandon this recording"
+                className="mt-1 px-3.5 py-2 bg-surface text-status-failed-fg text-sm font-bold border border-red-200 dark:border-red-500/20 rounded-lg disabled:opacity-50 flex items-center gap-2"
+              >
+                <Square className="w-3.5 h-3.5 fill-current" />
+                {isStopping ? 'Stopping…' : 'Stop bot'}
+              </button>
+            )}
           </div>
         )}
       </div>

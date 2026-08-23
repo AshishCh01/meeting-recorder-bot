@@ -9,6 +9,7 @@ from google.genai import types, errors
 from app.config import settings
 from app.db.models import Meeting, MeetingChunk
 from app.services.embedding_fallback_jina import embed_documents_with_jina, embed_query_with_jina
+from app.services.cost_tracker import gemini_embedding_cost, log_cost
 
 # Initialize the Gemini GenAI client
 client = genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOptions(timeout=60_000))
@@ -165,7 +166,7 @@ def embed_query(query: str, provider: str = GEMINI_PROVIDER) -> list[float]:
         raise
 
 
-def index_transcript(db: Session, meeting_id: str, transcript: dict) -> None:
+def index_transcript(db: Session, meeting_id: str, transcript: dict) -> float:
     """
     Chunks the `conversation` array of a completed transcript, embeds each
     chunk, and (re)writes them to `meeting_chunks` so the RAG agent can query
@@ -173,16 +174,33 @@ def index_transcript(db: Session, meeting_id: str, transcript: dict) -> None:
     cleared first). Also records which provider embedded the chunks on
     the Meeting row, so embed_query can use a matching model later even
     if Gemini and Jina alternate between re-indexing runs.
+
+    Returns the estimated USD cost of this indexing run (0.0 if there was
+    nothing to embed), so callers can fold it into a per-meeting total.
     """
     conversation = transcript.get("conversation") or []
     if not conversation:
-        return
+        return 0.0
 
     chunks = _build_chunks(conversation)
     if not chunks:
-        return
+        return 0.0
 
     embeddings, provider = _embed_documents([c["content"] for c in chunks])
+
+    # The Gemini embed API doesn't return usage_metadata, so we estimate
+    # token count with the same ~4-chars-per-token heuristic used for
+    # chunking above. Cost is only meaningful for Gemini - no rate is
+    # configured for the Jina fallback.
+    token_estimate = sum(len(c["content"]) for c in chunks) // 4
+    cost = gemini_embedding_cost(token_estimate) if provider == GEMINI_PROVIDER else 0.0
+    log_cost(
+        "embedding",
+        meeting=meeting_id,
+        provider=provider,
+        tokens=token_estimate,
+        usd=f"{cost:.6f}",
+    )
 
     # Delete existing chunks for this meeting
     db.query(MeetingChunk).filter(MeetingChunk.meeting_id == meeting_id).delete()
@@ -209,3 +227,4 @@ def index_transcript(db: Session, meeting_id: str, transcript: dict) -> None:
         meeting.embedding_provider = provider
 
     db.commit()
+    return cost

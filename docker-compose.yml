@@ -1,17 +1,24 @@
 services:
   backend:
-    build: 
+    build:
       context: ./backend
       dockerfile: Dockerfile.dev
     ports:
       - "8000:8000"
     env_file:
-      - ./backend/.env 
+      - ./backend/.env
     volumes:
       # Live-reloads your Python code without rebuilding
       - ./backend:/app
       # Maps local recordings so the backend can process the bot's files
-      - ./recordings:/app/recordings 
+      - ./recordings:/app/recordings
+    dns:
+      # Docker Desktop's embedded DNS resolver intermittently fails to
+      # resolve external hosts (e.g. the Supabase pooler) on Windows/WSL2.
+      # Public resolvers as a fallback fix the "Name or service not known"
+      # watchdog sweep failures.
+      - 8.8.8.8
+      - 1.1.1.1
     networks:
       - meeting-net
 
@@ -28,6 +35,8 @@ services:
       - ./meeting-bot/recordings:/app/recordings
       # CRITICAL: Live link for your Google auth file to bypass the anonymous block
       - ./meeting-bot/auth.json:/app/auth.json
+      # Same idea for Zoom - generate via generate-zoom-auth.cjs
+      - ./meeting-bot/zoom-auth.json:/app/zoom-auth.json
     # CRITICAL: Gives Chromium enough shared memory to process video/audio streams
     shm_size: '2gb'
     depends_on:

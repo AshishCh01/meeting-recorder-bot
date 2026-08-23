@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     watchdog_uploading_ttl_minutes: int = 20
     watchdog_transcribing_ttl_minutes: int = 30
 
+    # Cost tracking: per-million-token USD rates for the [cost] log lines
+    # in transcription_service.py, chat_service.py, and embedding_service.py.
+    # Update these via env vars when Gemini's pricing changes - never hardcode
+    # a rate at a call site.
+    gemini_input_cost_per_mtok: float = 0.30
+    gemini_output_cost_per_mtok: float = 2.50
+    gemini_embedding_cost_per_mtok: float = 0.15
+
     class Config:
         env_file = ".env"
         extra = "ignore"

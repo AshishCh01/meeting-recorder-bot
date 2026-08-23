@@ -20,6 +20,7 @@ from app.db.database import SessionLocal
 from app.db.models import Meeting
 from app.services.embedding_service import index_transcript
 from app.services.transcription_fallback_sarvam import transcribe_with_sarvam_fallback
+from app.services.cost_tracker import gemini_generation_cost, log_cost
 
 client = genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOptions(timeout=90_000))
 
@@ -157,6 +158,25 @@ def _is_audio_silent(file_path: str) -> bool:
         return False
 
 
+def _get_audio_duration_seconds(file_path: str) -> Optional[float]:
+    """
+    Uses ffprobe to read the audio duration, for the tokens-per-minute-
+    of-audio figure in the [cost] log line.
+    """
+    try:
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            file_path,
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return float(result.stdout.strip())
+    except Exception as e:
+        print(f"[transcription] Warning: could not determine audio duration ({e})")
+        return None
+
+
 def _call_gemini_with_retry(contents, config, max_retries=4):
     """
     Calls Gemini's generate_content with exponential backoff retry
@@ -205,6 +225,7 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
             tmp_path = tmp.name
 
         print(f"[transcription] Downloaded to temp file: {tmp_path}")
+        audio_duration_sec = _get_audio_duration_seconds(tmp_path)
 
         uploaded_file = None
         try:
@@ -280,6 +301,19 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
             result = json.loads(response.text)
             print("[transcription] Gemini response parsed successfully")
 
+            usage = response.usage_metadata
+            prompt_tokens = (usage.prompt_token_count or 0) if usage else 0
+            output_tokens = (usage.candidates_token_count or 0) if usage else 0
+            transcription_cost = gemini_generation_cost(prompt_tokens, output_tokens)
+            log_cost(
+                "transcription",
+                meeting=meeting_id,
+                audio_sec=f"{audio_duration_sec:.1f}" if audio_duration_sec is not None else "unknown",
+                in_tok=prompt_tokens,
+                out_tok=output_tokens,
+                usd=f"{transcription_cost:.6f}",
+            )
+
             meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
             if meeting:
                 meeting.transcript = result
@@ -287,13 +321,22 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
                 meeting.status = "completed"
                 db.commit()
 
+            embedding_cost = 0.0
             try:
-                index_transcript(db, meeting_id, result)
+                embedding_cost = index_transcript(db, meeting_id, result)
             except Exception as e:
                 meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
                 if meeting:
                     meeting.error_message = f"Transcript ready, but RAG indexing failed: {e}"
                     db.commit()
+
+            log_cost(
+                "meeting_total",
+                meeting=meeting_id,
+                transcription_usd=f"{transcription_cost:.6f}",
+                embedding_usd=f"{embedding_cost:.6f}",
+                usd=f"{transcription_cost + embedding_cost:.6f}",
+            )
 
             return result
 

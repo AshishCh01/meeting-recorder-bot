@@ -5,9 +5,14 @@ WORKDIR /app
 
 # psycopg[binary] and pgvector are pure-python/prebuilt, so no extra
 # system build deps are needed beyond a C toolchain for the odd wheel
-# that doesn't ship one for your platform.
+# that doesn't ship one for your platform. ffmpeg is required at runtime
+# by transcription_service.py (_is_audio_silent/_get_audio_duration_seconds
+# shell out to ffmpeg/ffprobe) - without it those calls raise
+# FileNotFoundError, which is silently swallowed, so silence detection
+# just quietly never fires.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
