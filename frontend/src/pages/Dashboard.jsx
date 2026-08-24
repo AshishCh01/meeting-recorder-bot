@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Layout } from '../components/Layout';
 import { MeetingRow } from '../components/dashboard/MeetingRow';
 import { EmptyState } from '../components/dashboard/EmptyState';
-import { UpcomingEvents } from '../components/dashboard/UpcomingEvents';
 import { DeleteConfirmDialog } from '../components/DeleteConfirmDialog';
 import { Search, Plus, Loader2 } from 'lucide-react';
 import api from '../lib/api';
@@ -207,8 +206,6 @@ export const Dashboard = () => {
         onConfirm={handleDeleteConfirm}
         onCancel={() => setDeleteTarget(null)}
       />
-
-      <UpcomingEvents onScheduled={fetchMeetings} />
 
       {loading ? (
         <div className="flex h-64 items-center justify-center">

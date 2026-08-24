@@ -8,6 +8,7 @@ import { Landing } from './pages/Landing';
 import { Login } from './pages/Login';
 import { Register } from './pages/Register';
 import { Dashboard } from './pages/Dashboard';
+import { Upcoming } from './pages/Upcoming';
 import { MeetingView } from './pages/MeetingView';
 import { Settings } from './pages/Settings';
 
@@ -46,6 +47,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Dashboard />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/upcoming"
+              element={
+                <ProtectedRoute>
+                  <Upcoming />
                 </ProtectedRoute>
               }
             />

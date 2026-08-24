@@ -17,16 +17,17 @@ export const Layout = ({ children }) => {
   };
 
   const navigation = [
-    { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
+    { name: 'Meetings', href: '/dashboard', icon: LayoutDashboard },
+    { name: 'Upcoming', href: '/upcoming', icon: CalendarClock },
     { name: 'Settings', href: '/settings', icon: Settings },
   ];
 
-  // "Meetings" and "Settings" have real pages - "Upcoming"/"Ask AI" are
-  // shown as muted placeholders (not Links) so the mobile nav matches the
-  // design reference without linking anywhere that 404s.
+  // "Meetings", "Upcoming" and "Settings" have real pages - "Ask AI" is
+  // still shown as a muted placeholder (not a Link) so the mobile nav
+  // matches the design reference without linking anywhere that 404s.
   const mobileNavItems = [
     { name: 'Meetings', href: '/dashboard', icon: LayoutDashboard, active: true },
-    { name: 'Upcoming', icon: CalendarClock, active: false },
+    { name: 'Upcoming', href: '/upcoming', icon: CalendarClock, active: true },
     { name: 'Ask AI', icon: Sparkles, active: false },
     { name: 'Settings', href: '/settings', icon: Settings, active: true },
   ];
