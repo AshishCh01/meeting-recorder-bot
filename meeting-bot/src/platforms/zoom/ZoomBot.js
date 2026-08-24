@@ -1,5 +1,5 @@
 import { MeetingBot } from '../../core/MeetingBot.js';
-import { BrowserManager, resolveAuthStatePath, debugScreenshot } from '../../core/BrowserManager.js';
+import { BrowserManager, resolveAuthStatePath, debugScreenshot, persistStorageState } from '../../core/BrowserManager.js';
 import { ZOOM_SELECTORS } from './selectors.js';
 import { isAdmitted, hasMeetingEnded, isBotBlocked } from './detector.js';
 
@@ -83,7 +83,7 @@ export class ZoomBot extends MeetingBot {
 
   async join() {
     console.log('[ZoomBot] Launching browser...');
-    this.context = await BrowserManager.launch('zoom');
+    this.context = await BrowserManager.launch('zoom', { pulseSink: this.session.audioSinkName });
     this.page = await this.context.newPage();
 
     const directUrl = ZoomBot.buildDirectWebClientUrl(this.session.meetingUrl);
@@ -97,7 +97,7 @@ export class ZoomBot extends MeetingBot {
     // rotation cookies Zoom issued during this load back to zoom-auth.json,
     // extending how long the session stays usable before it goes stale
     // again (mirrors the same refresh GoogleMeetBot does for auth.json).
-    await this.context.storageState({ path: resolveAuthStatePath('zoom') }).catch((err) => {
+    await persistStorageState(this.context, resolveAuthStatePath('zoom')).catch((err) => {
       console.log('[ZoomBot] Warning: could not refresh zoom-auth.json:', err.message);
     });
 

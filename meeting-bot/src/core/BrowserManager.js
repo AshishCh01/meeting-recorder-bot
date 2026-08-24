@@ -59,8 +59,34 @@ export function assertAuthStateExists(platform = 'google') {
   return authStatePath;
 }
 
+// Serializes concurrent writes to the same auth-state file. Google/Zoom
+// auth.json is shared across every session of a platform (one bot
+// identity), so with MAX_CONCURRENT_MEETINGS > 1, two sessions can finish
+// their pre-flight page load and call context.storageState({ path }) at
+// nearly the same moment. storageState() isn't documented as safe against
+// a concurrent writer on the same path — interleaved writes could corrupt
+// the file (breaking every future join, not just the racing ones), and
+// even a "last write wins" outcome silently drops one session's refreshed
+// cookies. Queuing per path fixes both: writes to the same file run one at
+// a time, in call order; writes to different files (auth.json vs
+// zoom-auth.json) aren't blocked by each other.
+const storageStateWriteQueues = new Map(); // authStatePath -> tail of the write queue
+
+export async function persistStorageState(context, path) {
+  const previous = storageStateWriteQueues.get(path) || Promise.resolve();
+  const next = previous
+    .catch(() => {}) // a failed write shouldn't wedge the next session's write
+    .then(() => context.storageState({ path }));
+  storageStateWriteQueues.set(path, next);
+  return next;
+}
+
 export class BrowserManager {
-  static async launch(profileName = 'default') {
+  // pulseSink: from AudioSink.provision() — when set (Linux only), Chrome's
+  // own PulseAudio client reads PULSE_SINK and sends this process's audio
+  // there instead of the container-wide default sink, so this session's
+  // browser audio lands in the same isolated sink FFmpegManager reads from.
+  static async launch(profileName = 'default', { pulseSink } = {}) {
     const platform = profileName === 'zoom' ? 'zoom' : 'google';
     const authStatePath = assertAuthStateExists(platform);
 
@@ -68,6 +94,7 @@ export class BrowserManager {
     const browser = await chromium.launch({
       headless: false,
       channel: 'chrome',
+      env: pulseSink ? { ...process.env, PULSE_SINK: pulseSink } : undefined,
       args: [
         '--use-fake-ui-for-media-stream',
         '--use-fake-device-for-media-stream',

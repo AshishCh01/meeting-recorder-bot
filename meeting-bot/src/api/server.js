@@ -6,16 +6,20 @@ import { runMeetingLifecycle } from '../core/MeetingLifecycle.js';
 const app = express();
 app.use(express.json());
 
-// Single-session guard (audit finding C-1).
-// AudioRouter mutates the global Windows audio device via a static
-// singleton — if two meetings overlap, the second one's routeToCable()
-// overwrites the first's saved "previous device", and both meetings'
-// routeBack() calls restore to the wrong device. Concurrent FFmpeg
-// processes would also compete for the same virtual audio cable. Until
-// AudioRouter is refactored to be per-session, only one meeting may be
-// active system-wide at a time.
-let activeMeeting = null;
-let activeSession = null; // MeetingSession for activeMeeting, so /stop has something to cancel
+// Session registry (audit finding C-1, phases 1-2 complete).
+// Keyed by meetingId so multiple sessions can be tracked concurrently.
+// Audio is now isolated per session on Linux (AudioSink.js provisions a
+// dedicated PulseAudio sink per meetingId, and BrowserManager/FFmpegManager
+// both point at it — see MeetingLifecycle.js), so MAX_CONCURRENT_MEETINGS
+// can be raised above 1 via env var in that environment. On Windows dev
+// (single shared VB-Cable device, no per-session equivalent) leave this at
+// 1 — concurrent sessions there would still have their audio blend
+// together. Note: Xvfb display (shared :99) and auth identity (shared
+// auth.json per platform) are still global, not per-session — see the
+// audit notes; raising this above 1 is safe for audio specifically, not
+// yet a full concurrency guarantee.
+const MAX_CONCURRENT_MEETINGS = Number(process.env.MAX_CONCURRENT_MEETINGS || 1);
+const activeMeetings = new Map(); // meetingId -> MeetingSession
 
 function timingSafeTokenEqual(provided, expected) {
   // An unset/empty server secret or an unset/empty provided token must
@@ -69,14 +73,15 @@ function makeJoinHandler(platform) {
       return res.status(400).json({ error: 'meetingId and userId must be UUIDs' });
     }
 
-    if (activeMeeting) {
+    if (activeMeetings.has(meetingId)) {
+      return res.status(409).json({ error: `Meeting ${meetingId} is already active` });
+    }
+    if (activeMeetings.size >= MAX_CONCURRENT_MEETINGS) {
       return res.status(409).json({ error: 'Bot is currently busy with another meeting' });
     }
-    
-    activeMeeting = meetingId;
 
     const session = new MeetingSession({ meetingId, meetingUrl: url, platform, userId, botDisplayName });
-    activeSession = session;
+    activeMeetings.set(meetingId, session);
 
     res.status(202).json({ status: 'accepted', meetingId });
 
@@ -85,8 +90,7 @@ function makeJoinHandler(platform) {
         console.error(`[${platform}] meeting ${meetingId} failed:`, err.message);
       })
       .finally(() => {
-        activeMeeting = null;
-        activeSession = null;
+        activeMeetings.delete(meetingId);
         console.log(`[${platform}] meeting ${meetingId} handler finished.`);
       });
   };
@@ -98,16 +102,31 @@ app.post('/teams/join', requireAuth, makeJoinHandler('teams'));
 
 app.post('/stop', requireAuth, (req, res) => {
   const { meetingId } = req.body;
-  if (!activeMeeting || !activeSession) {
-    return res.status(404).json({ error: 'No active meeting to stop' });
-  }
-  if (meetingId && meetingId !== activeMeeting) {
-    return res.status(409).json({ error: `Active meeting is ${activeMeeting}, not ${meetingId}` });
+
+  if (meetingId) {
+    const session = activeMeetings.get(meetingId);
+    if (!session) {
+      return res.status(404).json({ error: `No active meeting ${meetingId} to stop` });
+    }
+    console.log(`[server] Stop requested for meeting ${meetingId}`);
+    session.requestCancel();
+    return res.json({ status: 'stopping', meetingId });
   }
 
-  console.log(`[server] Stop requested for meeting ${activeMeeting}`);
-  activeSession.requestCancel();
-  res.json({ status: 'stopping', meetingId: activeMeeting });
+  // No meetingId given: only unambiguous while at most one meeting is
+  // active. Callers written against the old single-session API relied on
+  // this; once MAX_CONCURRENT_MEETINGS > 1 they must start passing meetingId.
+  if (activeMeetings.size === 0) {
+    return res.status(404).json({ error: 'No active meeting to stop' });
+  }
+  if (activeMeetings.size > 1) {
+    return res.status(400).json({ error: 'Multiple meetings active — meetingId is required' });
+  }
+
+  const [[onlyMeetingId, onlySession]] = activeMeetings;
+  console.log(`[server] Stop requested for meeting ${onlyMeetingId}`);
+  onlySession.requestCancel();
+  res.json({ status: 'stopping', meetingId: onlyMeetingId });
 });
 
 app.get('/health', (req, res) => {

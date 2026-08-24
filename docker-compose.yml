@@ -37,8 +37,14 @@ services:
       - ./meeting-bot/auth.json:/app/auth.json
       # Same idea for Zoom - generate via generate-zoom-auth.cjs
       - ./meeting-bot/zoom-auth.json:/app/zoom-auth.json
-    # CRITICAL: Gives Chromium enough shared memory to process video/audio streams
-    shm_size: '2gb'
+    # CRITICAL: Gives Chromium enough shared memory to process video/audio streams.
+    # 2gb was sized for one headed Chromium instance (MAX_CONCURRENT_MEETINGS=1).
+    # Phase 2 (per-session PulseAudio sinks) makes MAX_CONCURRENT_MEETINGS>1 safe
+    # for audio isolation, but each concurrent Chromium + its PulseAudio stream
+    # adds its own shared-memory usage -- bumped to 4gb to cover testing at
+    # MAX_CONCURRENT_MEETINGS=2. Scale further (or add per-container memory
+    # limits) before raising the cap past that.
+    shm_size: '4gb'
     depends_on:
       - backend
     networks:

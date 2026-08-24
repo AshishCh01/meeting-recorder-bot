@@ -5,13 +5,18 @@ import os from 'os';
 // target. Windows args are kept for local dev only (see README) -- they
 // assume VB-Audio Virtual Cable is installed and selected as the bot
 // Chrome window's OUTPUT device in Windows' volume mixer.
-export function getCaptureArgs() {
+//
+// monitorSource: the per-session PulseAudio monitor from AudioSink.provision()
+// (e.g. "rec_<meetingId>.monitor"). Falls back to the container-wide default
+// sink's monitor when omitted, for any caller not yet threading a per-session
+// sink through. Ignored on Windows — no per-session equivalent there yet.
+export function getCaptureArgs(monitorSource) {
   const platform = os.platform();
 
   if (platform === 'linux') {
     return [
       '-f', 'pulse',
-      '-i', 'RecordingSink.monitor',
+      '-i', monitorSource || 'RecordingSink.monitor',
     ];
   }
 

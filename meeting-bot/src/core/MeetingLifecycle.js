@@ -3,6 +3,7 @@ import { GoogleMeetBot } from '../platforms/google-meet/GoogleMeetBot.js';
 import { ZoomBot } from '../platforms/zoom/ZoomBot.js';
 import { Recorder } from '../recording/Recorder.js';
 import { RecordingFile } from '../recording/RecordingFile.js';
+import { AudioSink } from '../recording/AudioSink.js';
 import { SupabaseUploader } from '../storage/SupabaseUploader.js';
 import fs from 'fs';
 
@@ -15,8 +16,14 @@ export async function runMeetingLifecycle(session) {
   const BotClass = BOT_CLASSES[session.platform];
   if (!BotClass) throw new Error(`Unsupported platform: ${session.platform}`);
 
+  // Per-session audio sink (phase 2) — the bot's browser audio and this
+  // session's ffmpeg capture both get pointed at it below, isolating this
+  // meeting's audio from any other concurrently-running meeting's.
+  const audioSink = AudioSink.provision(session.meetingId);
+  session.audioSinkName = audioSink.sinkName;
+
   const bot = new BotClass(session);
-  const recorder = new Recorder(session.meetingId);
+  const recorder = new Recorder(session.meetingId, audioSink.monitorSource);
 
   try {
     await bot.join();
@@ -61,6 +68,8 @@ export async function runMeetingLifecycle(session) {
       console.error('[Lifecycle] FFmpeg stop error:', e);
       return null;
     });
+
+    audioSink.release();
 
     let uploadedStorageKey = null;
 

@@ -2,9 +2,9 @@ import { FFmpegManager } from './FFmpegManager.js';
 import { RecordingFile } from './RecordingFile.js';
 
 export class Recorder {
-  constructor(meetingId) {
+  constructor(meetingId, monitorSource) {
     this.outputPath = RecordingFile.pathFor(meetingId);
-    this.ffmpeg = new FFmpegManager(this.outputPath);
+    this.ffmpeg = new FFmpegManager(this.outputPath, monitorSource);
   }
 
   start() {

@@ -2,8 +2,9 @@ import { spawn } from 'child_process';
 import { getCaptureArgs } from './AudioCapture.js';
 
 export class FFmpegManager {
-  constructor(outputPath) {
+  constructor(outputPath, monitorSource) {
     this.outputPath = outputPath;
+    this.monitorSource = monitorSource;
     this.process = null;
   }
 
@@ -12,7 +13,7 @@ export class FFmpegManager {
       // Platform-specific audio capture args (Windows: dshow/VB-Cable, Linux: pulse)
       // getCaptureArgs() is defined in AudioCapture.js — this is the correct
       // cross-platform call that was previously bypassed by hardcoded args
-      ...getCaptureArgs(),
+      ...getCaptureArgs(this.monitorSource),
 
       // Audio encoding settings
       '-c:a', 'aac',

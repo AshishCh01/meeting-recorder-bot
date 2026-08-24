@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import app from './api/server.js';
 import { assertAuthStateExists } from './core/BrowserManager.js';
+import { startAuthKeepAlive } from './core/AuthKeepAlive.js';
 
 const PORT = process.env.PORT || 3000;
 
@@ -30,3 +31,5 @@ try {
 app.listen(PORT, () => {
   console.log(`meeting-bot listening on port ${PORT}`);
 });
+
+startAuthKeepAlive();

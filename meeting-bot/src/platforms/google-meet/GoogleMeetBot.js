@@ -1,7 +1,7 @@
 // meeting-bot/src/platforms/google-meet/GoogleMeetBot.js
 
 import { MeetingBot } from '../../core/MeetingBot.js';
-import { BrowserManager, resolveAuthStatePath, debugScreenshot } from '../../core/BrowserManager.js';
+import { BrowserManager, resolveAuthStatePath, debugScreenshot, persistStorageState } from '../../core/BrowserManager.js';
 import { GOOGLE_MEET_SELECTORS } from './selectors.js';
 import {
   isAdmitted,
@@ -37,7 +37,7 @@ export class GoogleMeetBot extends MeetingBot {
       throw new Error(`Refusing to navigate — expected meet.google.com, got: ${hostname}`);
     }
 
-    this.context = await BrowserManager.launch('google-meet');
+    this.context = await BrowserManager.launch('google-meet', { pulseSink: this.session.audioSinkName });
     this.page = await this.context.newPage();
 
     console.log(`[GoogleMeetBot] Navigating to ${this.session.meetingUrl}`);
@@ -74,7 +74,7 @@ export class GoogleMeetBot extends MeetingBot {
     // persist whatever fresh rotation cookies Google issued during this
     // page load back to auth.json, extending how long the session stays
     // usable before it goes stale again.
-    await this.context.storageState({ path: resolveAuthStatePath() }).catch((err) => {
+    await persistStorageState(this.context, resolveAuthStatePath()).catch((err) => {
       console.log('[GoogleMeetBot] Warning: could not refresh auth.json:', err.message);
     });
 

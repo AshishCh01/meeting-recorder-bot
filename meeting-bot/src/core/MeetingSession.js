@@ -13,6 +13,7 @@ export class MeetingSession {
     this.errorMessage = null;
     this.recordingFilePath = null; // local temp path, set by RecordingFile
     this.cancelRequested = false;
+    this.audioSinkName = null; // per-session PulseAudio sink, set by MeetingLifecycle via AudioSink.provision()
   }
 
   // Signals the lifecycle's admission-wait and in-meeting polling loops to
