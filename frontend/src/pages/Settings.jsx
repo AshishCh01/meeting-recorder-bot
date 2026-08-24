@@ -1,13 +1,9 @@
 import React, { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { useAuth } from '../context/AuthContext';
 import { Bot, Loader2, Check, CalendarDays, Bell } from 'lucide-react';
 import api from '../lib/api';
-
-const CALENDARS = [
-  { abbr: 'GC', label: 'Google Calendar' },
-  { abbr: 'MS', label: 'Outlook Calendar' },
-];
 
 const NOTIFICATIONS = [
   { label: 'Email me when notes are ready', help: 'One message per meeting, to you only.' },
@@ -34,6 +30,61 @@ export const Settings = () => {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [saved, setSaved] = useState(false);
+
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [calendarStatus, setCalendarStatus] = useState({ connected: false, google_email: null });
+  const [calendarLoading, setCalendarLoading] = useState(true);
+  const [connecting, setConnecting] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [calendarError, setCalendarError] = useState(null);
+  const [justConnected, setJustConnected] = useState(false);
+
+  const fetchCalendarStatus = () => {
+    setCalendarLoading(true);
+    return api.get('/calendar/status')
+      .then(({ data }) => setCalendarStatus(data))
+      .catch((err) => console.error('Failed to load calendar status', err))
+      .finally(() => setCalendarLoading(false));
+  };
+
+  useEffect(() => {
+    fetchCalendarStatus();
+  }, []);
+
+  useEffect(() => {
+    if (searchParams.get('calendar') === 'connected') {
+      setJustConnected(true);
+      setSearchParams({}, { replace: true });
+      fetchCalendarStatus();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  const handleConnectCalendar = async () => {
+    setConnecting(true);
+    setCalendarError(null);
+    try {
+      const { data } = await api.get('/calendar/connect');
+      window.location.href = data.auth_url;
+    } catch (err) {
+      setCalendarError(err.response?.data?.detail || 'Failed to start connecting Google Calendar.');
+      setConnecting(false);
+    }
+  };
+
+  const handleDisconnectCalendar = async () => {
+    setDisconnecting(true);
+    setCalendarError(null);
+    try {
+      await api.delete('/calendar/disconnect');
+      setCalendarStatus({ connected: false, google_email: null });
+      setJustConnected(false);
+    } catch (err) {
+      setCalendarError(err.response?.data?.detail || 'Failed to disconnect Google Calendar.');
+    } finally {
+      setDisconnecting(false);
+    }
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -147,35 +198,73 @@ export const Settings = () => {
             )}
           </div>
 
-          {/* Calendar - not implemented yet */}
-          <div className="bg-surface border border-border-strong rounded-2xl p-6 flex flex-col gap-4 opacity-80">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="bg-status-muted-bg p-2.5 rounded-xl">
-                  <CalendarDays className="w-5 h-5 text-status-muted-fg" />
-                </div>
-                <h2 className="text-[15px] font-bold text-brand-dark">Connected calendar</h2>
+          {/* Calendar */}
+          <div className="bg-surface border border-border-strong rounded-2xl p-6 flex flex-col gap-4">
+            <div className="flex items-center gap-3">
+              <div className="bg-status-muted-bg p-2.5 rounded-xl">
+                <CalendarDays className="w-5 h-5 text-status-muted-fg" />
               </div>
-              <ComingSoonPill />
+              <div>
+                <h2 className="text-[15px] font-bold text-brand-dark">Connected calendar</h2>
+                <p className="text-xs text-muted">Opt individual events into recording from the Dashboard.</p>
+              </div>
             </div>
+
+            {justConnected && (
+              <div className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-status-done-bg text-status-done-fg text-sm font-medium">
+                <Check className="w-4 h-4 shrink-0" /> Google Calendar connected.
+              </div>
+            )}
+            {calendarError && <p className="text-sm text-red-600 dark:text-red-400">{calendarError}</p>}
+
             <div className="flex flex-col gap-2.5">
-              {CALENDARS.map((cal) => (
-                <div
-                  key={cal.abbr}
-                  className="flex items-center gap-3.5 p-3.5 border border-dashed border-border rounded-xl cursor-not-allowed"
-                >
-                  <span className="w-8.5 h-8.5 rounded-lg bg-status-muted-bg text-status-muted-fg text-[11px] font-extrabold flex items-center justify-center">
-                    {cal.abbr}
-                  </span>
-                  <div className="flex-1">
-                    <div className="text-[14.5px] font-semibold text-brand-dark">{cal.label}</div>
-                    <div className="text-xs text-muted">Not connected</div>
+              <div className="flex items-center gap-3.5 p-3.5 border border-border rounded-xl">
+                <span className="w-8.5 h-8.5 rounded-lg bg-status-done-bg text-status-done-fg text-[11px] font-extrabold flex items-center justify-center shrink-0">
+                  GC
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[14.5px] font-semibold text-brand-dark">Google Calendar</div>
+                  <div className="text-xs text-muted truncate">
+                    {calendarLoading
+                      ? 'Checking…'
+                      : calendarStatus.connected
+                        ? calendarStatus.google_email
+                        : 'Not connected'}
                   </div>
-                  <span className="px-3 py-1.5 border border-border rounded-lg text-[13px] font-semibold text-faint">
-                    Connect
-                  </span>
                 </div>
-              ))}
+                {calendarLoading ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-faint shrink-0" />
+                ) : calendarStatus.connected ? (
+                  <button
+                    onClick={handleDisconnectCalendar}
+                    disabled={disconnecting}
+                    className="px-3 py-1.5 border border-border rounded-lg text-[13px] font-semibold text-faint hover:text-red-600 dark:hover:text-red-400 hover:border-red-200 dark:hover:border-red-500/30 transition-colors disabled:opacity-50 shrink-0"
+                  >
+                    {disconnecting ? 'Disconnecting…' : 'Disconnect'}
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleConnectCalendar}
+                    disabled={connecting}
+                    className="px-3 py-1.5 bg-brand-blue text-white rounded-lg text-[13px] font-semibold hover:opacity-90 transition-opacity disabled:opacity-50 shrink-0"
+                  >
+                    {connecting ? 'Connecting…' : 'Connect'}
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-3.5 p-3.5 border border-dashed border-border rounded-xl cursor-not-allowed opacity-70">
+                <span className="w-8.5 h-8.5 rounded-lg bg-status-muted-bg text-status-muted-fg text-[11px] font-extrabold flex items-center justify-center shrink-0">
+                  MS
+                </span>
+                <div className="flex-1">
+                  <div className="text-[14.5px] font-semibold text-brand-dark">Outlook Calendar</div>
+                  <div className="text-xs text-muted">Not connected</div>
+                </div>
+                <span className="px-3 py-1.5 border border-border rounded-lg text-[13px] font-semibold text-faint shrink-0">
+                  Connect
+                </span>
+              </div>
             </div>
           </div>
 

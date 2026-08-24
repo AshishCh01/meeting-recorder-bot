@@ -68,6 +68,14 @@ cp frontend/.env.example frontend/.env
 | `GEMINI_API_KEY` | Google AI Studio API key |
 | `SARVAM_API_KEY`, `JINA_API_KEY` | optional fallback providers — leave blank unless you have accounts with them |
 
+Optional — only needed for the [Google Calendar integration](docs/google-calendar-integration-plan.md), leave blank to disable it:
+
+| Variable | Where it comes from |
+|---|---|
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google Cloud Console → APIs & Services → Credentials → OAuth client ID (Web application) |
+| `GOOGLE_OAUTH_REDIRECT_URI` | leave as `http://localhost:8000/calendar/oauth/callback` for local dev |
+| `GOOGLE_TOKEN_ENCRYPTION_KEY` | generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+
 **`meeting-bot/.env`:**
 
 | Variable | Where it comes from |

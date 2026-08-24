@@ -34,6 +34,17 @@ class Meeting(Base):
     # meeting - Gemini and Jina vectors live in different, incompatible
     # spaces, so mixing them silently returns wrong results, not an error.
     embedding_provider = Column(String, nullable=True)
+    # When set, this meeting was scheduled for a future join (via the
+    # calendar "record this event" flow, or in principle any future
+    # date) rather than joined immediately - app/services/scheduler.py
+    # picks it up once scheduled_at arrives. NULL for meetings created
+    # the normal way through POST /meetings, which still join right away.
+    scheduled_at = Column(DateTime(timezone=True), nullable=True)
+    # The originating Google Calendar event, for meetings created via
+    # POST /calendar/events/{event_id}/schedule. NULL for manually
+    # created meetings. (user_id, calendar_event_id) is unique where
+    # not null - see e9c2b6a4f1d8_add_calendar_fields_to_meetings.py.
+    calendar_event_id = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     # Bumped automatically (including on Core-style bulk updates - see
     # webhooks.py/meetings.py) on every write. The watchdog sweep uses
@@ -42,6 +53,20 @@ class Meeting(Base):
 
     user = relationship("User", back_populates="meetings")
     chunks = relationship("MeetingChunk", back_populates="meeting", cascade="all, delete-orphan")
+
+class CalendarConnection(Base):
+    __tablename__ = "calendar_connections"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
+    google_email = Column(String, nullable=False)
+    # Fernet-encrypted - never stored or logged in plaintext. Decrypted
+    # on demand in app/services/google_oauth_service.py.
+    refresh_token_encrypted = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User")
 
 class MeetingChunk(Base):
     __tablename__ = "meeting_chunks"

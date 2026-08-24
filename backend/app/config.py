@@ -36,6 +36,24 @@ class Settings(BaseSettings):
     jina_api_key: str = ""
     jina_embedding_model: str = "jina-embeddings-v3"    #Fallback embedding model
 
+    # Google Calendar integration (optional - the app runs fine with
+    # these unset, the /calendar/* routes just fail with a clear error
+    # until they're configured). See docs/google-calendar-integration-plan.md.
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_oauth_redirect_uri: str = "http://localhost:8000/calendar/oauth/callback"
+    # Fernet key encrypting stored Calendar refresh tokens at rest -
+    # generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    google_token_encryption_key: str = ""
+    calendar_lookahead_days: int = 7
+
+    # Scheduler: picks up meetings whose scheduled_at (set via the
+    # calendar "record this event" flow) has arrived and triggers the
+    # bot join, same as the immediate path in POST /meetings.
+    calendar_scheduler_enabled: bool = True
+    scheduler_sweep_interval_minutes: int = 1
+    calendar_join_lead_minutes: int = 2
+
     # Watchdog: fails meetings stuck in a non-terminal status past these
     # TTLs (docs/reliability-audit.md, finding #1). "recording" has no
     # TTL of its own - it's max_recording_duration_minutes (the same

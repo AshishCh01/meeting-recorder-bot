@@ -6,9 +6,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.exc import OperationalError
 from app.config import settings
-from app.api import chat, meetings, users, webhooks
+from app.api import calendar, chat, meetings, users, webhooks
 from app.db.database import SessionLocal
 from app.services.watchdog import sweep_stale_meetings
+from app.services.scheduler import trigger_due_meetings
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +38,33 @@ async def _watchdog_loop():
         await asyncio.sleep(interval_seconds)
 
 
+async def _scheduler_loop():
+    interval_seconds = settings.scheduler_sweep_interval_minutes * 60
+    while True:
+        try:
+            db = SessionLocal()
+            try:
+                await asyncio.to_thread(trigger_due_meetings, db)
+            finally:
+                db.close()
+        except OperationalError as e:
+            logger.warning("[scheduler] sweep failed: DB connection error (%s) - will retry next cycle", e)
+        except Exception:
+            logger.exception("[scheduler] sweep failed")
+        await asyncio.sleep(interval_seconds)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = None
+    tasks = []
     if settings.watchdog_enabled:
-        task = asyncio.create_task(_watchdog_loop())
+        tasks.append(asyncio.create_task(_watchdog_loop()))
+    if settings.calendar_scheduler_enabled:
+        tasks.append(asyncio.create_task(_scheduler_loop()))
     yield
-    if task:
+    for task in tasks:
         task.cancel()
+    for task in tasks:
         with suppress(asyncio.CancelledError):
             await task
 
@@ -68,6 +88,7 @@ app.include_router(meetings.router)
 app.include_router(webhooks.router)
 app.include_router(chat.router)
 app.include_router(users.router)
+app.include_router(calendar.router)
 
 
 @app.get("/health")
