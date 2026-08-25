@@ -20,13 +20,25 @@ FROM nginx:1.27-alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 # React Router / client-side routing: unknown paths should fall back
 # to index.html instead of nginx's default 404.
+#
+# Written as a *.template into /etc/nginx/templates/, not directly into
+# conf.d/ - the official nginx image's entrypoint runs envsubst over
+# every file there at container start and writes the result into
+# conf.d/, substituting ${PORT}. Cloud Run injects a PORT env var and
+# expects the container to listen on it (which it can pick per
+# deployment, so a static `listen 80` doesn't reliably match). ENV
+# PORT=80 below is the fallback for platforms that don't set PORT
+# (local docker run, Render if it doesn't inject one) - Cloud Run's own
+# injected value overrides it at runtime.
+ENV PORT=80
+RUN mkdir -p /etc/nginx/templates
 RUN echo 'server { \
-    listen 80; \
+    listen ${PORT}; \
     location / { \
         root /usr/share/nginx/html; \
         try_files $uri $uri/ /index.html; \
     } \
-}' > /etc/nginx/conf.d/default.conf
+}' > /etc/nginx/templates/default.conf.template
 
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]

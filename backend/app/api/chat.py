@@ -1,3 +1,4 @@
+from uuid import UUID
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 from app.db.database import get_db
@@ -10,7 +11,7 @@ router = APIRouter(prefix="/meetings", tags=["chat"])
 
 @router.post("/{meeting_id}/chat", response_model=ChatResponse)
 async def chat_with_meeting(
-    meeting_id: str,
+    meeting_id: UUID,
     payload: ChatRequest,
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user)
@@ -23,5 +24,5 @@ async def chat_with_meeting(
             409, f"Meeting transcript isn't ready yet (status: {meeting.status})"
         )
 
-    result = await ask_question(meeting_id, payload.question, payload.session_id, user_id)
+    result = await ask_question(str(meeting_id), payload.question, payload.session_id, user_id)
     return ChatResponse(**result)

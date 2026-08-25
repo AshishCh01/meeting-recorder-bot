@@ -39,4 +39,9 @@ USER appuser
 # own copy - a chat session could "forget" earlier turns if routed to
 # a different worker mid-conversation. Scale via more container
 # replicas behind your platform's load balancer instead.
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"]
+#
+# ${PORT:-8000}: Cloud Run injects PORT and expects the container to
+# listen on it, which can differ from the EXPOSE 8000 default below.
+# Render and local docker-compose don't set PORT, so this still falls
+# back to 8000 for those unchanged.
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]

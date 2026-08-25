@@ -20,8 +20,11 @@ class Meeting(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    question: str
-    session_id: Optional[str] = None
+    # max_length bounds cost/abuse against the Gemini agent - a request
+    # with no cap here could forward an arbitrarily large prompt straight
+    # through to ask_question().
+    question: str = Field(min_length=1, max_length=4000)
+    session_id: Optional[str] = Field(default=None, max_length=128)
 
 
 class ChatResponse(BaseModel):

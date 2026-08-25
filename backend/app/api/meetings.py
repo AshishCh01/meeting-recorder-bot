@@ -1,3 +1,4 @@
+from uuid import UUID
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Response
 from sqlalchemy.orm import Session
 from app.db.database import get_db
@@ -79,7 +80,7 @@ def list_meetings(
 
 @router.get("/{meeting_id}")
 def get_meeting(
-    meeting_id: str,
+    meeting_id: UUID,
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user)
 ):
@@ -102,7 +103,7 @@ from sqlalchemy import update
 
 @router.post("/{meeting_id}/retry")
 def retry_meeting(
-    meeting_id: str,
+    meeting_id: UUID,
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user)
 ):
@@ -143,7 +144,7 @@ def retry_meeting(
 
 @router.post("/{meeting_id}/stop")
 def stop_meeting(
-    meeting_id: str,
+    meeting_id: UUID,
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user)
 ):
@@ -155,7 +156,7 @@ def stop_meeting(
         raise HTTPException(409, "Meeting is not currently active - nothing to stop.")
 
     try:
-        stop_bot(meeting_id)
+        stop_bot(str(meeting_id))
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
             raise HTTPException(409, "Bot has no active session for this meeting - it may have just finished on its own.")
@@ -171,7 +172,7 @@ def stop_meeting(
 
 @router.delete("/{meeting_id}")
 def delete_meeting(
-    meeting_id: str,
+    meeting_id: UUID,
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user)
 ):
@@ -181,7 +182,7 @@ def delete_meeting(
 
     if meeting.status in ("joining", "waiting_for_admission", "recording"):
         try:
-            stop_bot(meeting_id)
+            stop_bot(str(meeting_id))
         except Exception as e:
             # Not fatal - the bot may have already finished on its own between
             # the status check above and this call. Deletion proceeds either
@@ -207,7 +208,7 @@ def delete_meeting(
 
 @router.get("/{meeting_id}/export-pdf")
 def export_meeting_pdf(
-    meeting_id: str,
+    meeting_id: UUID,
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user)
 ):

@@ -7,6 +7,12 @@ httpx==0.28.1
 python-dotenv==1.0.1
 google-genai==2.8.0
 google-adk==1.1.1
+# Pinned explicitly: google-auth 2.57.0 (published after this was last
+# resolved) has extras metadata that pip's resolver can't reconcile with
+# google-adk's transitive google-cloud-* tree - a fresh `pip install`
+# fails with ResolutionImpossible without this pin. 2.56.3 is the version
+# already resolved and running in the existing local venv.
+google-auth==2.56.3
 sqlalchemy==2.0.52
 alembic==1.13.1
 pgvector==0.2.5
