@@ -82,6 +82,25 @@ export class ZoomBot extends MeetingBot {
   }
 
   async join() {
+    // Defense-in-depth, mirroring GoogleMeetBot.join(): don't trust that
+    // upstream (platform_detector.py) already confirmed this is really a
+    // Zoom link. This matters more here than it would look at first,
+    // because buildDirectWebClientUrl() below falls back to the raw,
+    // unvalidated inviteUrl if new URL() throws - without this check nothing
+    // else re-verifies the hostname before navigating a real, authenticated
+    // browser there. zoom.us subdomains are legitimate (us02web.zoom.us,
+    // app.zoom.us, <company>.zoom.us) - matches platform_detector.py's own
+    // subdomain-matching allowlist for "zoom.us".
+    let hostname;
+    try {
+      hostname = new URL(this.session.meetingUrl).hostname.toLowerCase();
+    } catch {
+      throw new Error(`Refusing to navigate — not a valid URL: ${this.session.meetingUrl}`);
+    }
+    if (hostname !== 'zoom.us' && !hostname.endsWith('.zoom.us')) {
+      throw new Error(`Refusing to navigate — expected a zoom.us URL, got: ${hostname}`);
+    }
+
     console.log('[ZoomBot] Launching browser...');
     this.context = await BrowserManager.launch('zoom', { pulseSink: this.session.audioSinkName });
     this.page = await this.context.newPage();
