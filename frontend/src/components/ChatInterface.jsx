@@ -2,12 +2,12 @@ import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Send, Loader2 } from 'lucide-react';
 import meetiqLogo from '../assets/logo.png';
-import { useMeetingChat } from '../hooks/useMeetingChat';
+import { useMeetingChatContext } from '../context/MeetingChatContext';
 
 const SUGGESTIONS = ['Summarize the decisions', 'What are the action items?', 'Any risks mentioned?'];
 
-export const ChatInterface = ({ meetingId }) => {
-  const { messages, input, setInput, loading, streaming, status, sendMessage, messagesEndRef } = useMeetingChat(meetingId);
+export const ChatInterface = () => {
+  const { messages, input, setInput, loading, streaming, status, sendMessage, messagesEndRef } = useMeetingChatContext();
 
   const handleSubmit = (e) => {
     e.preventDefault();

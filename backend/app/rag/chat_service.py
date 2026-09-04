@@ -144,7 +144,18 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
         config = types.GenerateContentConfig(
             tools=available_tools,
             system_instruction=INSTRUCTION,
-            temperature=0.0
+            temperature=0.0,
+            # Must stay disabled. Passing Python callables as `tools` otherwise
+            # opts into the SDK's Automatic Function Calling, which invokes
+            # them itself and never surfaces the function_call parts that the
+            # dispatch loop below is built to handle. Two things break as a
+            # result: in streaming mode the SDK emits a single empty-text chunk
+            # (so the turn has neither text nor tool calls, and the request
+            # fails with "No response was returned by the model"), and because
+            # AFC runs the sync tool bodies inline inside the async client
+            # call, they execute on the event loop thread - defeating the
+            # asyncio.to_thread offload below, which is the whole point of it.
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
     
         MAX_TOOL_ITERATIONS = 6
@@ -177,6 +188,13 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
             # still be appended to history for the next iteration.
             text_acc: list[str] = []
             function_calls = []
+            # The original Part objects exactly as the model produced them.
+            # They must be echoed back verbatim in history rather than rebuilt:
+            # Gemini attaches a thought_signature to function-call parts, and
+            # reconstructing a part from just its .function_call drops it,
+            # which the API rejects on the next turn with
+            # "400 INVALID_ARGUMENT: Function call is missing a thought_signature".
+            model_parts = []
             streamed_any_text = False
             turn_prompt_tokens = 0
             turn_output_tokens = 0
@@ -184,6 +202,7 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
             for attempt in range(chat_max_retries):
                 text_acc = []
                 function_calls = []
+                model_parts = []
                 turn_prompt_tokens = 0
                 turn_output_tokens = 0
                 try:
@@ -205,12 +224,21 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                         for part in chunk.candidates[0].content.parts or []:
                             if part.function_call:
                                 function_calls.append(part.function_call)
+                                model_parts.append(part)
                             elif getattr(part, "text", None):
                                 text_acc.append(part.text)
+                                model_parts.append(part)
                                 streamed_any_text = True
                                 yield {"type": "delta", "text": part.text}
                     break  # Success!
                 except (errors.APIError, httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
+                    # Log it: without this the failure is invisible, since every
+                    # exit below replaces the error with a generic user-facing
+                    # message. A non-transient fault (e.g. a 400 from malformed
+                    # history) otherwise looks identical to rate limiting.
+                    code = getattr(e, "code", None) or type(e).__name__
+                    print(f"[chat] generate_content_stream failed (attempt {attempt+1}/{chat_max_retries}), code={code}: {e}")
+
                     # Once deltas have gone out to the client, a retry would
                     # duplicate the text already shown, so only retry a turn
                     # that failed before emitting anything.
@@ -233,13 +261,11 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                 yield {"type": "error", "message": "No response was returned by the model."}
                 return
 
-            # Reassemble the streamed chunks into a single model turn and
-            # append it to history, so the next iteration sees what was said.
-            model_parts = []
-            if text_acc:
-                model_parts.append(types.Part.from_text(text="".join(text_acc)))
-            for fc in function_calls:
-                model_parts.append(types.Part(function_call=fc))
+            # Append the model turn to history so the next iteration sees what
+            # was said. The parts go back exactly as they arrived (see the
+            # thought_signature note above) - streamed text stays split across
+            # several parts, which is equivalent to one merged part as far as
+            # the model is concerned.
             history.append(types.Content(role="model", parts=model_parts))
 
             # If there are function calls, execute them and re-prompt

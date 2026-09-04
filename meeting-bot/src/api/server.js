@@ -93,9 +93,15 @@ function makeJoinHandler(platform) {
   };
 }
 
+// No /teams/join: MeetingLifecycle's BOT_CLASSES has no Teams implementation,
+// so the route only ever threw "Unsupported platform: teams" before the
+// lifecycle's try/finally was entered - meaning no webhook fired and the
+// meeting sat in "joining" until the backend watchdog TTL swept it. The
+// backend's platform allowlist already rejects Teams URLs upstream; this
+// removes the second, unreachable way in. Add the route back alongside a real
+// BOT_CLASSES entry if Teams support is ever implemented.
 app.post('/google/join', requireAuth, makeJoinHandler('google'));
 app.post('/zoom/join', requireAuth, makeJoinHandler('zoom'));
-app.post('/teams/join', requireAuth, makeJoinHandler('teams'));
 
 app.post('/stop', requireAuth, (req, res) => {
   const { meetingId } = req.body;

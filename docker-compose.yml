@@ -10,8 +10,13 @@ services:
     volumes:
       # Live-reloads your Python code without rebuilding
       - ./backend:/app
-      # Maps local recordings so the backend can process the bot's files
-      - ./recordings:/app/recordings
+      # Keeps the host's venv out of the container. The bind mount above
+      # would otherwise drag a Windows-layout venv/ into Linux, where
+      # uvicorn --reload watches it: any pip install on the host triggers a
+      # spurious server restart, and the watcher has crashed outright on it
+      # ("IO error for operation on /app/venv/share"), taking the backend
+      # down. Same pattern as the frontend's node_modules exclusion below.
+      - /app/venv
     dns:
       # Docker Desktop's embedded DNS resolver intermittently fails to
       # resolve external hosts (e.g. the Supabase pooler) on Windows/WSL2.

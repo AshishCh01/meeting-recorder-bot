@@ -19,7 +19,7 @@ export async function runMeetingLifecycle(session) {
   // Per-session audio sink (phase 2) — the bot's browser audio and this
   // session's ffmpeg capture both get pointed at it below, isolating this
   // meeting's audio from any other concurrently-running meeting's.
-  const audioSink = AudioSink.provision(session.meetingId);
+  const audioSink = await AudioSink.provision(session.meetingId);
   session.audioSinkName = audioSink.sinkName;
 
   const bot = new BotClass(session);
@@ -69,7 +69,9 @@ export async function runMeetingLifecycle(session) {
       return null;
     });
 
-    audioSink.release();
+    // Never let a sink-cleanup failure abort the rest of the shutdown - the
+    // recording still needs uploading and the backend still needs notifying.
+    await audioSink.release().catch(() => {});
 
     let uploadedStorageKey = null;
 

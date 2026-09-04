@@ -4,6 +4,7 @@ import { Layout } from '../components/Layout';
 import { MeetingDetails } from '../components/MeetingDetails';
 import { ChatInterface } from '../components/ChatInterface';
 import { MobileChatSheet } from '../components/meeting/MobileChatSheet';
+import { MeetingChatProvider } from '../context/MeetingChatContext';
 import { DeleteConfirmDialog } from '../components/DeleteConfirmDialog';
 import { Loader2 } from 'lucide-react';
 import api from '../lib/api';
@@ -107,19 +108,24 @@ export const MeetingView = () => {
 
   return (
     <Layout>
-      <div className="h-[calc(100vh-13rem)] lg:h-[calc(100vh-4rem)] flex bg-surface border border-border-strong rounded-2xl overflow-hidden shadow-sm">
-        <div className="flex-1 min-w-0">
-          <MeetingDetails meeting={meeting} onRetry={handleRetry} onStop={handleStop} onDeleteRequest={setDeleteTarget} />
+      {/* Both chat surfaces below are always mounted (only CSS hides one), so
+          they share a single conversation through this provider rather than
+          each owning its own copy of the chat state. */}
+      <MeetingChatProvider meetingId={meeting.id}>
+        <div className="h-[calc(100vh-13rem)] lg:h-[calc(100vh-4rem)] flex bg-surface border border-border-strong rounded-2xl overflow-hidden shadow-sm">
+          <div className="flex-1 min-w-0">
+            <MeetingDetails meeting={meeting} onRetry={handleRetry} onStop={handleStop} onDeleteRequest={setDeleteTarget} />
+          </div>
+
+          {/* Desktop: permanent chat column */}
+          <div className="hidden lg:block w-105 flex-none border-l border-line">
+            <ChatInterface />
+          </div>
         </div>
 
-        {/* Desktop: permanent chat column */}
-        <div className="hidden lg:block w-105 flex-none border-l border-line">
-          <ChatInterface meetingId={meeting.id} />
-        </div>
-      </div>
-
-      {/* Mobile: drag-up chat sheet */}
-      <MobileChatSheet meetingId={meeting.id} meetingTitle={meeting.title || meeting.meeting_url} />
+        {/* Mobile: drag-up chat sheet */}
+        <MobileChatSheet meetingTitle={meeting.title || meeting.meeting_url} />
+      </MeetingChatProvider>
 
       <DeleteConfirmDialog
         meeting={deleteTarget}

@@ -1,9 +1,15 @@
 """initial_schema
 
 Revision ID: 475e9ee29ad9
-Revises: 
+Revises: a0f1e2d3c4b5
 Create Date: 2026-08-16 19:13:02.602100
 
+Note: this was originally the base revision. It ALTERs meetings and
+meeting_chunks without creating them, because both were made by hand in the
+Supabase SQL editor before the migration chain existed. a0f1e2d3c4b5 was
+later inserted ahead of it to create those tables in their pre-migration
+shape, so this chain can also build a database from empty. Nothing in this
+file changed - only its down_revision.
 """
 from typing import Sequence, Union
 
@@ -14,7 +20,7 @@ import pgvector.sqlalchemy
 
 # revision identifiers, used by Alembic.
 revision: str = '475e9ee29ad9'
-down_revision: Union[str, None] = None
+down_revision: Union[str, None] = 'a0f1e2d3c4b5'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

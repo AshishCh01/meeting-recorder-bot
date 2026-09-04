@@ -1,15 +1,15 @@
 import random
 import time
-import httpx
 
 from sqlalchemy.orm import Session
 from google import genai
-from google.genai import types, errors
+from google.genai import types
 
 from app.config import settings
 from app.db.models import Meeting, MeetingChunk
 from app.services.embedding_fallback_jina import embed_documents_with_jina, embed_query_with_jina
 from app.services.cost_tracker import gemini_embedding_cost, log_cost
+from app.services.gemini_errors import TRANSIENT_EXCEPTIONS, error_code_str, is_transient
 
 # Initialize the Gemini GenAI client
 client = genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOptions(timeout=60_000))
@@ -118,9 +118,9 @@ def _call_gemini_embed_with_retry(contents, max_retries: int = 4):
                 contents=contents,
                 config=types.EmbedContentConfig(output_dimensionality=settings.embedding_dimensions),
             )
-        except (errors.APIError, httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
-            retriable = (isinstance(e, errors.APIError) and e.code in (429, 503)) or not isinstance(e, errors.APIError)
-            code_str = str(e.code) if hasattr(e, "code") else type(e).__name__
+        except TRANSIENT_EXCEPTIONS as e:
+            retriable = is_transient(e)
+            code_str = error_code_str(e)
             if not retriable or attempt == max_retries - 1:
                 raise
             delay = (2 ** attempt) + random.uniform(0, 1)
@@ -143,9 +143,9 @@ def _embed_documents(texts: list[str]) -> tuple[list[list[float]], str]:
     try:
         response = _call_gemini_embed_with_retry(texts)
         return [e.values for e in response.embeddings], GEMINI_PROVIDER
-    except (errors.APIError, httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
-        is_retriable = (isinstance(e, errors.APIError) and e.code in (429, 503)) or not isinstance(e, errors.APIError)
-        code_str = str(e.code) if hasattr(e, "code") else type(e).__name__
+    except TRANSIENT_EXCEPTIONS as e:
+        is_retriable = is_transient(e)
+        code_str = error_code_str(e)
         if is_retriable and settings.jina_api_key:
             print(f"[embedding] Gemini {code_str} persisted after retries, falling back to Jina AI...")
             return embed_documents_with_jina(texts), JINA_PROVIDER
@@ -167,9 +167,9 @@ def embed_query(query: str, provider: str = GEMINI_PROVIDER) -> list[float]:
     try:
         response = _call_gemini_embed_with_retry(query)
         return response.embeddings[0].values
-    except (errors.APIError, httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
-        is_retriable = (isinstance(e, errors.APIError) and e.code in (429, 503)) or not isinstance(e, errors.APIError)
-        code_str = str(e.code) if hasattr(e, "code") else type(e).__name__
+    except TRANSIENT_EXCEPTIONS as e:
+        is_retriable = is_transient(e)
+        code_str = error_code_str(e)
         if is_retriable and settings.jina_api_key:
             print(f"[embedding] Gemini {code_str} persisted after retries, falling back to Jina AI for query...")
             return embed_query_with_jina(query)

@@ -1,14 +1,14 @@
 import React, { useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { X, ChevronUp, Send, Loader2 } from 'lucide-react';
-import { useMeetingChat } from '../../hooks/useMeetingChat';
+import { useMeetingChatContext } from '../../context/MeetingChatContext';
 
 const SUGGESTIONS = ['What did I commit to?', 'What was decided?'];
 const DRAG_THRESHOLD = 60;
 
-export const MobileChatSheet = ({ meetingId, meetingTitle }) => {
+export const MobileChatSheet = ({ meetingTitle }) => {
   const [expanded, setExpanded] = useState(false);
-  const { messages, input, setInput, loading, streaming, status, sendMessage, messagesEndRef } = useMeetingChat(meetingId);
+  const { messages, input, setInput, loading, streaming, status, sendMessage, messagesEndRef } = useMeetingChatContext();
   const dragStartY = useRef(null);
 
   const handleTouchStart = (e) => {

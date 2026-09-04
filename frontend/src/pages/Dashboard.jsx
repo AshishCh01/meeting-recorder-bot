@@ -45,6 +45,24 @@ export const Dashboard = () => {
     fetchMeetings();
   }, []);
 
+  // A meeting that finishes recording/transcribing in the background used to
+  // sit here looking unchanged until the user manually reloaded. Refresh while
+  // anything is still in flight, then stop once everything has settled - and
+  // skip ticks while the tab is hidden, so a dashboard left open in a
+  // background tab isn't polling all day.
+  const hasMeetingInProgress = useMemo(
+    () => meetings.some(m => getStatusMeta(m.status).tone === 'processing'),
+    [meetings]
+  );
+
+  useEffect(() => {
+    if (!hasMeetingInProgress) return;
+    const intervalId = setInterval(() => {
+      if (document.visibilityState === 'visible') fetchMeetings();
+    }, 10000);
+    return () => clearInterval(intervalId);
+  }, [hasMeetingInProgress]);
+
   const handleRetry = async (meetingId) => {
     setRetryingId(meetingId);
     setMeetings(prev => prev.map(m => m.id === meetingId ? { ...m, status: 'transcribing' } : m));

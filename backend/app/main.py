@@ -14,19 +14,38 @@ from app.services.scheduler import trigger_due_meetings
 logger = logging.getLogger(__name__)
 
 
+def _run_with_session(work):
+    """
+    Runs a sync sweep with a Session created and closed on the same thread.
+
+    The session must not be opened on the event loop thread and closed there
+    around an `await`: asyncio.to_thread cannot cancel the worker thread, so
+    on shutdown the await raises CancelledError while the sweep is still
+    running, and a `finally: db.close()` then closes the Session from the loop
+    thread while the worker is mid-query. SQLAlchemy Sessions aren't
+    thread-safe, and that raced close surfaced as
+    "IllegalStateChangeError: Method 'close()' can't be called here".
+    Owning the whole lifecycle inside the worker removes the interleaving.
+    """
+    db = SessionLocal()
+    try:
+        work(db)
+    finally:
+        db.close()
+
+
 async def _watchdog_loop():
     interval_seconds = settings.watchdog_sweep_interval_minutes * 60
     while True:
         try:
-            db = SessionLocal()
-            try:
-                # Run the sync SQLAlchemy sweep off the event loop thread,
-                # same reasoning FastAPI already applies to sync route
-                # handlers - this loop runs on the loop thread directly
-                # since it's a plain asyncio.create_task, not a request.
-                await asyncio.to_thread(sweep_stale_meetings, db)
-            finally:
-                db.close()
+            # Run the sync SQLAlchemy sweep off the event loop thread, same
+            # reasoning FastAPI already applies to sync route handlers - this
+            # loop runs on the loop thread directly since it's a plain
+            # asyncio.create_task, not a request.
+            await asyncio.to_thread(_run_with_session, sweep_stale_meetings)
+        except asyncio.CancelledError:
+            # Normal shutdown - stop quietly rather than logging a traceback.
+            raise
         except OperationalError as e:
             # DB connectivity blips (e.g. transient DNS resolution
             # failures reaching the Supabase pooler) are expected and
@@ -42,11 +61,9 @@ async def _scheduler_loop():
     interval_seconds = settings.scheduler_sweep_interval_minutes * 60
     while True:
         try:
-            db = SessionLocal()
-            try:
-                await asyncio.to_thread(trigger_due_meetings, db)
-            finally:
-                db.close()
+            await asyncio.to_thread(_run_with_session, trigger_due_meetings)
+        except asyncio.CancelledError:
+            raise
         except OperationalError as e:
             logger.warning("[scheduler] sweep failed: DB connection error (%s) - will retry next cycle", e)
         except Exception:

@@ -108,14 +108,30 @@ export class BrowserManager {
     });
 
     // 2. Create a new context and inject the saved login session from auth.json
-    const context = await browser.newContext({
-      permissions: ['camera', 'microphone'],
-      storageState: authStatePath,
-    });
+    //
+    // Anything that throws between here and the `return` below has to close
+    // the browser itself. The Chrome process is already running at this
+    // point, but the caller never receives the context, so its own cleanup
+    // (bot.leave(), which is guarded by `if (this.context)`) can't see it and
+    // no other reference survives the throw. Without this, a failure here -
+    // a corrupted or truncated storageState file being the realistic one -
+    // orphans a headed Chrome process on the shared Xvfb display, and a
+    // repeating failure (one stale auth file fails every join the same way)
+    // stacks them up until the container degrades.
+    let context;
+    try {
+      context = await browser.newContext({
+        permissions: ['camera', 'microphone'],
+        storageState: authStatePath,
+      });
 
-    await context.addInitScript(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    });
+      await context.addInitScript(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      });
+    } catch (err) {
+      await browser.close().catch(() => {});
+      throw err;
+    }
 
     // 3. Ensure the underlying browser process dies when the context is closed
     const originalClose = context.close.bind(context);
