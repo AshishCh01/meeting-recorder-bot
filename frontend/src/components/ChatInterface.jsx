@@ -7,7 +7,7 @@ import { useMeetingChat } from '../hooks/useMeetingChat';
 const SUGGESTIONS = ['Summarize the decisions', 'What are the action items?', 'Any risks mentioned?'];
 
 export const ChatInterface = ({ meetingId }) => {
-  const { messages, input, setInput, loading, sendMessage, messagesEndRef } = useMeetingChat(meetingId);
+  const { messages, input, setInput, loading, streaming, status, sendMessage, messagesEndRef } = useMeetingChat(meetingId);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -50,12 +50,17 @@ export const ChatInterface = ({ meetingId }) => {
           );
         })}
 
-        {loading && (
+        {/* Only until the answer itself starts arriving - once it's streaming,
+            the growing text is the progress indicator. */}
+        {loading && !streaming && (
           <div className="flex justify-start">
-            <div className="bg-surface border border-border-strong rounded-2xl px-4 py-3.5 flex items-center gap-1.5">
-              <div className="w-2 h-2 bg-brand-blue/40 rounded-full animate-bounce" />
-              <div className="w-2 h-2 bg-brand-blue/60 rounded-full animate-bounce" style={{ animationDelay: '0.15s' }} />
-              <div className="w-2 h-2 bg-brand-blue rounded-full animate-bounce" style={{ animationDelay: '0.3s' }} />
+            <div className="bg-surface border border-border-strong rounded-2xl px-4 py-3.5 flex items-center gap-2.5">
+              <div className="flex items-center gap-1.5">
+                <div className="w-2 h-2 bg-brand-blue/40 rounded-full animate-bounce" />
+                <div className="w-2 h-2 bg-brand-blue/60 rounded-full animate-bounce" style={{ animationDelay: '0.15s' }} />
+                <div className="w-2 h-2 bg-brand-blue rounded-full animate-bounce" style={{ animationDelay: '0.3s' }} />
+              </div>
+              {status && <span className="text-xs text-muted">{status}</span>}
             </div>
           </div>
         )}

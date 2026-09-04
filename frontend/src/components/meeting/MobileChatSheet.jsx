@@ -8,7 +8,7 @@ const DRAG_THRESHOLD = 60;
 
 export const MobileChatSheet = ({ meetingId, meetingTitle }) => {
   const [expanded, setExpanded] = useState(false);
-  const { messages, input, setInput, loading, sendMessage, messagesEndRef } = useMeetingChat(meetingId);
+  const { messages, input, setInput, loading, streaming, status, sendMessage, messagesEndRef } = useMeetingChat(meetingId);
   const dragStartY = useRef(null);
 
   const handleTouchStart = (e) => {
@@ -67,7 +67,9 @@ export const MobileChatSheet = ({ meetingId, meetingTitle }) => {
                 </div>
               );
             })}
-            {loading && <div className="text-xs text-muted">Thinking…</div>}
+            {loading && !streaming && (
+              <div className="text-xs text-muted">{status || 'Thinking…'}</div>
+            )}
             <div ref={messagesEndRef} />
           </div>
         </>

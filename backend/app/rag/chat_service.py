@@ -58,10 +58,25 @@ class DummyToolContext:
 def _session_id(meeting_id: str, session_id: str | None) -> str:
     return session_id or f"meeting-{meeting_id}"
 
-async def ask_question(meeting_id: str, question: str, session_id: str | None = None, user_id: str = None) -> dict:
+async def ask_question_stream(meeting_id: str, question: str, session_id: str | None = None, user_id: str = None):
+    """
+    Runs the agent loop and yields events as they happen, so the caller can
+    show the answer while it's still being generated instead of waiting for
+    the whole multi-turn tool-calling loop to finish:
+
+        {"type": "tool",  "name": "search_transcript"}  - a tool is starting
+        {"type": "delta", "text": "..."}                - a piece of the answer
+        {"type": "done",  "session_id": ..., "tools_used": [...]}
+        {"type": "error", "message": "..."}             - fatal; stream ends
+
+    Joining every "delta" in order reproduces the complete answer - including
+    the canned fallback messages - which is what the non-streaming
+    ask_question() wrapper below relies on. Keeping one implementation of the
+    loop means the streaming and non-streaming paths can't drift apart.
+    """
     if not user_id:
         raise ValueError("user_id must be provided to scope the agent's context.")
-        
+
     sid = _session_id(meeting_id, session_id)
     session_lock, history = await _session_cache.get_session(user_id, meeting_id, sid)
     
@@ -151,48 +166,82 @@ async def ask_question(meeting_id: str, question: str, session_id: str | None = 
         while True:
             if loop_count >= MAX_TOOL_ITERATIONS:
                 _log_chat_cost()
-                return {
-                    "session_id": sid,
-                    "answer": "I'm having trouble finding the exact information you requested. Could you try rephrasing your question?",
-                    "tools_used": tools_used,
-                }
+                yield {"type": "delta", "text": "I'm having trouble finding the exact information you requested. Could you try rephrasing your question?"}
+                yield {"type": "done", "session_id": sid, "tools_used": tools_used}
+                return
             loop_count += 1
 
             chat_max_retries = 3
+            # Per-turn accumulators. Text parts are streamed to the caller as
+            # they arrive AND collected here, so the complete model turn can
+            # still be appended to history for the next iteration.
+            text_acc: list[str] = []
+            function_calls = []
+            streamed_any_text = False
+            turn_prompt_tokens = 0
+            turn_output_tokens = 0
+
             for attempt in range(chat_max_retries):
+                text_acc = []
+                function_calls = []
+                turn_prompt_tokens = 0
+                turn_output_tokens = 0
                 try:
-                    response = await client.aio.models.generate_content(
+                    stream = await client.aio.models.generate_content_stream(
                         model=settings.rag_agent_model,
                         contents=history,
                         config=config,
                     )
-                    break # Success!
+                    async for chunk in stream:
+                        # Streaming usage_metadata is cumulative for the turn,
+                        # so keep the latest rather than summing per chunk.
+                        usage = getattr(chunk, "usage_metadata", None)
+                        if usage:
+                            turn_prompt_tokens = usage.prompt_token_count or 0
+                            turn_output_tokens = usage.candidates_token_count or 0
+
+                        if not chunk.candidates:
+                            continue
+                        for part in chunk.candidates[0].content.parts or []:
+                            if part.function_call:
+                                function_calls.append(part.function_call)
+                            elif getattr(part, "text", None):
+                                text_acc.append(part.text)
+                                streamed_any_text = True
+                                yield {"type": "delta", "text": part.text}
+                    break  # Success!
                 except (errors.APIError, httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
+                    # Once deltas have gone out to the client, a retry would
+                    # duplicate the text already shown, so only retry a turn
+                    # that failed before emitting anything.
+                    if streamed_any_text:
+                        _log_chat_cost()
+                        yield {"type": "error", "message": "The connection to the AI service was interrupted mid-answer. Please try again."}
+                        return
                     if attempt == chat_max_retries - 1:
-                        return {
-                            "session_id": sid,
-                            "answer": "The AI service is currently experiencing high load or rate limits. Please try again in a few moments.",
-                            "tools_used": tools_used,
-                        }
+                        _log_chat_cost()
+                        yield {"type": "delta", "text": "The AI service is currently experiencing high load or rate limits. Please try again in a few moments."}
+                        yield {"type": "done", "session_id": sid, "tools_used": tools_used}
+                        return
                     await asyncio.sleep((2 ** attempt) + 0.5)
 
-            usage = response.usage_metadata
-            if usage:
-                prompt_tokens_total += usage.prompt_token_count or 0
-                output_tokens_total += usage.candidates_token_count or 0
+            prompt_tokens_total += turn_prompt_tokens
+            output_tokens_total += turn_output_tokens
 
-            if not response.candidates:
-                raise ValueError("No candidates returned from the model.")
-                
-            candidate = response.candidates[0]
-            # Append the model's response to history
-            history.append(candidate.content)
-    
-            function_calls = []
-            for part in candidate.content.parts:
-                if part.function_call:
-                    function_calls.append(part.function_call)
-    
+            if not text_acc and not function_calls:
+                _log_chat_cost()
+                yield {"type": "error", "message": "No response was returned by the model."}
+                return
+
+            # Reassemble the streamed chunks into a single model turn and
+            # append it to history, so the next iteration sees what was said.
+            model_parts = []
+            if text_acc:
+                model_parts.append(types.Part.from_text(text="".join(text_acc)))
+            for fc in function_calls:
+                model_parts.append(types.Part(function_call=fc))
+            history.append(types.Content(role="model", parts=model_parts))
+
             # If there are function calls, execute them and re-prompt
             if function_calls:
                 # Every tool body is synchronous: it opens a blocking
@@ -230,7 +279,12 @@ async def ask_question(meeting_id: str, question: str, session_id: str | None = 
                     )
 
                 # Map the wrapped tool names to the original names to show cleanly in the UI
-                tools_used.extend(fc.name.lstrip("_") for fc in function_calls)
+                clean_names = [fc.name.lstrip("_") for fc in function_calls]
+                tools_used.extend(clean_names)
+                # Surface each tool before it runs, so the UI can show what the
+                # assistant is doing during the wait instead of a bare spinner.
+                for clean_name in clean_names:
+                    yield {"type": "tool", "name": clean_name}
 
                 # gather preserves input order, so responses stay aligned with
                 # the function_calls they answer.
@@ -239,16 +293,36 @@ async def ask_question(meeting_id: str, question: str, session_id: str | None = 
                 # Append the function responses to history and loop to generate content again
                 history.append(types.Content(role="user", parts=responses))
                 continue
-                
-            # No function calls, meaning we have the final answer
-            answer = ""
-            for part in candidate.content.parts:
-                if getattr(part, "text", None):
-                    answer += part.text
 
+            # No function calls, meaning the text streamed above was the final answer
             _log_chat_cost()
-            return {
-                "session_id": sid,
-                "answer": answer,
-                "tools_used": tools_used,
-            }
+            yield {"type": "done", "session_id": sid, "tools_used": tools_used}
+            return
+
+
+async def ask_question(meeting_id: str, question: str, session_id: str | None = None, user_id: str = None) -> dict:
+    """
+    Non-streaming wrapper kept for callers that just want the finished answer.
+    It drains ask_question_stream and joins the deltas, so both paths share one
+    implementation of the agent loop.
+    """
+    sid = _session_id(meeting_id, session_id)
+    answer_parts: list[str] = []
+    tools_used: list[str] = []
+
+    async for event in ask_question_stream(meeting_id, question, session_id, user_id):
+        kind = event["type"]
+        if kind == "delta":
+            answer_parts.append(event["text"])
+        elif kind == "done":
+            sid = event["session_id"]
+            tools_used = event["tools_used"]
+        elif kind == "error":
+            # Mirrors the pre-streaming behaviour, where this surfaced as a 500
+            raise ValueError(event["message"])
+
+    return {
+        "session_id": sid,
+        "answer": "".join(answer_parts),
+        "tools_used": tools_used,
+    }
