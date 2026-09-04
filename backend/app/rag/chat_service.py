@@ -6,9 +6,26 @@ from google import genai
 from google.genai import types, errors
 
 from app.config import settings
-from app.rag.agent import INSTRUCTION
 from app.rag.tools import get_meeting_summary, get_action_items, search_by_speaker, search_transcript
 from app.services.cost_tracker import gemini_generation_cost, log_cost
+
+INSTRUCTION = """
+You are an advanced Agentic RAG assistant dedicated to answering questions about ONE specific
+meeting. Your tools automatically scope searches to the authenticated user's current meeting context.
+
+You have four specialized tools at your disposal:
+1. `get_meeting_summary`: Returns the overall meeting summary, key points, and conclusion. Use this for broad topic inquiries.
+2. `get_action_items`: Returns a structured list of tasks and decisions. Use this specifically when the user asks about action items or follow-ups.
+3. `search_by_speaker`: Retrieves transcript passages spoken by a specific individual. Use this when asked what a specific person said.
+4. `search_transcript`: Performs a semantic vector search over the entire transcript. Use this for specific topics, details, or quotes.
+
+Rules:
+- ALWAYS evaluate the user's question and select the most appropriate tool.
+- You MUST ground your answer entirely in the data returned by your tools. NEVER hallucinate or invent meeting content.
+- If a tool returns no results, state clearly that the information is not available in the transcript.
+- When `search_transcript` or `search_by_speaker` provide useful passages, cite the `timestamp_start` and `speaker` in your answer so the user can easily find the moment in the recording.
+- Keep your answers concise, well-structured, and directly responsive to the user's inquiry.
+"""
 
 class LRUSessionCache:
     def __init__(self, capacity: int = 500):
@@ -178,36 +195,47 @@ async def ask_question(meeting_id: str, question: str, session_id: str | None = 
     
             # If there are function calls, execute them and re-prompt
             if function_calls:
-                responses = []
-                for fc in function_calls:
+                # Every tool body is synchronous: it opens a blocking
+                # SQLAlchemy session, and _search_transcript additionally makes
+                # a blocking Gemini embedding call (which internally retries
+                # with time.sleep). Calling those directly from this coroutine
+                # would block the event loop for their full duration, stalling
+                # every other request the process is serving - not just this
+                # one. asyncio.to_thread moves each into a worker thread, where
+                # blocking is confined to that thread. Independent calls in the
+                # same turn are then run concurrently instead of end-to-end.
+                async def _dispatch(fc):
                     func_name = fc.name
                     func_args = fc.args or {}
-                    # Map the wrapped tool name to the original tool name to show cleanly in the UI
-                    clean_name = func_name.lstrip("_")
-                    tools_used.append(clean_name)
-                    
-                    # Execute matching tool
-                    tool_result = {}
-                    try:
+
+                    def _run():
                         if func_name == "_get_meeting_summary":
-                            tool_result = _get_meeting_summary()
+                            return _get_meeting_summary()
                         elif func_name == "_get_action_items":
-                            tool_result = _get_action_items()
+                            return _get_action_items()
                         elif func_name == "_search_by_speaker":
-                            tool_result = _search_by_speaker(func_args.get("speaker_name", ""))
+                            return _search_by_speaker(func_args.get("speaker_name", ""))
                         elif func_name == "_search_transcript":
-                            tool_result = _search_transcript(func_args.get("query", ""))
-                        else:
-                            tool_result = {"error": f"Unknown tool {func_name}"}
+                            return _search_transcript(func_args.get("query", ""))
+                        return {"error": f"Unknown tool {func_name}"}
+
+                    try:
+                        tool_result = await asyncio.to_thread(_run)
                     except Exception as e:
                         tool_result = {"error": str(e)}
-    
-                    # Build the response part
-                    responses.append(types.Part.from_function_response(
+
+                    return types.Part.from_function_response(
                         name=func_name,
                         response={"result": tool_result}
-                    ))
-                
+                    )
+
+                # Map the wrapped tool names to the original names to show cleanly in the UI
+                tools_used.extend(fc.name.lstrip("_") for fc in function_calls)
+
+                # gather preserves input order, so responses stay aligned with
+                # the function_calls they answer.
+                responses = list(await asyncio.gather(*(_dispatch(fc) for fc in function_calls)))
+
                 # Append the function responses to history and loop to generate content again
                 history.append(types.Content(role="user", parts=responses))
                 continue

@@ -1,4 +1,4 @@
-from google.adk.tools import ToolContext
+from typing import Protocol
 from sqlalchemy import func
 
 from app.config import settings
@@ -7,11 +7,15 @@ from app.db.models import Meeting, MeetingChunk
 from app.services.embedding_service import embed_query
 
 
+class ToolContext(Protocol):
+    state: dict
+
+
 def _get_context(tool_context: ToolContext) -> tuple[str, str]:
     meeting_id = tool_context.state.get("meeting_id")
     user_id = tool_context.state.get("user_id")
     if not meeting_id or not user_id:
-        raise ValueError("Missing meeting_id or user_id in ADK context.")
+        raise ValueError("Missing meeting_id or user_id in tool context.")
     return meeting_id, user_id
 
 

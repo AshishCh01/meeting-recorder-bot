@@ -100,6 +100,16 @@ def _call_gemini_embed_with_retry(contents, max_retries: int = 4):
     _call_gemini_with_retry in transcription_service.py. Re-raises the
     last error if all retries are exhausted, or immediately for
     non-retriable errors (e.g. 400, 401) - retrying those is pointless.
+
+    The backoff below uses a blocking time.sleep, which is correct here
+    and must not be changed to asyncio.sleep: this function is only ever
+    reached from a worker thread, never from the event loop. Both callers
+    are synchronous - index_transcript runs inside transcription_service's
+    ThreadPoolExecutor (no event loop in that thread at all, so
+    asyncio.sleep would raise), and embed_query is invoked from the chat
+    path via asyncio.to_thread in rag/chat_service.py. Blocking a worker
+    thread is exactly what those threads are for; blocking the event loop
+    is what we're avoiding.
     """
     for attempt in range(max_retries):
         try:

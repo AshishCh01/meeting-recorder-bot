@@ -4,15 +4,8 @@ pydantic==2.9.2
 pydantic-settings==2.5.2
 supabase==2.15.0
 httpx==0.28.1
-python-dotenv==1.0.1
+python-dotenv==1.2.2
 google-genai==2.8.0
-google-adk==1.1.1
-# Pinned explicitly: google-auth 2.57.0 (published after this was last
-# resolved) has extras metadata that pip's resolver can't reconcile with
-# google-adk's transitive google-cloud-* tree - a fresh `pip install`
-# fails with ResolutionImpossible without this pin. 2.56.3 is the version
-# already resolved and running in the existing local venv.
-google-auth==2.56.3
 sqlalchemy==2.0.52
 alembic==1.13.1
 pgvector==0.2.5
@@ -20,4 +13,4 @@ psycopg[binary]==3.3.4
 sarvamai==0.1.30
 fpdf2==2.8.8
 Deprecated==1.3.1
-cryptography==43.0.3
+cryptography==50.0.0
