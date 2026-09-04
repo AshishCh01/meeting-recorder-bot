@@ -10,11 +10,7 @@ import os from 'os';
 // pulseSink option, and points that session's ffmpeg at its .monitor via
 // Recorder/FFmpegManager, so each session's audio stays isolated end to end.
 //
-// Linux only. Windows dev (VB-Audio Virtual Cable) has no equivalent
-// per-session mechanism with the free single cable pair, so provision() is
-// a no-op there and Windows-dev sessions keep sharing the one hardcoded
-// VB-Cable device (see AudioCapture.js) — leave MAX_CONCURRENT_MEETINGS=1
-// on Windows dev.
+// Linux only — provision() is a no-op on any other platform.
 export class AudioSink {
   static provision(meetingId) {
     if (os.platform() !== 'linux') {

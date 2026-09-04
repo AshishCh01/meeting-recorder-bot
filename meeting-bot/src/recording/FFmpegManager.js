@@ -10,9 +10,8 @@ export class FFmpegManager {
 
   start() {
     const args = [
-      // Platform-specific audio capture args (Windows: dshow/VB-Cable, Linux: pulse)
-      // getCaptureArgs() is defined in AudioCapture.js — this is the correct
-      // cross-platform call that was previously bypassed by hardcoded args
+      // PulseAudio capture args — getCaptureArgs() is defined in AudioCapture.js
+      // this is the correct call that was previously bypassed by hardcoded args
       ...getCaptureArgs(this.monitorSource),
 
       // Audio encoding settings

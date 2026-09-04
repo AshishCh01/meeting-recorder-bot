@@ -11,13 +11,6 @@ npm-debug.log*
 .env.*
 !.env.example
 
-# Windows-only helper tools - these do nothing inside a Linux
-# container (audio routing is handled by PulseAudio in the
-# entrypoint script instead), pure dead weight in the build context
-SoundVolumeView.exe
-SoundVolumeView.cfg
-nircmd.exe
-
 # Debug screenshots left over from local testing - not needed at
 # runtime, and some of these may show real meeting content
 *.png

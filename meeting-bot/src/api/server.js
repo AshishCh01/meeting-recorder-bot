@@ -11,13 +11,10 @@ app.use(express.json());
 // Audio is now isolated per session on Linux (AudioSink.js provisions a
 // dedicated PulseAudio sink per meetingId, and BrowserManager/FFmpegManager
 // both point at it — see MeetingLifecycle.js), so MAX_CONCURRENT_MEETINGS
-// can be raised above 1 via env var in that environment. On Windows dev
-// (single shared VB-Cable device, no per-session equivalent) leave this at
-// 1 — concurrent sessions there would still have their audio blend
-// together. Note: Xvfb display (shared :99) and auth identity (shared
-// auth.json per platform) are still global, not per-session — see the
-// audit notes; raising this above 1 is safe for audio specifically, not
-// yet a full concurrency guarantee.
+// can be raised above 1 via env var. Note: Xvfb display (shared :99) and
+// auth identity (shared auth.json per platform) are still global, not
+// per-session — see the audit notes; raising this above 1 is safe for
+// audio specifically, not yet a full concurrency guarantee.
 const MAX_CONCURRENT_MEETINGS = Number(process.env.MAX_CONCURRENT_MEETINGS || 1);
 const activeMeetings = new Map(); // meetingId -> MeetingSession
 
