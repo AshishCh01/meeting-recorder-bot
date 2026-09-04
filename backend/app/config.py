@@ -22,8 +22,16 @@ class Settings(BaseSettings):
     gemini_embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = 768
     rag_agent_model: str = "gemini-3.6-flash"
-    chunk_segments: int = 6          # conversation segments grouped per chunk
-    chunk_overlap: int = 1           # segments of overlap between consecutive chunks
+    # Transcript chunking, in approximate tokens (embedding_service estimates
+    # ~4 chars per token). These replaced an earlier segment-count pair
+    # (chunk_segments/chunk_overlap) that described an approach the chunker no
+    # longer uses and that nothing read - the defaults below are the values
+    # _build_chunks previously hardcoded, so changing nothing here preserves
+    # existing behaviour. Changing them only affects meetings indexed
+    # afterwards; existing chunks keep whatever sizing they were built with
+    # until that meeting is re-indexed.
+    chunk_target_tokens: int = 500
+    chunk_overlap_tokens: int = 50
     retrieval_top_k: int = 6
 
     # Fallback STT provider - used if Gemini keeps failing (429/503)

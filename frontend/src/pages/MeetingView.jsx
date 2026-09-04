@@ -43,11 +43,24 @@ export const MeetingView = () => {
     };
 
     fetchMeeting();
-    intervalId = setInterval(fetchMeeting, 5000);
+    // Skip ticks while the tab is hidden. A recording can run for up to
+    // MAX_RECORDING_DURATION_MINUTES (90), so a page left open in a
+    // background tab was polling ~1000 times for updates nobody could see.
+    // The visibilitychange listener fetches once on return, so coming back
+    // to the tab shows current state immediately rather than after 5s.
+    intervalId = setInterval(() => {
+      if (document.visibilityState === 'visible') fetchMeeting();
+    }, 5000);
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') fetchMeeting();
+    };
+    document.addEventListener('visibilitychange', onVisible);
 
     return () => {
       isMounted = false;
       if (intervalId) clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, [id]);
 

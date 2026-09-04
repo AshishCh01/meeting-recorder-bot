@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 
 const AuthContext = createContext({});
@@ -20,11 +20,16 @@ export const AuthProvider = ({ children }) => {
     return () => subscription.unsubscribe();
   }, []);
 
-  const value = {
-    session,
-    user: session?.user ?? null,
-    signOut: () => supabase.auth.signOut(),
-  };
+  const signOut = useCallback(() => supabase.auth.signOut(), []);
+
+  // Memoized so the context value keeps a stable identity between renders.
+  // Rebuilding this object (and the signOut closure) every render made every
+  // useAuth() consumer re-render whenever the provider did, even when the
+  // session hadn't changed.
+  const value = useMemo(
+    () => ({ session, user: session?.user ?? null, signOut }),
+    [session, signOut]
+  );
 
   return (
     <AuthContext.Provider value={value}>

@@ -28,8 +28,8 @@ def _build_chunks(conversation: list[dict]) -> list[dict]:
     if not conversation:
         return []
 
-    TARGET_TOKENS = 500
-    OVERLAP_TOKENS = 50
+    TARGET_TOKENS = settings.chunk_target_tokens
+    OVERLAP_TOKENS = settings.chunk_overlap_tokens
 
     chunks = []
     chunk_index = 0
