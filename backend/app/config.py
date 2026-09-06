@@ -44,6 +44,17 @@ class Settings(BaseSettings):
     jina_api_key: str = ""
     jina_embedding_model: str = "jina-embeddings-v3"    #Fallback embedding model
 
+    # Fallback chat provider - used by rag/chat_fallback_groq.py when Gemini
+    # keeps failing (429/503/504) during "Ask about this meeting" after
+    # chat_service's own retries are exhausted. Leave groq_api_key empty to
+    # disable the fallback entirely (the canned "try again later" message
+    # comes back). The model must support tool calling - the chat agent is a
+    # tool-calling loop, not plain generation.
+    groq_api_key: str = ""
+    groq_chat_model: str = "openai/gpt-oss-120b"
+    groq_max_output_tokens: int = 2000
+    groq_timeout_seconds: float = 60.0
+
     # Google Calendar integration (optional - the app runs fine with
     # these unset, the /calendar/* routes just fail with a clear error
     # until they're configured). See docs/google-calendar-integration-plan.md.

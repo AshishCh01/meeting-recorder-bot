@@ -7,7 +7,9 @@ from google.genai import types, errors
 
 from app.config import settings
 from app.rag.tools import get_meeting_summary, get_action_items, search_by_speaker, search_transcript
+from app.rag.chat_fallback_groq import gemini_history_to_openai, run_groq_chat_stream
 from app.services.cost_tracker import gemini_generation_cost, log_cost
+from app.services.gemini_errors import is_transient
 
 INSTRUCTION = """
 You are an advanced Agentic RAG assistant dedicated to answering questions about ONE specific
@@ -139,6 +141,19 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
             return search_transcript(query, DummyToolContext(meeting_id, user_id))
             
         available_tools = [_get_meeting_summary, _get_action_items, _search_by_speaker, _search_transcript]
+
+        # The same four tools for the Groq fallback. Keyed by their bare names
+        # (the schemas in chat_fallback_groq.py declare them without the
+        # leading underscore these closures carry) and taking a decoded
+        # argument dict, because Groq hands back tool arguments as a JSON
+        # object rather than as kwargs the way the google-genai SDK does.
+        groq_tool_map = {
+            "get_meeting_summary": lambda args: _get_meeting_summary(),
+            "get_action_items": lambda args: _get_action_items(),
+            "search_by_speaker": lambda args: _search_by_speaker(args.get("speaker_name", "")),
+            "search_transcript": lambda args: _search_transcript(args.get("query", "")),
+        }
+
         tools_used = []
     
         config = types.GenerateContentConfig(
@@ -248,6 +263,72 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                         return
                     if attempt == chat_max_retries - 1:
                         _log_chat_cost()
+
+                        # Retries are spent, so Gemini is genuinely down rather
+                        # than briefly busy: hand the question to Groq instead
+                        # of giving up. Only for transient faults - a 400 from
+                        # malformed history would fail identically anywhere,
+                        # and burning a second provider's quota on it is waste.
+                        if is_transient(e) and settings.groq_api_key:
+                            print(f"[chat] Gemini {code} persisted after retries, falling back to Groq...")
+                            fallback_text = ""
+                            fallback_streamed = False
+                            fallback_exhausted = False
+                            try:
+                                async for event in run_groq_chat_stream(
+                                    messages=gemini_history_to_openai(history),
+                                    instruction=INSTRUCTION,
+                                    tool_map=groq_tool_map,
+                                    max_tool_iterations=MAX_TOOL_ITERATIONS,
+                                ):
+                                    if event["type"] == "final":
+                                        fallback_text = event["text"]
+                                        fallback_exhausted = event.get("exhausted", False)
+                                        tools_used.extend(event["tools_used"])
+                                        log_cost(
+                                            "chat_fallback",
+                                            meeting=meeting_id,
+                                            provider="groq",
+                                            model=settings.groq_chat_model,
+                                            in_tok=event["prompt_tokens"],
+                                            out_tok=event["output_tokens"],
+                                            tool_calls=len(event["tools_used"]),
+                                            usd="0.000000",
+                                        )
+                                    else:
+                                        fallback_streamed = fallback_streamed or event["type"] == "delta"
+                                        yield event
+                            except Exception as groq_err:
+                                print(f"[chat] Groq fallback also failed: {groq_err}")
+
+                            if fallback_text.strip():
+                                # Record the answer in Gemini's own history
+                                # format: this session may well be back on
+                                # Gemini by the next question, and it should
+                                # see what was already said either way.
+                                history.append(types.Content(
+                                    role="model",
+                                    parts=[types.Part.from_text(text=fallback_text)],
+                                ))
+                                yield {"type": "done", "session_id": sid, "tools_used": tools_used}
+                                return
+
+                            if fallback_streamed:
+                                # Groq died partway through an answer the user
+                                # can already see; appending the canned message
+                                # to it would read as part of that answer.
+                                yield {"type": "error", "message": "The connection to the AI service was interrupted mid-answer. Please try again."}
+                                return
+
+                            if fallback_exhausted:
+                                # Groq answered fine, it just kept searching
+                                # without settling. Say that, rather than
+                                # blaming load - the same wording the Gemini
+                                # path uses when it hits MAX_TOOL_ITERATIONS.
+                                yield {"type": "delta", "text": "I'm having trouble finding the exact information you requested. Could you try rephrasing your question?"}
+                                yield {"type": "done", "session_id": sid, "tools_used": tools_used}
+                                return
+
                         yield {"type": "delta", "text": "The AI service is currently experiencing high load or rate limits. Please try again in a few moments."}
                         yield {"type": "done", "session_id": sid, "tools_used": tools_used}
                         return
