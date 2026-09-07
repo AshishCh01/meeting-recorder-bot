@@ -126,7 +126,7 @@ export const Layout = ({ children }) => {
       </div>
 
       {/* Mobile bottom nav */}
-      <div className="lg:hidden fixed bottom-0 w-full bg-surface border-t border-line z-50 grid grid-cols-4 px-2 pt-2 pb-[env(safe-area-inset-bottom,0.5rem)]">
+      <div className="lg:hidden fixed bottom-0 w-full h-(--mobile-nav-h) bg-surface border-t border-line z-50 grid grid-cols-4 px-2 pt-2 pb-[env(safe-area-inset-bottom,0.5rem)]">
         {mobileNavItems.map((item) => {
           const isActive = item.active && location.pathname === item.href;
           const content = (

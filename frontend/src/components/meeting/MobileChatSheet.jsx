@@ -36,7 +36,7 @@ export const MobileChatSheet = ({ meetingTitle }) => {
   return (
     <div
       className={`lg:hidden fixed left-0 right-0 bg-surface border-t border-border-strong shadow-[0_-10px_30px_rgba(15,23,32,0.12)] flex flex-col transition-[top,bottom] duration-300 ${
-        expanded ? 'inset-0 rounded-none z-60' : 'bottom-17 rounded-t-[20px] z-40'
+        expanded ? 'inset-0 rounded-none z-60' : 'bottom-(--mobile-nav-h) rounded-t-[20px] z-40'
       }`}
     >
       {expanded ? (

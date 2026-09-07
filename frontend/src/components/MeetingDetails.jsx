@@ -80,7 +80,7 @@ export const MeetingDetails = ({ meeting, onRetry, onStop, onDeleteRequest }) =>
     : '';
 
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-surface">
+    <div className="flex flex-col lg:h-full lg:overflow-hidden bg-surface">
       {/* Header */}
       <div className="flex-none px-5 lg:px-7 py-4 lg:py-5 border-b border-line flex flex-col gap-3.5">
         <div className="flex items-center justify-between gap-4">
@@ -203,7 +203,7 @@ export const MeetingDetails = ({ meeting, onRetry, onStop, onDeleteRequest }) =>
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto px-5 lg:px-7 pt-5 pb-44 lg:pb-5">
+      <div className="flex-1 lg:overflow-y-auto px-5 lg:px-7 pt-5 pb-44 lg:pb-5">
         {activeTab === 'summary' && <SummaryTab summary={summary} keyPoints={key_points} conclusion={conclusion} />}
         {activeTab === 'action_items' && <ActionItemsList actionItems={action_items} />}
         {activeTab === 'transcript' && <TranscriptTab conversation={conversation} />}

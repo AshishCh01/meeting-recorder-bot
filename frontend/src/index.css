@@ -31,6 +31,16 @@
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
 }
 
+:root {
+  /* Height of the mobile bottom nav: its own padding plus one row of
+     icon+label. Shared so the fixed chat sheet can sit exactly on top of the
+     nav instead of guessing at a matching offset - a mismatch here either
+     leaves a strip of scrolling content visible between the two or hides the
+     sheet's input behind the nav. Tracks the safe-area inset for notched
+     devices, where a hard-coded offset would drift. */
+  --mobile-nav-h: calc(3.875rem + env(safe-area-inset-bottom, 0.5rem));
+}
+
 /* Dark mode: same token names, inverted values (screen 06 of the design
    reference). Utilities like bg-sidebar/text-body/border-line read these
    custom properties, so overriding them here re-themes the whole app
