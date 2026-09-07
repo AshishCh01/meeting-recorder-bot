@@ -1,22 +1,47 @@
-export const ZOOM_SELECTORS = {
-  // Interstitial page — a <button> (not <a> link) with exact text "Join from browser"
-  joinFromBrowserButton: 'button:has-text("Join from browser")',
+// The join ladders below key off the word "Join", which also appears on
+// controls that do something else entirely - "Join from Zoom Workplace app"
+// launches the desktop client, "Join Audio" opens the audio picker. Without
+// these negations .first() takes whichever sits earliest in the DOM and
+// clicks the wrong one. Page context alone isn't enough to rely on here.
+const NOT_JOIN_DECOYS = ':not(:has-text("Workplace")):not(:has-text("browser")):not(:has-text("Audio"))';
 
-  // PWA join page (app.zoom.us/wc/) — name input field.
-  // Zoom's web client renders these with various attributes depending on version.
+// Ordered fallback ladders, most-specific first. findFirstVisible() walks
+// them in order and logs SELECTOR-HEAL whenever a non-primary tier matched,
+// so a selector Zoom has quietly broken shows up in the logs while the later
+// tiers are still carrying the join.
+export const ZOOM_SELECTORS = {
+  // Interstitial page. This gates the entire Zoom flow, so it gets its own
+  // ladder. Historically a <button>, but Zoom has shipped it as an <a> in
+  // some versions - hence tier 1.
+  joinFromBrowserButton: [
+    'button:has-text("Join from browser")',
+    '[role="button"]:has-text("Join from browser"), a:has-text("Join from browser")',
+    // Keys off "browser" alone, not "from browser" - Zoom wording like
+    // "Join from your browser" breaks the contiguous phrase. Nothing else on
+    // the interstitial ("Download Now", "Launch Meeting", "Join from Zoom
+    // Workplace app") mentions a browser, so this stays unambiguous.
+    'button:has-text("browser"), a:has-text("browser"), [role="button"]:has-text("browser")',
+  ],
+
+  // Safety net only. findFrameWithVisibleInput() is the primary strategy for
+  // the name field and adapts to markup these selectors have never seen -
+  // this ladder exists for when that scan comes up empty, not as the main path.
   nameInput: [
     'input[aria-label="Your Name"]',
     'input[aria-label*="name" i]',
-    'input#inputname',
-    'input[name="inputname"]',
+    'input#inputname, input[name="inputname"]',
     'input[placeholder*="name" i]',
-    'input[placeholder*="Name" i]',
     'form input[type="text"]',
-  ].join(', '),
+  ],
 
-  // Join button on the PWA join page — safe to use after navigating away
-  // from the interstitial, so "Join" won't match "Join from Zoom Workplace app"
-  joinButton: 'button:has-text("Join"), input[value="Join"]',
+  // Join button on the PWA join page (app.zoom.us/wc/).
+  joinButton: [
+    `button:has-text("Join")${NOT_JOIN_DECOYS}, input[value="Join"]`,
+    `[role="button"]:has-text("Join")${NOT_JOIN_DECOYS}, input[value*="Join" i]`,
+    // Wording-independent last resort: the join form's own submit control,
+    // which survives a rename or a locale we don't have text for.
+    'button[type="submit"], input[type="submit"]',
+  ],
 
   inCallIndicators: [
     'button[aria-label*="leave" i]',

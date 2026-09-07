@@ -1,5 +1,6 @@
 import { MeetingBot } from '../../core/MeetingBot.js';
 import { BrowserManager, resolveAuthStatePath, debugScreenshot, persistStorageState } from '../../core/BrowserManager.js';
+import { findFirstVisible } from '../../core/resilientLocator.js';
 import { ZOOM_SELECTORS } from './selectors.js';
 import { isAdmitted, hasMeetingEnded, isBotBlocked } from './detector.js';
 
@@ -120,9 +121,16 @@ export class ZoomBot extends MeetingBot {
       console.log('[ZoomBot] Warning: could not refresh zoom-auth.json:', err.message);
     });
 
-    // Handle interstitial if we landed on it instead of directly on join page
-    const browserButton = this.page.locator(ZOOM_SELECTORS.joinFromBrowserButton);
-    if (await browserButton.isVisible().catch(() => false)) {
+    // Handle interstitial if we landed on it instead of directly on join page.
+    // timeout 0 = one pass over the ladder and out: not landing on the
+    // interstitial is the normal case when the direct web-client URL works,
+    // so this must stay an instant check rather than stalling every join
+    // waiting for a page that isn't coming.
+    const browserButton = await findFirstVisible(this.page, ZOOM_SELECTORS.joinFromBrowserButton, {
+      timeout: 0,
+      label: 'joinFromBrowserButton',
+    });
+    if (browserButton) {
       console.log('[ZoomBot] Interstitial detected — clicking "Join from browser"...');
       await browserButton.click();
       await this.page.waitForTimeout(8000);
@@ -167,6 +175,22 @@ export class ZoomBot extends MeetingBot {
     }
 
     if (!filled) {
+      // The dynamic scan found nothing usable — fall back to the static
+      // ladder before giving up on naming the bot entirely.
+      const nameInput = await findFirstVisible(formFrame, ZOOM_SELECTORS.nameInput, {
+        timeout: 3000,
+        label: 'nameInput',
+        pollMs: 250,
+      });
+      if (nameInput) {
+        await nameInput.click().catch(() => {});
+        await nameInput.fill(this.session.botName).catch(() => {});
+        filled = (await nameInput.inputValue().catch(() => '')) === this.session.botName;
+        console.log(`[ZoomBot] Static fallback selectors used for name field. Filled: ${filled}`);
+      }
+    }
+
+    if (!filled) {
       console.log('[ZoomBot] Could not fill name field — check zoom-step2.png for what is on screen');
     }
 
@@ -174,7 +198,19 @@ export class ZoomBot extends MeetingBot {
     console.log('[ZoomBot] Step 3 saved. Clicking Join...');
 
     // Click Join in the correct frame context
-    await formFrame.locator(ZOOM_SELECTORS.joinButton).click({ timeout: 30000 });
+    const joinBtn = await findFirstVisible(formFrame, ZOOM_SELECTORS.joinButton, {
+      timeout: 30000,
+      label: 'joinButton',
+    });
+    if (!joinBtn) {
+      await debugScreenshot(this.page, 'zoom-join-button-missing.png');
+      throw new Error(
+        'Could not find the Join button on the Zoom web client - none of the known ' +
+        'selectors matched. Zoom has likely changed the join page; check ' +
+        'zoom-join-button-missing.png and update ZOOM_SELECTORS.joinButton.'
+      );
+    }
+    await joinBtn.click({ timeout: 30000 });
     console.log('[ZoomBot] Clicked Join');
 
     await this.page.waitForTimeout(4000);
