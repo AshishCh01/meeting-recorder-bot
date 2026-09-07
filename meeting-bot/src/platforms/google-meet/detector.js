@@ -1,4 +1,5 @@
 import { GOOGLE_MEET_SELECTORS } from './selectors.js';
+import { findFirstVisible } from '../../core/resilientLocator.js';
 
 export async function isAdmitted(page) {
   // Rely solely on genuine in-call-only controls. The old Signal 2
@@ -84,10 +85,41 @@ export async function isAuthExpired(page) {
 // screen instead, with no error text isAuthExpired()'s regex would ever
 // match. The reliable signal there is the "Sign in" prompt Meet shows
 // on that screen specifically because no authenticated session was found.
-export async function isAnonymousSession(page) {
+export async function isAnonymousSession(page, timeoutMs = 15000) {
   try {
+    // Meet paints the pre-join screen asynchronously - it can still be blank
+    // several seconds after domcontentloaded. locator.isVisible() does NOT
+    // wait (its timeout option doesn't make it poll), so checking the signals
+    // straight away tested an unrendered page, always came back false, and
+    // let a genuinely anonymous join run on to a 5-minute admission timeout.
+    // Anchor on the join button: once that is up the screen has rendered and
+    // the signals below are trustworthy. An authenticated session reaches
+    // that point just as quickly, so this costs a healthy join nothing.
+    const ready = await findFirstVisible(page, GOOGLE_MEET_SELECTORS.joinButton, {
+      timeout: timeoutMs,
+      label: 'prejoinReady',
+      pollMs: 500,
+    });
+    if (!ready) return false;
+
     const signInPrompt = page.locator('a:has-text("Sign in"), button:has-text("Sign in")').first();
-    return await signInPrompt.isVisible({ timeout: 2000 }).catch(() => false);
+    if (await signInPrompt.isVisible().catch(() => false)) {
+      console.log('[detector] Anonymous session detected via "Sign in" prompt.');
+      return true;
+    }
+
+    // Stronger signal than the prompt above, which Meet doesn't always
+    // render: a signed-in session joins under the account's own name and
+    // never shows a name field at all. One being present therefore means
+    // auth.json didn't take and this is the guest flow - which Google
+    // silently drops without ever notifying the host.
+    const nameField = page.locator(GOOGLE_MEET_SELECTORS.anonymousNameField).first();
+    if (await nameField.isVisible().catch(() => false)) {
+      console.log('[detector] Anonymous session detected via visible name field.');
+      return true;
+    }
+
+    return false;
   } catch {
     return false;
   }

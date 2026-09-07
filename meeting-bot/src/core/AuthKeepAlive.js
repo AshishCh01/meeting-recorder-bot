@@ -35,7 +35,15 @@ const PLATFORMS = [
     // .google.com broadly, not meet.google.com specifically, so refreshing
     // via this URL still refreshes what GoogleMeetBot needs.
     checkUrl: 'https://myaccount.google.com/',
-    isSignedIn: (url) => !url.includes('accounts.google.com'),
+    // Must be an allowlist ("did we STAY on myaccount?"), not a denylist of
+    // one sign-in host. Google no longer sends a dead session to
+    // accounts.google.com from here - observed live, it lands on
+    // https://www.google.com/account/about/, which contains no
+    // "accounts.google.com" and so passed the old check. That reported
+    // "auth refreshed successfully" for a session Meet was actually
+    // treating as signed out, which is why a stale auth.json produced
+    // silent 5-minute admission timeouts instead of an ALERT here.
+    isSignedIn: (url) => url.startsWith('https://myaccount.google.com'),
     fixCommand: 'node generate-auth.cjs',
   },
   {

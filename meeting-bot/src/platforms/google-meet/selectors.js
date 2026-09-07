@@ -5,6 +5,17 @@
 // never joins the call.
 const NOT_JOIN_DECOYS = ':not(:has-text("phone")):not(:has-text("cast")):not(:has-text("Other ways"))';
 
+// Selectors that specifically identify a *name* field, as opposed to the
+// catch-all tier appended below. Kept separate because isAnonymousSession()
+// keys off these: a visible name field is proof Meet fell back to the guest
+// flow, but the generic input[type="text"] tier would match any stray text
+// box and abort a perfectly good authenticated join.
+const NAME_FIELD_TIERS = [
+  'input[aria-label="Your name"]',
+  'input[aria-label*="name" i]',
+  'input[placeholder*="name" i]',
+];
+
 // Ordered fallback ladders, most-specific first. findFirstVisible() walks
 // these in order and logs a SELECTOR-HEAL warning whenever a non-primary
 // tier is what matched, so a selector Google has quietly broken surfaces in
@@ -14,12 +25,10 @@ export const GOOGLE_MEET_SELECTORS = {
   // the wrong field here is close to harmless - an authenticated session
   // joins fine without a name at all - whereas failing to find the field on
   // an anonymous join means the bot shows up unnamed.
-  nameInput: [
-    'input[aria-label="Your name"]',
-    'input[aria-label*="name" i]',
-    'input[placeholder*="name" i]',
-    'input[type="text"]',
-  ],
+  nameInput: [...NAME_FIELD_TIERS, 'input[type="text"]'],
+
+  // Anonymous-session signal - see NAME_FIELD_TIERS above.
+  anonymousNameField: NAME_FIELD_TIERS.join(', '),
 
   // "Ask to join" and "Join now" are two legitimate states of the same
   // button (waiting-room vs. direct entry), not fallbacks for each other -
