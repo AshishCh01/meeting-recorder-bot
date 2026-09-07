@@ -4,12 +4,17 @@ from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.db.database import get_db
-from app.db.models import Meeting
+from app.db.models import ChatMessage, Meeting
 from app.api.auth import get_current_user
-from app.models.meeting import ChatRequest, ChatResponse
+from app.models.meeting import ChatHistoryResponse, ChatMessageOut, ChatRequest, ChatResponse
 from app.rag.chat_service import ask_question, ask_question_stream
 
 router = APIRouter(prefix="/meetings", tags=["chat"])
+
+# A thread is append-only and unbounded, but the panel only ever needs
+# the recent tail - and returning all of it would make the endpoint get
+# slower the more a meeting is used.
+CHAT_HISTORY_LIMIT = 200
 
 
 def _assert_chattable(db: Session, meeting_id: UUID, user_id: str) -> Meeting:
@@ -21,6 +26,47 @@ def _assert_chattable(db: Session, meeting_id: UUID, user_id: str) -> Meeting:
             409, f"Meeting transcript isn't ready yet (status: {meeting.status})"
         )
     return meeting
+
+@router.get("/{meeting_id}/chat", response_model=ChatHistoryResponse)
+def get_chat_history(
+    meeting_id: UUID,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Returns the meeting's stored Q&A thread, oldest first, so the chat
+    panel shows the same conversation after a refresh, a logout or a
+    backend restart instead of starting over every time.
+
+    Gated exactly like posting a question, so a meeting you cannot chat
+    with is a meeting whose thread you cannot read either.
+    """
+    _assert_chattable(db, meeting_id, user_id)
+
+    rows = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.meeting_id == meeting_id, ChatMessage.user_id == user_id)
+        .order_by(ChatMessage.id.desc())
+        .limit(CHAT_HISTORY_LIMIT)
+        .all()
+    )
+    # Queried newest-first so the LIMIT keeps the most recent turns;
+    # the panel renders them oldest-first.
+    rows.reverse()
+
+    return ChatHistoryResponse(
+        messages=[
+            ChatMessageOut(
+                id=str(row.id),
+                role=row.role,
+                content=row.content,
+                tools_used=row.tools_used or [],
+                created_at=row.created_at.isoformat() if row.created_at else None,
+            )
+            for row in rows
+        ]
+    )
+
 
 @router.post("/{meeting_id}/chat", response_model=ChatResponse)
 async def chat_with_meeting(

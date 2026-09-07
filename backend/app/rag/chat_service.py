@@ -6,6 +6,8 @@ from google import genai
 from google.genai import types, errors
 
 from app.config import settings
+from app.db.database import SessionLocal
+from app.db.models import ChatMessage
 from app.rag.tools import get_meeting_summary, get_action_items, search_by_speaker, search_transcript
 from app.rag.chat_fallback_groq import gemini_history_to_openai, run_groq_chat_stream
 from app.services.cost_tracker import gemini_generation_cost, log_cost
@@ -50,6 +52,75 @@ class LRUSessionCache:
 # Global session cache instance
 _session_cache = LRUSessionCache(capacity=500)
 
+# How many stored turns are replayed into a cold session, and the cap the
+# warm in-memory history is truncated to. One constant for both, so a
+# session rebuilt from the database sees exactly as much context as one
+# that stayed in the cache.
+HISTORY_TURN_LIMIT = 20
+
+
+def _load_thread(meeting_id: str, user_id: str) -> list[types.Content]:
+    """
+    Rebuilds a session's history from the meeting's stored thread.
+
+    Blocking (SQLAlchemy) - call it through asyncio.to_thread. Only text
+    turns come back; see the ChatMessage docstring for why tool round-trips
+    are not stored.
+    """
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.meeting_id == meeting_id, ChatMessage.user_id == user_id)
+            .order_by(ChatMessage.id.desc())
+            .limit(HISTORY_TURN_LIMIT)
+            .all()
+        )
+    finally:
+        db.close()
+
+    # Queried newest-first so the LIMIT keeps the most recent turns; the
+    # model needs them oldest-first.
+    rows.reverse()
+    return [
+        types.Content(
+            role="model" if row.role == "assistant" else "user",
+            parts=[types.Part.from_text(text=row.content)],
+        )
+        for row in rows
+    ]
+
+
+def _save_exchange(meeting_id: str, user_id: str, question: str, answer: str, tools_used: list[str]) -> None:
+    """
+    Stores one completed question/answer pair.
+
+    Blocking (SQLAlchemy) - call it through asyncio.to_thread. Both rows go
+    in a single commit, so a thread can never be read back holding a
+    question with no answer under it.
+    """
+    db = SessionLocal()
+    try:
+        db.add(ChatMessage(
+            meeting_id=meeting_id,
+            user_id=user_id,
+            role="user",
+            content=question,
+        ))
+        db.add(ChatMessage(
+            meeting_id=meeting_id,
+            user_id=user_id,
+            role="assistant",
+            content=answer,
+            tools_used=tools_used or None,
+        ))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
 # We create the genai client here
 client = genai.Client(
     api_key=settings.gemini_api_key,
@@ -91,10 +162,23 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
     session_lock, history = await _session_cache.get_session(user_id, meeting_id, sid)
     
     async with session_lock:
+        # A cold session - the first question this process has seen for the
+        # meeting, or one the LRU evicted - starts from the stored thread
+        # instead of from nothing. This is what makes the conversation
+        # survive a refresh, a logout, an eviction or a restart, and what
+        # keeps the model's context in step with the thread the UI shows.
+        if not history:
+            try:
+                history.extend(await asyncio.to_thread(_load_thread, meeting_id, user_id))
+            except Exception as e:
+                # Older context is worth losing; the question is not. Answer
+                # it against an empty history rather than failing outright.
+                print(f"[chat] could not load stored thread for meeting {meeting_id}: {e}")
+
         # Truncate history to preserve context window limits
-        if len(history) > 20:
+        if len(history) > HISTORY_TURN_LIMIT:
             # Modify the list in-place to retain the reference inside the cache
-            history[:] = history[-20:]
+            history[:] = history[-HISTORY_TURN_LIMIT:]
 
         # Where to roll history back to if this request never produces an
         # answer. Without it a failed question stays in the session forever:
@@ -196,12 +280,33 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
         loop_count = 0
         prompt_tokens_total = 0
         output_tokens_total = 0
+        # Everything the client has been shown for this reply, in order.
+        # Cleared by a reset, so it always matches what is on screen - which
+        # is what makes it the right thing to store.
+        answer_parts: list[str] = []
         # Whether any answer text has reached the client for this reply.
         # Scoped to the whole request, not to one turn of the tool loop,
         # because a "reset" clears the entire reply bubble - so a preamble
         # streamed two tool calls ago is text that has to be accounted for
         # before a retry or the Groq fallback starts writing over it.
         streamed_any_text = False
+
+        async def _persist_exchange():
+            """
+            Stores the exchange the user just saw. A storage failure must not
+            fail an answer that has already been streamed in full, so it is
+            logged and swallowed: the turn stays in the in-memory session
+            either way, and only a later cold start would miss it.
+            """
+            answer = "".join(answer_parts).strip()
+            if not answer:
+                return
+            try:
+                await asyncio.to_thread(
+                    _save_exchange, meeting_id, user_id, question, answer, list(tools_used)
+                )
+            except Exception as e:
+                print(f"[chat] could not store thread for meeting {meeting_id}: {e}")
 
         def _log_chat_cost():
             cost = gemini_generation_cost(prompt_tokens_total, output_tokens_total)
@@ -269,6 +374,7 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                                 text_acc.append(part.text)
                                 model_parts.append(part)
                                 streamed_any_text = True
+                                answer_parts.append(part.text)
                                 yield {"type": "delta", "text": part.text}
                     break  # Success!
                 except (errors.APIError, httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
@@ -300,6 +406,7 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                     if streamed_any_text:
                         yield {"type": "reset"}
                         streamed_any_text = False
+                        answer_parts.clear()
 
                     if attempt == chat_max_retries - 1:
                         _log_chat_cost()
@@ -336,7 +443,9 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                                             usd="0.000000",
                                         )
                                     else:
-                                        fallback_streamed = fallback_streamed or event["type"] == "delta"
+                                        if event["type"] == "delta":
+                                            fallback_streamed = True
+                                            answer_parts.append(event["text"])
                                         yield event
                             except Exception as groq_err:
                                 print(f"[chat] Groq fallback also failed: {groq_err}")
@@ -350,6 +459,7 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                                     role="model",
                                     parts=[types.Part.from_text(text=fallback_text)],
                                 ))
+                                await _persist_exchange()
                                 yield {"type": "done", "session_id": sid, "tools_used": tools_used}
                                 return
 
@@ -359,6 +469,7 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                                 # below replaces the half-answer instead of
                                 # reading as its continuation.
                                 yield {"type": "reset"}
+                                answer_parts.clear()
 
                             if fallback_exhausted:
                                 # Groq answered fine, it just kept searching
@@ -446,6 +557,7 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
 
             # No function calls, meaning the text streamed above was the final answer
             _log_chat_cost()
+            await _persist_exchange()
             yield {"type": "done", "session_id": sid, "tools_used": tools_used}
             return
 

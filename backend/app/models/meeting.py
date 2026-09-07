@@ -33,6 +33,21 @@ class ChatResponse(BaseModel):
     tools_used: list[str] = []
 
 
+class ChatMessageOut(BaseModel):
+    # Stringified because the row id is a bigint - large values lose
+    # precision once JSON numbers reach JavaScript, and the frontend only
+    # ever uses this as an opaque React key.
+    id: str
+    role: str  # "user" | "assistant"
+    content: str
+    tools_used: list[str] = []
+    created_at: Optional[str] = None
+
+
+class ChatHistoryResponse(BaseModel):
+    messages: list[ChatMessageOut] = []
+
+
 class RecordingCompleteWebhook(BaseModel):
     user_id: str
     meeting_id: str

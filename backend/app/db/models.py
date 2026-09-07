@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Integer, DateTime, ForeignKey
+from sqlalchemy import BigInteger, Column, String, Integer, DateTime, ForeignKey, Index, Text
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -82,3 +82,44 @@ class MeetingChunk(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     meeting = relationship("Meeting", back_populates="chunks")
+
+class ChatMessage(Base):
+    """
+    One row per turn of a meeting's "Ask about this meeting" conversation.
+
+    There is exactly one durable thread per (meeting, user): the chat panel
+    reads it back on mount, and rag/chat_service.py replays it into a cold
+    session, so the conversation survives a refresh, a logout, an LRU
+    eviction and a backend restart. Only the text turns are stored - tool
+    calls and their results are deliberately left out, for the same reason
+    chat_fallback_groq.gemini_history_to_openai drops them: they are
+    deterministic reads over the meeting's own rows, so re-calling a tool is
+    cheaper and more reliable than replaying a provider-specific round-trip.
+
+    Deliberately has no relationship() back to Meeting. delete_meeting()
+    ends in db.delete(meeting), and a relationship would make SQLAlchemy
+    load every message just to clear its FK; the ON DELETE CASCADE below
+    removes them in the database instead.
+    """
+    __tablename__ = "chat_messages"
+
+    # BIGSERIAL rather than the UUID the other tables use, because this is
+    # an append-only log whose order is the point and created_at cannot
+    # provide it: Postgres now() is transaction time, so a question and the
+    # answer written alongside it in one commit carry the identical
+    # timestamp. An increasing id is the only stable tiebreaker.
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    meeting_id = Column(UUID(as_uuid=True), ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    # "user" or "assistant".
+    role = Column(String, nullable=False)
+    content = Column(Text, nullable=False)
+    # Which RAG tools produced this answer. NULL on user turns.
+    tools_used = Column(ARRAY(String), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        # The only access path there is: one meeting's thread, for its
+        # owner, in insertion order.
+        Index("ix_chat_messages_meeting_user", "meeting_id", "user_id", "id"),
+    )
