@@ -2,6 +2,7 @@
 
 import { MeetingBot } from '../../core/MeetingBot.js';
 import { BrowserManager, resolveAuthStatePath, debugScreenshot, persistStorageState } from '../../core/BrowserManager.js';
+import { findFirstVisible } from '../../core/resilientLocator.js';
 import { GOOGLE_MEET_SELECTORS } from './selectors.js';
 import {
   isAdmitted,
@@ -84,15 +85,23 @@ export class GoogleMeetBot extends MeetingBot {
       await gotItBtn.click().catch(() => {});
     }
 
-    // Explicitly wait for the name input field
-    try {
-      const nameInput = this.page.locator(GOOGLE_MEET_SELECTORS.nameInput).first();
-      await nameInput.waitFor({ state: 'visible', timeout: 10000 });
+    // Explicitly wait for the name input field. Absent is a normal outcome,
+    // not an error - an authenticated session joins under the account name
+    // and Meet never renders this field.
+    const nameInput = await findFirstVisible(this.page, GOOGLE_MEET_SELECTORS.nameInput, {
+      timeout: 10000,
+      label: 'nameInput',
+    });
+    if (nameInput) {
       console.log('[GoogleMeetBot] Name input located. Filling bot name...');
-      await nameInput.click();
-      await nameInput.fill(this.session.botName);
-      await this.page.waitForTimeout(1000);
-    } catch {
+      try {
+        await nameInput.click();
+        await nameInput.fill(this.session.botName);
+        await this.page.waitForTimeout(1000);
+      } catch (err) {
+        console.log('[GoogleMeetBot] Name input found but could not be filled:', err.message);
+      }
+    } else {
       console.log('[GoogleMeetBot] No name input required or visible, proceeding to join...');
     }
 
@@ -100,8 +109,18 @@ export class GoogleMeetBot extends MeetingBot {
 
     // Locate and click the join button
     console.log('[GoogleMeetBot] Clicking Join / Ask to join button...');
-    const joinBtn = this.page.locator(GOOGLE_MEET_SELECTORS.joinButton).first();
-    await joinBtn.waitFor({ state: 'visible', timeout: 15000 });
+    const joinBtn = await findFirstVisible(this.page, GOOGLE_MEET_SELECTORS.joinButton, {
+      timeout: 15000,
+      label: 'joinButton',
+    });
+    if (!joinBtn) {
+      await debugScreenshot(this.page, 'google-meet-join-button-missing.png');
+      throw new Error(
+        'Could not find the Join / Ask to join button - none of the known selectors ' +
+        'matched. Google has likely changed the pre-join UI; check ' +
+        'google-meet-join-button-missing.png and update GOOGLE_MEET_SELECTORS.joinButton.'
+      );
+    }
     await joinBtn.click({ force: true });
 
     await this.page.waitForTimeout(2000);
