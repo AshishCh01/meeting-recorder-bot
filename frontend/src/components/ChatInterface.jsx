@@ -27,10 +27,10 @@ export const ChatInterface = () => {
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4.5 flex flex-col gap-3.5">
-        {messages.map((msg, idx) => {
+        {messages.map((msg) => {
           const isUser = msg.role === 'user';
           return (
-            <div key={idx} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+            <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
               <div
                 className={`max-w-[88%] px-4 py-3 rounded-2xl text-[14.5px] leading-relaxed border ${
                   isUser

@@ -51,10 +51,10 @@ export const MobileChatSheet = ({ meetingTitle }) => {
             </div>
           </div>
           <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3">
-            {messages.map((msg, idx) => {
+            {messages.map((msg) => {
               const isUser = msg.role === 'user';
               return (
-                <div key={idx} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+                <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
                   <div
                     className={`max-w-[86%] px-3.5 py-3 rounded-2xl text-sm leading-relaxed border ${
                       isUser

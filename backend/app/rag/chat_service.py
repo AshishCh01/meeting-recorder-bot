@@ -51,7 +51,10 @@ class LRUSessionCache:
 _session_cache = LRUSessionCache(capacity=500)
 
 # We create the genai client here
-client = genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOptions(timeout=60_000))
+client = genai.Client(
+    api_key=settings.gemini_api_key,
+    http_options=types.HttpOptions(timeout=int(settings.chat_timeout_seconds * 1000)),
+)
 
 class DummyToolContext:
     def __init__(self, meeting_id: str, user_id: str):
@@ -68,13 +71,18 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
 
         {"type": "tool",  "name": "search_transcript"}  - a tool is starting
         {"type": "delta", "text": "..."}                - a piece of the answer
+        {"type": "reset"}                               - discard every delta
+                                                          sent so far; the
+                                                          answer is starting
+                                                          over
         {"type": "done",  "session_id": ..., "tools_used": [...]}
         {"type": "error", "message": "..."}             - fatal; stream ends
 
-    Joining every "delta" in order reproduces the complete answer - including
-    the canned fallback messages - which is what the non-streaming
-    ask_question() wrapper below relies on. Keeping one implementation of the
-    loop means the streaming and non-streaming paths can't drift apart.
+    Joining every "delta" since the last "reset" reproduces the complete
+    answer - including the canned fallback messages - which is what the
+    non-streaming ask_question() wrapper below relies on. Keeping one
+    implementation of the loop means the streaming and non-streaming paths
+    can't drift apart.
     """
     if not user_id:
         raise ValueError("user_id must be provided to scope the agent's context.")
@@ -88,8 +96,19 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
             # Modify the list in-place to retain the reference inside the cache
             history[:] = history[-20:]
 
+        # Where to roll history back to if this request never produces an
+        # answer. Without it a failed question stays in the session forever:
+        # every later question re-sends it as context, so a user retrying a
+        # failing turn a few times ends up paying for - and waiting on - a
+        # prompt padded with their own unanswered questions and the partial
+        # tool round-trips that went with them.
+        history_mark = len(history)
+
         # Append the user's question
         history.append(types.Content(role="user", parts=[types.Part.from_text(text=question)]))
+
+        def _rollback_history():
+            history[:] = history[:history_mark]
     
         # Define tools without ToolContext for Gemini
         def _get_meeting_summary() -> dict:
@@ -177,6 +196,12 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
         loop_count = 0
         prompt_tokens_total = 0
         output_tokens_total = 0
+        # Whether any answer text has reached the client for this reply.
+        # Scoped to the whole request, not to one turn of the tool loop,
+        # because a "reset" clears the entire reply bubble - so a preamble
+        # streamed two tool calls ago is text that has to be accounted for
+        # before a retry or the Groq fallback starts writing over it.
+        streamed_any_text = False
 
         def _log_chat_cost():
             cost = gemini_generation_cost(prompt_tokens_total, output_tokens_total)
@@ -192,12 +217,13 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
         while True:
             if loop_count >= MAX_TOOL_ITERATIONS:
                 _log_chat_cost()
+                _rollback_history()
                 yield {"type": "delta", "text": "I'm having trouble finding the exact information you requested. Could you try rephrasing your question?"}
                 yield {"type": "done", "session_id": sid, "tools_used": tools_used}
                 return
             loop_count += 1
 
-            chat_max_retries = 3
+            chat_max_retries = settings.chat_max_retries
             # Per-turn accumulators. Text parts are streamed to the caller as
             # they arrive AND collected here, so the complete model turn can
             # still be appended to history for the next iteration.
@@ -210,7 +236,6 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
             # which the API rejects on the next turn with
             # "400 INVALID_ARGUMENT: Function call is missing a thought_signature".
             model_parts = []
-            streamed_any_text = False
             turn_prompt_tokens = 0
             turn_output_tokens = 0
 
@@ -254,13 +279,28 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                     code = getattr(e, "code", None) or type(e).__name__
                     print(f"[chat] generate_content_stream failed (attempt {attempt+1}/{chat_max_retries}), code={code}: {e}")
 
-                    # Once deltas have gone out to the client, a retry would
-                    # duplicate the text already shown, so only retry a turn
-                    # that failed before emitting anything.
+                    # Deltas from the dead turn have already reached the
+                    # client, so retrying or failing over would print the
+                    # answer twice. Tell the client to drop what it has and
+                    # treat the reply as starting from scratch, then carry
+                    # on into the retries and the Groq fallback like any
+                    # other failure.
+                    #
+                    # This used to `return` with a canned "interrupted
+                    # mid-answer" message, which made the single most common
+                    # failure - a stream that dies a few tokens in - the one
+                    # case that reached neither the retries nor the fallback:
+                    # a half-written bubble and an error was the whole answer.
+                    #
+                    # A reset also clears any preamble text from an earlier
+                    # tool iteration of the same reply. That text is gone from
+                    # the screen but still in `history`, so the model won't
+                    # repeat it - losing a "let me check..." beats showing it
+                    # twice.
                     if streamed_any_text:
-                        _log_chat_cost()
-                        yield {"type": "error", "message": "The connection to the AI service was interrupted mid-answer. Please try again."}
-                        return
+                        yield {"type": "reset"}
+                        streamed_any_text = False
+
                     if attempt == chat_max_retries - 1:
                         _log_chat_cost()
 
@@ -315,20 +355,22 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
 
                             if fallback_streamed:
                                 # Groq died partway through an answer the user
-                                # can already see; appending the canned message
-                                # to it would read as part of that answer.
-                                yield {"type": "error", "message": "The connection to the AI service was interrupted mid-answer. Please try again."}
-                                return
+                                # can already see; clear it so the message
+                                # below replaces the half-answer instead of
+                                # reading as its continuation.
+                                yield {"type": "reset"}
 
                             if fallback_exhausted:
                                 # Groq answered fine, it just kept searching
                                 # without settling. Say that, rather than
                                 # blaming load - the same wording the Gemini
                                 # path uses when it hits MAX_TOOL_ITERATIONS.
+                                _rollback_history()
                                 yield {"type": "delta", "text": "I'm having trouble finding the exact information you requested. Could you try rephrasing your question?"}
                                 yield {"type": "done", "session_id": sid, "tools_used": tools_used}
                                 return
 
+                        _rollback_history()
                         yield {"type": "delta", "text": "The AI service is currently experiencing high load or rate limits. Please try again in a few moments."}
                         yield {"type": "done", "session_id": sid, "tools_used": tools_used}
                         return
@@ -339,6 +381,7 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
 
             if not text_acc and not function_calls:
                 _log_chat_cost()
+                _rollback_history()
                 yield {"type": "error", "message": "No response was returned by the model."}
                 return
 
@@ -421,6 +464,11 @@ async def ask_question(meeting_id: str, question: str, session_id: str | None = 
         kind = event["type"]
         if kind == "delta":
             answer_parts.append(event["text"])
+        elif kind == "reset":
+            # The deltas so far were superseded by a retry or by the
+            # provider fallback; keeping them would prefix the answer with
+            # an abandoned fragment of itself.
+            answer_parts.clear()
         elif kind == "done":
             sid = event["session_id"]
             tools_used = event["tools_used"]

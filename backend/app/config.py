@@ -55,6 +55,20 @@ class Settings(BaseSettings):
     groq_max_output_tokens: int = 2000
     groq_timeout_seconds: float = 60.0
 
+    # How long a single Gemini chat turn may stall, and how many times
+    # chat_service retries it before handing the question to Groq.
+    #
+    # These bound how long a user waits on a bad Gemini day, because the
+    # timeout is spent in full on every attempt: the previous 60s x 3 meant
+    # roughly three minutes of an empty chat bubble before the fallback even
+    # started. As a *read* timeout it only trips on that many seconds of
+    # silence, and a healthy stream sends tokens continuously, so 30s is still
+    # far more than a live turn ever needs - it just declares a dead stream
+    # dead sooner. Two attempts then reach Groq (which is typically faster
+    # than Gemini anyway) in about a minute instead of three.
+    chat_timeout_seconds: float = 30.0
+    chat_max_retries: int = 2
+
     # Google Calendar integration (optional - the app runs fine with
     # these unset, the /calendar/* routes just fail with a clear error
     # until they're configured). See docs/google-calendar-integration-plan.md.
