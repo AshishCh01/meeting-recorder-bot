@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -17,7 +18,33 @@ logger = logging.getLogger(__name__)
 _MISSED_GRACE_MINUTES = 15
 
 
+def _claim(db: Session, meeting: Meeting, **values) -> bool:
+    """
+    Atomically moves a meeting out of "scheduled" - the single rule every
+    transition out of that status in this sweep goes through.
+
+    The SELECT in trigger_due_meetings is advisory: with more than one
+    backend replica, two schedulers sweep the same table and both read the
+    same row as "scheduled". Whoever wins this conditional UPDATE owns the
+    meeting; the loser gets rowcount 0 and leaves it alone, so the bot is
+    dispatched exactly once. Same in-house pattern as the status guards in
+    app/api/webhooks.py.
+    """
+    result = db.execute(
+        update(Meeting)
+        .where(Meeting.id == meeting.id, Meeting.status == "scheduled")
+        .values(**values)
+    )
+    db.commit()
+    return result.rowcount == 1
+
+
 def _mark_failed(db: Session, meeting: Meeting, message: str) -> None:
+    """
+    Unconditional, and deliberately so - only call this on a meeting this
+    sweep has already claimed via _claim(), where no other replica can be
+    writing the same row.
+    """
     meeting.status = "failed"
     meeting.error_message = message
     db.commit()
@@ -32,6 +59,10 @@ def _revalidate_calendar_meeting(db: Session, meeting: Meeting, now: datetime) -
     the meeting is still good to join right now; False means it was
     already handled here (failed, or pushed to a later scheduled_at)
     and trigger_due_meetings should skip it this cycle.
+
+    Runs on a meeting trigger_due_meetings has already claimed, so the
+    writes below don't need to be conditional - no other replica can be
+    touching this row.
     """
     try:
         access_token = calendar_service.get_valid_access_token(str(meeting.user_id), db)
@@ -72,7 +103,12 @@ def _revalidate_calendar_meeting(db: Session, meeting: Meeting, now: datetime) -
     changed = False
     if new_start != meeting.scheduled_at:
         if new_start > now:
+            # Give the claim back: this meeting isn't due after all, so it
+            # has to return to "scheduled" or no later sweep will pick it
+            # up (and the watchdog would eventually fail it out of
+            # "joining" for being stuck).
             meeting.scheduled_at = new_start
+            meeting.status = "scheduled"
             db.commit()
             logger.info("[scheduler] meeting %s was rescheduled to %s - will join then.", meeting.id, new_start)
             return False
@@ -122,19 +158,28 @@ def trigger_due_meetings(db: Session) -> int:
 
     triggered = 0
     for meeting in due_meetings:
+        # The query above is only a candidate list - another replica may
+        # already own this row by now, so nothing below touches the
+        # meeting until _claim() confirms it's ours.
         if meeting.scheduled_at < missed_cutoff:
-            _mark_failed(
-                db, meeting,
+            message = (
                 f"Missed its scheduled join time (was due at {meeting.scheduled_at.isoformat()}) - "
-                "the app may have been down. Not joining a meeting that's already over.",
+                "the app may have been down. Not joining a meeting that's already over."
             )
+            if _claim(db, meeting, status="failed", error_message=message):
+                logger.warning("[scheduler] meeting %s marked failed: %s", meeting.id, message)
+            continue
+
+        # Claim before revalidating: _revalidate_calendar_meeting makes a
+        # network call to Google, and there is no point spending that
+        # request - or the quota - on a meeting another replica is already
+        # joining.
+        if not _claim(db, meeting, status="joining"):
             continue
 
         if meeting.calendar_event_id and not _revalidate_calendar_meeting(db, meeting, now):
             continue
 
-        meeting.status = "joining"
-        db.commit()
         try:
             db_user = db.query(User).filter(User.id == meeting.user_id).first()
             trigger_bot_join(
