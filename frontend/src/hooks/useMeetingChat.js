@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import api from '../lib/api';
 import { supabase } from '../lib/supabase';
 
 // Every message carries a stable id, assigned once and never reused, so the
@@ -51,6 +52,41 @@ export function useMeetingChat(meetingId) {
   useEffect(() => {
     return () => abortRef.current?.abort();
   }, []);
+
+  // Load the meeting's stored thread. The backend keeps one durable thread
+  // per meeting, so this is what makes the conversation outlive a refresh,
+  // a logout or a backend restart rather than restarting at the greeting.
+  useEffect(() => {
+    let cancelled = false;
+    setMessages([INITIAL_MESSAGE]);
+
+    api.get(`/meetings/${meetingId}/chat`)
+      .then(({ data }) => {
+        if (cancelled) return;
+        const stored = (data?.messages ?? []).map((m) => ({
+          // Prefixed so a row id can never collide with the `msg-N` ids
+          // minted for messages sent in this session.
+          id: `db-${m.id}`,
+          role: m.role === 'assistant' ? 'agent' : 'user',
+          content: m.content,
+        }));
+        if (!stored.length) return;
+        // Only the greeting is replaced. Anything the user managed to send
+        // while this request was in flight is kept, after the stored thread.
+        setMessages(prev => [
+          INITIAL_MESSAGE,
+          ...stored,
+          ...prev.filter(m => m.id !== INITIAL_MESSAGE.id),
+        ]);
+      })
+      .catch(() => {
+        // No stored thread, or the meeting isn't chattable yet (the history
+        // endpoint is gated like posting a question). Either way the panel
+        // just opens on the greeting - nothing to report to the user.
+      });
+
+    return () => { cancelled = true; };
+  }, [meetingId]);
 
   const sendMessage = async (overrideText) => {
     const text = (overrideText ?? input).trim();
