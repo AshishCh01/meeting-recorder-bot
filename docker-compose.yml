@@ -27,6 +27,39 @@ services:
     networks:
       - meeting-net
 
+  redis:
+    image: redis:7-alpine
+    # Broker for the transcription queue (docs/scaling-plan.md Phase A3).
+    # No host port published - backend and worker reach it over meeting-net
+    # at redis://redis:6379. Locally there is nothing to gain from exposing
+    # it, and plenty to lose if the host is on a shared network.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    networks:
+      - meeting-net
+
+  worker:
+    # Same image and same code as backend, different command. The worker is
+    # not a separate service to build - it is the API image running
+    # `arq app.worker.WorkerSettings` instead of uvicorn.
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    command: ["arq", "app.worker.WorkerSettings"]
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend:/app
+      - /app/venv
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    depends_on:
+      - redis
+    networks:
+      - meeting-net
+
   meeting-bot:
     build: 
       context: ./meeting-bot
@@ -73,6 +106,9 @@ services:
       - backend
     networks:
       - meeting-net
+
+volumes:
+  redis-data:
 
 networks:
   meeting-net:

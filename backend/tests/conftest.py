@@ -34,12 +34,20 @@ os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 # pull live credentials into a test process - os.environ outranks env_file in
 # pydantic-settings, so these placeholders win. Nothing under test calls out.
 os.environ.setdefault("SUPABASE_URL", "http://localhost/stub")
-os.environ.setdefault("SUPABASE_KEY", "stub-key")
+# JWT-shaped on purpose: supabase.create_client() runs at import time (via
+# app.db.supabase, which transcription_service imports) and regex-validates the
+# key before any network call. A plain "stub-key" fails collection outright.
+# Not a real credential - the payload decodes to {"role":"anon"} and nothing
+# in the suite makes a Supabase request.
+os.environ.setdefault(
+    "SUPABASE_KEY",
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiJ9.c3R1Yi1zaWduYXR1cmU",
+)
 os.environ.setdefault("MEETING_BOT_BEARER_TOKEN", "stub-token")
 os.environ.setdefault("GEMINI_API_KEY", "stub-key")
 
 from app.db import database  # noqa: E402
-from app.db.models import Meeting, User  # noqa: E402
+from app.db.models import Meeting, MeetingChunk, User  # noqa: E402
 
 
 def _guard_engine() -> None:
@@ -62,15 +70,23 @@ def _expected_url() -> str:
     return make_url(raw).render_as_string(hide_password=True)
 
 
-# Only the two tables the scheduler touches. Creating all of Base.metadata
-# would pull in meeting_chunks, whose pgvector column needs the extension
-# installed - irrelevant to anything under test here.
-_TABLES = [User.__table__, Meeting.__table__]
+# The three tables the suite touches. meeting_chunks is here for the Phase A3
+# indexing tests, and it is why the throwaway container must be a pgvector
+# image: its embedding column is a Vector(768), which needs the extension.
+# chat_messages is still left out - nothing under test writes to it.
+_TABLES = [User.__table__, Meeting.__table__, MeetingChunk.__table__]
 
 
 @pytest.fixture(scope="session", autouse=True)
 def schema():
     _guard_engine()
+    # meeting_chunks.embedding is a pgvector column, so the type has to exist
+    # before create_all emits its DDL. Idempotent, and it fails loudly here
+    # rather than as a confusing "type vector does not exist" mid-suite if
+    # the container is not a pgvector image.
+    with database.engine.begin() as conn:
+        from sqlalchemy import text
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     database.Base.metadata.drop_all(bind=database.engine, tables=_TABLES)
     database.Base.metadata.create_all(bind=database.engine, tables=_TABLES)
     yield
@@ -87,7 +103,7 @@ def clean_tables():
     yield
     with database.engine.begin() as conn:
         from sqlalchemy import text
-        conn.execute(text("TRUNCATE meetings, users RESTART IDENTITY CASCADE"))
+        conn.execute(text("TRUNCATE meeting_chunks, meetings, users RESTART IDENTITY CASCADE"))
 
 
 @pytest.fixture
@@ -101,7 +117,7 @@ def db():
 
 @pytest.fixture
 def user(db):
-    row = User(email="scheduler-test@example.com", bot_display_name="Test Notetaker")
+    row = User(email="backend-test@example.com", bot_display_name="Test Notetaker")
     db.add(row)
     db.commit()
     db.refresh(row)

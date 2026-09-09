@@ -11,6 +11,38 @@ services:
     networks:
       - meeting-net
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Broker for the transcription queue (docs/scaling-plan.md Phase A3).
+    # appendonly keeps queued jobs across a Redis restart - the whole point
+    # of the phase is that a restart must not lose in-flight work. Not
+    # published to the host: backend and worker reach it over meeting-net at
+    # redis://redis:6379, and an unauthenticated Redis on a public IP is one
+    # of the more reliable ways to lose a server.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    networks:
+      - meeting-net
+
+  worker:
+    # The backend image with a different command - no separate Dockerfile.
+    # Scale it independently of the API: `docker compose -f
+    # docker-compose.prod.yml up -d --scale worker=2`. That independence is
+    # the second reason for the phase; the first is surviving a deploy.
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["arq", "app.worker.WorkerSettings"]
+    env_file:
+      - ./backend/.env
+    depends_on:
+      - redis
+    networks:
+      - meeting-net
+
   meeting-bot:
     build:
       context: ./meeting-bot
@@ -62,6 +94,9 @@ services:
       - backend
     networks:
       - meeting-net
+
+volumes:
+  redis-data:
 
 networks:
   meeting-net:

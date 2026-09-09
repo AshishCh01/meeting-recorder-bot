@@ -40,9 +40,14 @@ USER appuser
 # cannot double-dispatch a bot. What still forces one worker is
 # transcription_service.py's ThreadPoolExecutor: each worker process
 # would get its own pool, multiplying concurrent AI load, and in-flight
-# jobs die with the process on every deploy. Phase A3 moves that to a
-# queue; until then, scale with container replicas behind a load
-# balancer rather than with uvicorn workers.
+# jobs die with the process on every deploy.
+#
+# Phase A3 has landed the queue that fixes this, but the executor is
+# still the live path until TRANSCRIPTION_USE_QUEUE=true - that flag is
+# deploy 2, deliberately separate from shipping the infrastructure. Once
+# it is on and transcription runs in the worker container, this
+# constraint is gone and --workers can be raised. Until then, scale with
+# container replicas behind a load balancer rather than uvicorn workers.
 #
 # ${PORT:-8000}: Cloud Run injects PORT and expects the container to
 # listen on it, which can differ from the EXPOSE 8000 default below.

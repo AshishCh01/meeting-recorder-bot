@@ -1,3 +1,4 @@
+import asyncio
 import json
 import tempfile
 import os
@@ -23,6 +24,21 @@ from app.services.cost_tracker import gemini_generation_cost, log_cost
 from app.services.gemini_errors import TRANSIENT_EXCEPTIONS, error_code_str, is_transient
 
 client = genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOptions(timeout=90_000))
+
+
+class IndexingFailed(Exception):
+    """
+    index_transcript raised after the transcript was already saved and the
+    meeting already said "completed".
+
+    This needs its own type rather than propagating the original exception,
+    because transcribe_recording's broad `except Exception` would otherwise
+    catch it and call _mark_failed - flipping a meeting that has a perfectly
+    good transcript, summary and action items to "failed". The handler
+    re-raises this type specifically so the queue can retry just the indexing
+    step, which the resume check at the top of transcribe_recording makes
+    cheap: no re-download, no re-transcription.
+    """
 
 RESPONSE_SCHEMA = {
     "type": "object",
@@ -211,6 +227,10 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
 
     db = SessionLocal()
     try:
+        resumed = _resume_if_work_already_done(db, meeting_id)
+        if resumed is not _NOT_RESUMABLE:
+            return resumed
+
         try:
             file_bytes = supabase.storage.from_(
                 settings.supabase_recordings_bucket
@@ -321,14 +341,15 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
                 meeting.status = "completed"
                 db.commit()
 
-            embedding_cost = 0.0
             try:
                 embedding_cost = index_transcript(db, meeting_id, result)
             except Exception as e:
-                meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
-                if meeting:
-                    meeting.error_message = f"Transcript ready, but RAG indexing failed: {e}"
-                    db.commit()
+                # Was swallowed here (meeting left "completed" with a note).
+                # Under a queue that throws away a free repair: the retry
+                # machinery can fix an indexing failure, and thanks to the
+                # resume check the retry costs embedding only. The worker
+                # writes that same note once retries are exhausted.
+                raise IndexingFailed(str(e)) from e
 
             log_cost(
                 "meeting_total",
@@ -339,6 +360,12 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
             )
 
             return result
+
+        except IndexingFailed:
+            # The transcript is saved and the meeting says "completed" - only
+            # the RAG index is missing, so the `except Exception` below must
+            # not turn this into a failed meeting. Let it out to the queue.
+            raise
 
         except TRANSIENT_EXCEPTIONS as e:
             code_str = error_code_str(e)
@@ -361,10 +388,11 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
                     try:
                         index_transcript(db, meeting_id, result)
                     except Exception as idx_err:
-                        meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
-                        if meeting:
-                            meeting.error_message = f"Transcript ready (Sarvam fallback), but RAG indexing failed: {idx_err}"
-                            db.commit()
+                        # Same reasoning as the Gemini path above - retryable
+                        # rather than swallowed. Raised from inside an except
+                        # block, so it propagates without re-entering any
+                        # handler here; the `finally` cleanup still runs.
+                        raise IndexingFailed(str(idx_err)) from idx_err
                     return result
                 except Exception as fallback_err:
                     print(f"[transcription] Sarvam AI fallback also failed: {fallback_err}")
@@ -406,6 +434,49 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
         db.close()
 
 
+_NOT_RESUMABLE = object()
+
+
+def _resume_if_work_already_done(db, meeting_id: str):
+    """
+    Resume, don't restart. Returns _NOT_RESUMABLE when there is nothing to
+    reuse and the full pipeline should run.
+
+    A queue retry re-executes transcribe_recording directly - it never
+    re-enters submit_transcription, so webhooks.py's
+    `status.notin_(["transcribing", "completed"])` guard cannot help. Without
+    the check below, every retry would re-download the recording, re-upload it
+    to the Gemini File API and re-transcribe it from scratch. Transcription is
+    the expensive call by a wide margin (log_cost's meeting_total line reports
+    transcription_usd and embedding_usd separately, so the split is measured
+    rather than assumed), and a crash-looping meeting would re-bill it on
+    every attempt.
+
+    Two resumable states:
+      - completed with an embedding_provider -> the whole job is done.
+      - a transcript already stored -> skip transcription, index only.
+    """
+    meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+    if meeting is None or not meeting.transcript:
+        return _NOT_RESUMABLE
+
+    if meeting.status == "completed" and meeting.embedding_provider:
+        print(f"[transcription] meeting {meeting_id} is already transcribed and indexed - nothing to do")
+        return meeting.transcript
+
+    print(f"[transcription] meeting {meeting_id} already has a transcript - resuming at indexing")
+    transcript = meeting.transcript
+    try:
+        index_transcript(db, meeting_id, transcript)
+    except Exception as e:
+        raise IndexingFailed(str(e)) from e
+
+    if meeting.status != "completed":
+        meeting.status = "completed"
+        db.commit()
+    return transcript
+
+
 def _mark_failed(db, meeting_id: str, message: str) -> None:
     print(f"[transcription] Marking failed: {message}")
     meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
@@ -415,14 +486,86 @@ def _mark_failed(db, meeting_id: str, message: str) -> None:
         db.commit()
 
 
-def submit_transcription(meeting_id: str, storage_path: str):
+def record_terminal_failure(meeting_id: str, exc: BaseException) -> None:
     """
-    Wraps transcription_executor.submit() so an exception that escapes
-    transcribe_recording's own try/except (e.g. the tempfile write at
-    the top, which sits outside every handler - see
-    docs/reliability-audit.md, finding #2) still marks the meeting
-    failed instead of vanishing into an unchecked Future. Every call
-    site should submit through this, not the executor directly.
+    The last word on a job the queue has given up retrying, called by the
+    worker once max_tries is exhausted. Replaces what submit_transcription's
+    _on_done callback does on the executor path - a crashed job must not leave
+    a meeting sitting in a non-terminal status forever.
+
+    Branches on whether a transcript survived, because "failed" is the wrong
+    answer for half of these. A meeting that transcribed fine and only failed
+    to index has a usable transcript, summary and action items; marking it
+    failed would take a working recording away from the user over a RAG
+    problem. That case keeps "completed" and records the note the old inline
+    handler used to write immediately - and stays findable with the repair
+    query in docs/scaling-plan.md:
+
+        SELECT id FROM meetings WHERE status = 'completed'
+                                  AND embedding_provider IS NULL;
+    """
+    db = SessionLocal()
+    try:
+        meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+        if meeting is None:
+            return
+        if meeting.transcript:
+            meeting.error_message = f"Transcript ready, but RAG indexing failed: {exc}"
+            print(f"[transcription] meeting {meeting_id} kept as completed; indexing gave up: {exc}")
+            db.commit()
+            return
+        meeting.status = "failed"
+        meeting.error_message = f"Transcription failed after repeated attempts: {exc}"
+        print(f"[transcription] meeting {meeting_id} marked failed after exhausted retries: {exc}")
+        db.commit()
+    finally:
+        db.close()
+
+
+async def _enqueue(meeting_id: str, storage_path: str):
+    """
+    One short-lived Redis connection per enqueue, rather than a module-level
+    pool. Transcriptions are enqueued once per meeting, so the connection cost
+    is irrelevant, and it sidesteps the real hazard: an asyncio Redis pool is
+    bound to the event loop that created it, and submit_transcription is
+    called from sync route handlers running on whichever threadpool thread
+    FastAPI happened to pick.
+
+    No fixed _job_id, deliberately. Deduplicating on meeting_id would make arq
+    silently drop the user-initiated re-run behind POST /meetings/{id}/retry
+    whenever an earlier job's result was still in Redis. A duplicate is cheap
+    anyway - _resume_if_work_already_done returns immediately for a meeting
+    that is already done.
+    """
+    from arq import create_pool
+    from arq.connections import RedisSettings
+
+    pool = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+    try:
+        return await pool.enqueue_job("transcribe_job", meeting_id, storage_path)
+    finally:
+        await pool.aclose()
+
+
+def _run_blocking(coro):
+    """Runs a coroutine to completion from sync code, loop or no loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    # Called from the event loop thread: give the coroutine its own loop on a
+    # worker thread instead of deadlocking on the running one.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+def _submit_to_executor(meeting_id: str, storage_path: str):
+    """
+    The pre-queue path. Wraps transcription_executor.submit() so an exception
+    that escapes transcribe_recording's own try/except (e.g. the tempfile
+    write at the top, which sits outside every handler - see
+    docs/reliability-audit.md, finding #2) still marks the meeting failed
+    instead of vanishing into an unchecked Future.
     """
     future = transcription_executor.submit(transcribe_recording, meeting_id, storage_path)
 
@@ -431,11 +574,22 @@ def submit_transcription(meeting_id: str, storage_path: str):
         if exc is None:
             return
         print(f"[transcription] Unhandled exception in background task for meeting {meeting_id}: {exc}")
-        db = SessionLocal()
-        try:
-            _mark_failed(db, meeting_id, f"Transcription task crashed unexpectedly: {exc}")
-        finally:
-            db.close()
+        record_terminal_failure(meeting_id, exc)
 
     future.add_done_callback(_on_done)
     return future
+
+
+def submit_transcription(meeting_id: str, storage_path: str):
+    """
+    The seam every call site goes through (meetings.py's retry endpoint and
+    webhooks.py's recording-complete handler). Which side of the cutover we
+    are on is decided here and nowhere else, so flipping
+    TRANSCRIPTION_USE_QUEUE moves the whole pipeline without touching a single
+    caller - and flipping it back is the rollback.
+    """
+    if settings.transcription_use_queue:
+        job = _run_blocking(_enqueue(meeting_id, storage_path))
+        print(f"[transcription] queued meeting {meeting_id} as job {getattr(job, 'job_id', None)}")
+        return job
+    return _submit_to_executor(meeting_id, storage_path)

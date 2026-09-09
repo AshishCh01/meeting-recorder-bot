@@ -212,9 +212,19 @@ def index_transcript(db: Session, meeting_id: str, transcript: dict) -> float:
         usd=f"{cost:.6f}",
     )
 
-    # Delete existing chunks for this meeting
+    # Delete existing chunks for this meeting.
+    #
+    # Deliberately NOT committed here. The delete and the insert below have to
+    # land in one transaction: a process that dies between them - an arq
+    # shutdown, a job timeout, an OOM kill, a dropped DB connection - would
+    # otherwise leave the meeting with zero chunks. That state is invisible,
+    # because transcribe_recording sets status "completed" before calling
+    # here: the UI shows a finished meeting with a transcript and summary
+    # while RAG returns nothing and chat answers every question with "that
+    # isn't in the transcript". Nothing errors, nobody is paged. Committing
+    # only once, below, means an interrupted re-index rolls back and the
+    # meeting keeps the chunks it already had.
     db.query(MeetingChunk).filter(MeetingChunk.meeting_id == meeting_id).delete()
-    db.commit()
 
     # Insert new chunks
     meeting_chunks = [

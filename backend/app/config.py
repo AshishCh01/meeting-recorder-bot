@@ -105,6 +105,28 @@ class Settings(BaseSettings):
     watchdog_uploading_ttl_minutes: int = 20
     watchdog_transcribing_ttl_minutes: int = 30
 
+    # Transcription queue (Phase A3). Redis is the arq broker; the worker
+    # runs `arq app.worker.WorkerSettings` from the same image as the API.
+    redis_url: str = "redis://localhost:6379"
+    # The cutover flag. False keeps submit_transcription on the in-process
+    # ThreadPoolExecutor, which is what deploy 1 ships: Redis, the worker and
+    # the task definition all running, with nothing behaviourally different.
+    # Flipping this to true is deploy 2, and reverting it is the rollback.
+    transcription_use_queue: bool = False
+    # How many attempts arq gives a transcription job before the worker
+    # writes a terminal state and stops retrying. The resume check at the top
+    # of transcribe_recording makes attempts after the first cheap - they skip
+    # straight to indexing rather than re-billing a full Gemini transcription.
+    transcription_max_tries: int = 3
+    # Generous: a long recording is a download, a Gemini File API upload, a
+    # poll to ACTIVE (capped at 5 minutes on its own), transcription and a
+    # full embed. Must exceed the worst realistic case, or arq kills a job
+    # that was going to succeed.
+    transcription_job_timeout_seconds: int = 1800
+    # Concurrent jobs per worker container. Matches the max_workers=4 the
+    # ThreadPoolExecutor used, so deploy 2 doesn't change AI provider load.
+    worker_max_jobs: int = 4
+
     # Cost tracking: per-million-token USD rates for the [cost] log lines
     # in transcription_service.py, chat_service.py, and embedding_service.py.
     # Update these via env vars when Gemini's pricing changes - never hardcode
