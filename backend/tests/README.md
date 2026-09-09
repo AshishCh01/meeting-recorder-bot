@@ -13,6 +13,17 @@ truncates them between tests -- use a throwaway database.
 
 ## Running
 
+pytest lives in `requirements-dev.txt`, not `requirements.txt` -- the
+production image (`backend/Dockerfile`) installs runtime deps only, so the
+test runner never ships to the server. Install it on the host with:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+(The local docker-compose image, `backend/Dockerfile.dev`, already has it --
+`docker compose exec backend python -m pytest` works without this step.)
+
 Start a throwaway Postgres (non-default port, so it cannot collide with a
 local instance):
 

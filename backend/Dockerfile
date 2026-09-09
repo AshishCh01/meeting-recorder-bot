@@ -33,12 +33,16 @@ USER appuser
 # Run migrations, then start the API. Safe to run on every boot -
 # Alembic no-ops if the schema is already current.
 #
-# --workers 1 is intentional, not a placeholder: chat_service.py's
-# session cache and transcription_service.py's ThreadPoolExecutor both
-# live in process memory. Multiple uvicorn workers would each get their
-# own copy - a chat session could "forget" earlier turns if routed to
-# a different worker mid-conversation. Scale via more container
-# replicas behind your platform's load balancer instead.
+# --workers 1 is intentional, not a placeholder. Two of the three
+# original reasons have since been fixed (see docs/scaling-plan.md):
+# chat history is now persisted in chat_messages and rehydrates into any
+# process, and the scheduler claims rows atomically so concurrent sweeps
+# cannot double-dispatch a bot. What still forces one worker is
+# transcription_service.py's ThreadPoolExecutor: each worker process
+# would get its own pool, multiplying concurrent AI load, and in-flight
+# jobs die with the process on every deploy. Phase A3 moves that to a
+# queue; until then, scale with container replicas behind a load
+# balancer rather than with uvicorn workers.
 #
 # ${PORT:-8000}: Cloud Run injects PORT and expects the container to
 # listen on it, which can differ from the EXPOSE 8000 default below.

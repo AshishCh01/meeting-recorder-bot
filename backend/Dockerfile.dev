@@ -9,11 +9,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the pinned dependencies file first
-COPY requirements.txt .
+# Copy the pinned dependency files first. requirements-dev.txt pulls in
+# requirements.txt via `-r`, so both must be present before the install.
+COPY requirements.txt requirements-dev.txt ./
 
-# Install the dependencies without caching
-RUN pip install --no-cache-dir -r requirements.txt
+# Dev image: runtime deps plus the test runner, so `docker compose exec
+# backend python -m pytest` works without installing anything by hand.
+# The production image (backend/Dockerfile) installs requirements.txt
+# only - see tests/README.md.
+RUN pip install --no-cache-dir -r requirements-dev.txt
 
 # Copy the rest of your backend code
 COPY . .

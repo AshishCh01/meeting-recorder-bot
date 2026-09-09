@@ -33,7 +33,7 @@ services:
       - ./meeting-bot/auth.json:/app/auth.json
       - ./meeting-bot/zoom-auth.json:/app/zoom-auth.json
     # Sized for MAX_CONCURRENT_MEETINGS=2 (~2gb per concurrent meeting, see
-    # docs/gcp-deploy.md's VM sizing section for the formula). Update this
+    # docs/aws-ec2-deploy.md's VM sizing section for the formula). Update this
     # alongside MAX_CONCURRENT_MEETINGS in meeting-bot/.env if you raise it.
     shm_size: '4gb'
     depends_on:
@@ -49,7 +49,7 @@ services:
       # compose build` time (not from frontend/.env's env_file - that only
       # injects runtime env into a container, which doesn't apply here since
       # nginx doesn't need these; Vite bakes them into the JS bundle at
-      # build time instead). See docs/gcp-deploy.md for how to source them
+      # build time instead). See docs/aws-ec2-deploy.md for how to source them
       # from frontend/.env into the shell before building.
       args:
         VITE_API_URL: ${VITE_API_URL}
