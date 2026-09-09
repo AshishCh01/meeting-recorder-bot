@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Start with a lightweight Python environment
 FROM python:3.11-slim
 
@@ -17,11 +18,21 @@ COPY requirements.txt requirements-dev.txt ./
 # backend python -m pytest` works without installing anything by hand.
 # The production image (backend/Dockerfile) installs requirements.txt
 # only - see tests/README.md.
-RUN pip install --no-cache-dir -r requirements-dev.txt
+# --timeout/--retries: pip's default 15s read timeout gives up on a slow
+# link to files.pythonhosted.org, which fails the whole build several
+# hundred MB in. The cache mount keeps downloaded wheels outside the image
+# and outside the failed layer, so a retry resumes instead of restarting -
+# which is why --no-cache-dir is deliberately NOT used here. It is still
+# used in the production Dockerfile, where image size matters more than
+# rebuild speed.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --timeout 120 --retries 10 -r requirements-dev.txt
 
 # Copy the rest of your backend code
 COPY . .
 
+
+ENV PYTHONUNBUFFERED=1
 # Expose the FastAPI port
 EXPOSE 8000
 
