@@ -67,7 +67,15 @@ services:
     ports:
       - "3000:3000"
     env_file:
-      - ./meeting-bot/.env 
+      - ./meeting-bot/.env
+    dns:
+      # Same fix as backend above: Docker Desktop's embedded DNS resolver
+      # intermittently fails to resolve external hosts (e.g. Supabase Storage)
+      # on Windows/WSL2. Node's fetch doesn't retry a failed DNS lookup, so an
+      # unlucky resolve here means SupabaseUploader fails the recording
+      # outright with "fetch failed" instead of a transient blip.
+      - 8.8.8.8
+      - 1.1.1.1
     volumes:
       # Ensures audio files are saved safely to the host machine
       - ./meeting-bot/recordings:/app/recordings

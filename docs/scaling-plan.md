@@ -1,7 +1,8 @@
 # Scaling & Production-Readiness Plan
 
 Date: 2026-09-08 (restructured 2026-09-09 around execution phases)
-Status: **A1 shipped** (commit `8dc0844`). A2 onwards not started.
+Status: **A1 shipped** (`8dc0844`) and **A3 shipped** (`d3b424d`), both
+verified in a running stack. A2 is blocked on infrastructure; A4 is next.
 Deployment target: single AWS EC2 instance — see `docs/aws-ec2-deploy.md`.
 
 Scope: what it takes to move this from a well-built single-node system to one
@@ -23,8 +24,8 @@ draft was numbered as steps 1–7; those numbers still appear in conversation, s
 | ~~**A1**~~ | ~~Scheduler claims rows atomically~~ — **done, `8dc0844`** | Low | Reverting one function |
 | **A2** | Sweep loops confined to one replica; scale out | Very low | Scaling back to 1 replica |
 | 🎯 | **Milestone: horizontally scalable. Safe to stop here indefinitely.** | | |
-| | *A2 is blocked on infrastructure — on the current single EC2 instance, go A1 → A3.* | | |
-| **A3** | Transcription moves to a queue + worker | Medium | Env flag back to the executor |
+| | *A2 is blocked on infrastructure — do it when you move off the single EC2 instance.* | | |
+| ~~**A3**~~ | ~~Transcription moves to a queue + worker~~ — **done, `d3b424d`** | Medium | Env flag back to the executor |
 | **A4** | Sentry | None | Removing the DSN |
 | **A5** | JWTs verified locally | High | Fallback wrapper, then revert |
 | **B** | Tests, structured logging, rate limiting | — | Deferred by decision |
@@ -289,10 +290,30 @@ and the user sees a failed recording they did not cause.
 
 ---
 
-# Phase A3 — Transcription moves to a queue
+# Phase A3 — Transcription moves to a queue ✅ done
 
-> **Ships:** alone, in two deploys (see below). **Risk:** medium — the failure is
-> *silent*. **Revert:** env flag back to the executor.
+> **Shipped** in `d3b424d`, in the two deploys described below. **Revert:**
+> `TRANSCRIPTION_USE_QUEUE=false` and restart — no code change, no rebuild.
+>
+> Landed as `app/worker.py` (arq), Redis and a `worker` service in both compose
+> files, and 15 tests in `backend/tests/test_transcription_queue.py`. Three
+> things worth knowing, none of which were in this plan's original text:
+>
+> - **`IndexingFailed` had to become a real exception type.** Letting an
+>   indexing error propagate so arq can retry it means it must not be caught
+>   by `transcribe_recording`'s broad `except Exception`, which would turn a
+>   perfectly good transcript into a failed meeting. It is raised where the
+>   indexing call used to be swallowed, and re-raised by a handler placed
+>   ahead of both `except TRANSIENT_EXCEPTIONS` and `except Exception`. The
+>   Sarvam fallback path needed the same treatment.
+> - **The resume guard went in `transcribe_recording`, not the arq task.** One
+>   level lower than planned, so both sides of the cutover behave identically:
+>   deploy 1 on the executor gets the same guard as deploy 2 on the queue.
+> - **The enqueue deliberately has no fixed `job_id`.** Deduplicating on
+>   `meeting_id` would make arq silently drop the user-initiated re-run behind
+>   `POST /meetings/{id}/retry` whenever an earlier result was still in Redis.
+>   A duplicate is cheap: the resume guard returns immediately for a meeting
+>   that is already done.
 
 ## Problem
 
@@ -506,10 +527,58 @@ That turns the riskiest part of the phase into a config toggle you can flip at
 - Assert the meeting reaches `failed` with a useful `error_message` when retries
   are exhausted.
 
+### How the gate was met
+
+All four, by tests that were **falsified** — each fix was reverted and the
+matching test failed with the real symptom, because a test that has never been
+shown to fail on broken code proves nothing:
+
+| Fix reverted | Test failure |
+|---|---|
+| `db.commit()` put back between delete and insert | `the delete committed on its own - chunks were lost / assert 0 == 2` |
+| Resume guard removed | `re-downloaded a recording for a meeting that already had a transcript` |
+| `except IndexingFailed: raise` deleted | `DID NOT RAISE IndexingFailed`, with `Marking failed: Transcription failed: embedding provider down` — a good transcript thrown away over a RAG error |
+
+One of those tests was rewritten during implementation because the first
+version passed with the fix deleted: it reached the re-raise through the resume
+path, which raises from outside the guarded block. The replacement drives the
+full first-run pipeline with Gemini stubbed.
+
+### Verified live, not just in tests
+
+Deployed to a local stack in the two-deploy sequence:
+
+- **Deploy 1** — Redis and `worker` up, `TRANSCRIPTION_USE_QUEUE=false`. Every
+  `[transcription]` line stayed on `backend`, the worker logged `db_keys=0` and
+  took no job. Infrastructure proven, behaviour unchanged.
+- **Deploy 2** — flag on. `backend` logged `queued meeting ... as job <id>` and
+  never logged `[transcription] Starting`; `worker` picked up the same job id
+  and returned a real transcript.
+- **Durability** — the API container was SIGKILLed (`exited with code 137`)
+  *while* a transcription was running. The job completed 72.9s after it
+  started, and the meeting reached `completed` with its chat history intact.
+  Under the `ThreadPoolExecutor` that restart would have stranded the meeting
+  in `transcribing` until the watchdog TTL failed it. **This is the single
+  behaviour the phase exists to produce.**
+
+### Still unproven in a running system
+
+Not gaps in the work - just the difference between tested and observed, worth
+recording so nobody assumes more evidence exists than does:
+
+- **No job has ever failed.** arq reports `j_failed=0 j_retried=0`, so the
+  retry ladder, `record_terminal_failure`'s branch on transcript, and the
+  `IndexingFailed` re-raise have run only against stubs. They are covered by
+  the falsified tests above; they have not run against a real provider outage.
+- **A Redis restart with a job queued has not been tested.** `--appendonly yes`
+  plus the `redis-data` volume are configured for exactly that, and Redis loads
+  its AOF at startup - but with `keys loaded: 0`, which proves an empty file
+  parses, not that a pending job survives. To close it: stop `worker`, enqueue,
+  `docker compose restart redis`, start `worker`, confirm the job still runs.
+
 ## Effort
 
-Largest of Phase A. Most of the risk is in retry safety, not plumbing — see the
-section above before starting.
+Largest of Phase A, as expected. The risk was in retry safety, not plumbing.
 
 ---
 
@@ -525,6 +594,18 @@ Roughly a day:
 - Sentry for unhandled exceptions in both the API and the A3 worker.
 - Structured logging with `meeting_id` and `user_id` on every line — there are
   currently 40 `print()` calls in `backend/app`.
+
+**A3 surfaced one concrete gap to fix here.** `app/worker.py` uses
+`logging.getLogger(__name__)`, but arq configures only its own `arq.*` logger,
+so the root logger stays at WARNING and every `logger.info(...)` in the worker
+is dropped. That is why the running stack showed arq's own job lines but never
+`[worker] transcribing meeting ... (attempt 1/3)`. The consequence that matters:
+**a job that succeeds on attempt 3 currently looks identical to one that
+succeeded first time.** Configuring logging in the worker entrypoint is the fix,
+and it should land before anything depends on reading retry behaviour from logs.
+
+(The related symptom in local dev — `print()` output buffered away because
+`Dockerfile.dev` lacked `PYTHONUNBUFFERED` — was fixed in `1c00428`.)
 
 The rest of the observability work (turning `log_cost` into a real metric) stays
 in Phase B. This phase is deliberately the minimum that de-risks A5.
