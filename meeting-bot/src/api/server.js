@@ -54,6 +54,22 @@ function requireAuth(req, res, next) {
   next();
 }
 
+// The single source of truth for "does this bot have room?", shared by
+// GET /capacity and the join handler's admission check (see below).
+// Pure and export-ed so it can be tested at any active count - a real
+// active recording needs a real browser, so the arithmetic is tested
+// here and only the wiring is tested through the endpoint.
+// `available` is floored at 0: activeCount can exceed max if
+// MAX_CONCURRENT_MEETINGS is lowered while meetings are in flight, and
+// negative headroom is not a thing a caller should have to reason about.
+export function computeCapacity(activeCount, max) {
+  return {
+    active: activeCount,
+    max,
+    available: Math.max(0, max - activeCount),
+  };
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function makeJoinHandler(platform) {
@@ -73,7 +89,10 @@ function makeJoinHandler(platform) {
     if (activeMeetings.has(meetingId)) {
       return res.status(409).json({ error: `Meeting ${meetingId} is already active` });
     }
-    if (activeMeetings.size >= MAX_CONCURRENT_MEETINGS) {
+    // Admission and GET /capacity must never disagree: both ask
+    // computeCapacity() the same question, so a bot that reports
+    // available > 0 is exactly a bot that will accept a join.
+    if (computeCapacity(activeMeetings.size, MAX_CONCURRENT_MEETINGS).available === 0) {
       return res.status(409).json({ error: 'Bot is currently busy with another meeting' });
     }
 
@@ -130,6 +149,18 @@ app.post('/stop', requireAuth, (req, res) => {
   console.log(`[server] Stop requested for meeting ${onlyMeetingId}`);
   onlySession.requestCancel();
   res.json({ status: 'stopping', meetingId: onlyMeetingId });
+});
+
+// Unlike /health, this requires auth: it discloses operational state
+// (how loaded this host is, and which meetings it holds), and its only
+// caller is the backend, which already sends the bearer token.
+app.get('/capacity', requireAuth, (req, res) => {
+  res.json({
+    ...computeCapacity(activeMeetings.size, MAX_CONCURRENT_MEETINGS),
+    // Costs nothing and turns "the bot says it's busy" into "busy with
+    // which meeting" - the question you actually ask at 2am.
+    meetingIds: [...activeMeetings.keys()],
+  });
 });
 
 app.get('/health', (req, res) => {

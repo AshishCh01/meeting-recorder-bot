@@ -5,8 +5,8 @@ Status: **A1** (`8dc0844`), **A3** (`d3b424d`), **A4** (`69e595a`) and **A5**
 (`588ceb9`) shipped - Phase A is functionally complete except A2, which is
 blocked on infrastructure, not on code. A5 was the highest-risk phase in this
 document and was verified against a real token, real forged tokens, and a
-real host-side benchmark. **Next: Phase C** (Phase B stays deferred by
-decision). One thing A5's own benchmark surfaced and left open: a Supabase
+real host-side benchmark. **Phase C is underway: C1 (`GET /capacity`) has
+shipped; C2 is next** (Phase B stays deferred by decision). One thing A5's own benchmark surfaced and left open: a Supabase
 connection-pool limit that isn't sized for concurrent load - see the end of
 the A5 section.
 Deployment target: single AWS EC2 instance — see `docs/aws-ec2-deploy.md`.
@@ -1177,9 +1177,8 @@ in passing.
 
 ## Design
 
-**C1. Make capacity externally visible.** Add `GET /capacity` to the bot
-returning `{active, max, available}`. Cheap, immediately useful for debugging,
-and the foundation for everything else.
+**C1. Make capacity externally visible.** ~~Add `GET /capacity` to the bot
+returning `{active, max, available}`.~~ **done** — see below.
 
 **C2. Move dispatch behind a queue.** Reuse A3's broker. `trigger_bot_join`
 enqueues a join request instead of posting synchronously; a dispatcher assigns
@@ -1207,6 +1206,48 @@ resolves to "the only active meeting"
 ([server.js:119-132](../meeting-bot/src/api/server.js#L119-L132)). Once the
 backend always knows the assignment, make `meetingId` required and delete the
 fallback. The code already anticipates this.
+
+## C1 — `GET /capacity` ✅ done
+
+> **Shipped** in `meeting-bot` only. **Risk:** none — one new read-only route;
+> no existing route, handler or dependency changed. **Revert:** delete the
+> route.
+>
+> Returns `{active, max, available, meetingIds}`. `meetingIds` is not in the
+> design text above and costs nothing: it turns "the bot says it's busy" into
+> "busy with *which* meeting", which is the question actually asked when
+> debugging. Three things worth knowing:
+>
+> - **It requires auth, unlike `/health`.** `/health` is deliberately
+>   unauthenticated because health checks must be; `/capacity` discloses
+>   operational state, and its only consumer from C2 onward is the backend,
+>   which already sends the bearer token.
+> - **Availability and admission are now one expression.** The join handler's
+>   `activeMeetings.size >= MAX_CONCURRENT_MEETINGS` check was replaced by
+>   `computeCapacity(...).available === 0`, the same call `/capacity` answers
+>   with. Had the two been computed separately they would eventually have
+>   disagreed, and an endpoint that advertises capacity a join then rejects is
+>   worse than no endpoint. `available` is floored at 0, which is reachable by
+>   lowering `MAX_CONCURRENT_MEETINGS` while meetings are in flight.
+> - **`meeting-bot` now has tests, and no test dependency.** There were none.
+>   The image is `node:22-bookworm-slim`, so `node --test` with `node:test`,
+>   `node:assert` and global `fetch` needed nothing added to `package.json`
+>   beyond `"test": "node --test"` — no devDependencies, no framework.
+>   13 tests in `meeting-bot/test/`. Two constraints shaped them:
+>   `MAX_CONCURRENT_MEETINGS` is read once at module load, so a test wanting a
+>   non-default `max` must set it *before* importing the app (each `node --test`
+>   file gets its own process, which makes that safe); and `activeMeetings` is
+>   module-private with no way to fake a recording in-process, so the
+>   arithmetic lives in an exported pure function tested at any count, with the
+>   endpoint tests covering only the wiring. The agreement in point 2 is pinned
+>   at the one boundary reachable without a browser: with
+>   `MAX_CONCURRENT_MEETINGS=0`, `/capacity` reports `available: 0` and a
+>   valid `POST /google/join` returns 409, because `0 >= 0` trips admission
+>   before any `MeetingSession` is constructed.
+>
+> **Deliberately not built:** no backend consumer. `bot_service.py` is
+> untouched — C2 is what dispatches against this endpoint, and a caller written
+> before the queue exists would be speculative.
 
 ## C1 and C2 are worth shipping on their own
 
