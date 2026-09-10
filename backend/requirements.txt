@@ -21,3 +21,9 @@ cryptography==50.0.0
 # redis is listed explicitly so the version is visible and pinned here.
 arq==0.26.3
 redis==5.3.1
+
+# Error reporting for the API and the worker (docs/scaling-plan.md Phase A4).
+# Runtime, not test-only: both images install requirements.txt and both call
+# app.observability.init_sentry() at startup. An unset SENTRY_DSN disables it
+# without removing the dependency, so this stays installed either way.
+sentry-sdk==2.69.1

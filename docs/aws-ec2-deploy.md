@@ -325,6 +325,55 @@ the meeting sits in `transcribing` until the watchdog TTL fails it. Phase A3
 in `docs/scaling-plan.md` fixes this; until then, prefer redeploying when
 nothing is mid-transcription.
 
+## 8b. Turning on Sentry, and confirming delivery
+
+`SENTRY_DSN` is empty by default and both Python services start fine without
+it (`docs/scaling-plan.md` Phase A4). To turn it on, put the DSN from your
+Sentry project into `backend/.env` and recreate **both** Python services — the
+API and the worker are separate processes that each initialise Sentry for
+themselves:
+
+```bash
+# in backend/.env
+SENTRY_DSN=https://<key>@<org>.ingest.sentry.io/<project>
+ENVIRONMENT=production
+```
+```bash
+docker compose -f docker-compose.prod.yml up -d backend worker
+```
+
+`up -d` and not `restart`: `restart` reuses the existing container. That is
+fine for an env-var change alone, but the moment a redeploy also brings new
+Python dependencies it will silently run the old image — which is exactly how
+the `PYTHONUNBUFFERED` fix in `1c00428` sat committed in git while the running
+containers predated it. After a `git pull` that touches
+`backend/requirements.txt`, it is `up -d --build backend worker`.
+
+**Then confirm delivery, because nothing else will tell you.** A wrong or
+revoked DSN does not crash anything — `sentry_sdk` drops events quietly, and
+the failure looks exactly like "no errors are happening". The A4 test suite
+verifies the payload *before it is transmitted* (`CapturingTransport` in
+`backend/tests/test_observability.py`); it cannot verify that a real Sentry
+project accepts it. That check has to happen here, once, against the real DSN:
+
+```bash
+# Confirm the process actually initialised Sentry rather than skipping it.
+docker compose -f docker-compose.prod.yml logs worker | grep '\[worker\] ready'
+#   ... [worker] ready - log level INFO, sentry enabled, environment production
+
+# Send one deliberate error from the API container.
+docker compose -f docker-compose.prod.yml exec backend python -c   "import sentry_sdk; from app.observability import init_sentry;    init_sentry('api'); sentry_sdk.capture_message('A4 delivery check', level='error');    sentry_sdk.flush(5)"
+```
+
+Open the Sentry project and confirm the event arrived, tagged
+`component: api` and `environment: production`. If nothing appears within a
+minute, the DSN is wrong or outbound HTTPS to `ingest.sentry.io` is blocked by
+the security group — not "no errors happened". Resolve the event afterwards.
+
+Do this **before** the Phase A5 deploy, not after. A5 (local JWT verification)
+fails for every user at once if the expected `aud`/`iss` is wrong, and its
+error rate in Sentry is the signal you would be deploying in order to watch.
+
 ## 9. Alerting on `AuthKeepAlive` failures (not yet set up)
 
 `docs/auth-keepalive-runbook.md` covers what the `[AuthKeepAlive] ALERT` log

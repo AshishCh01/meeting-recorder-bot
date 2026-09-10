@@ -15,6 +15,7 @@ from google import genai
 from google.genai import types, errors
 
 from app.config import settings
+from app.observability import sentry_enabled, set_meeting_context
 from app.db.supabase import supabase
 from app.db.database import SessionLocal
 from app.db.models import Meeting
@@ -227,6 +228,14 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
 
     db = SessionLocal()
     try:
+        # Phase A4: attach the meeting and its owner to anything Sentry captures
+        # from here on. Guarded on sentry_enabled() so the extra lookup only
+        # happens where it buys something - with no SENTRY_DSN this is one
+        # boolean and no query.
+        if sentry_enabled():
+            owner_id = db.query(Meeting.user_id).filter(Meeting.id == meeting_id).scalar()
+            set_meeting_context(meeting_id, owner_id)
+
         resumed = _resume_if_work_already_done(db, meeting_id)
         if resumed is not _NOT_RESUMABLE:
             return resumed

@@ -10,6 +10,14 @@ from app.api import calendar, chat, meetings, users, webhooks
 from app.db.database import SessionLocal
 from app.services.watchdog import sweep_stale_meetings
 from app.services.scheduler import trigger_due_meetings
+from app.observability import configure_logging, init_sentry
+
+# Phase A4. Before anything else in the process does any work: configure_logging
+# gives the root logger a handler (uvicorn only configures its own uvicorn.*
+# loggers, so without this every logger.info below is dropped), and init_sentry
+# is a no-op unless SENTRY_DSN is set. Neither can fail the boot.
+configure_logging()
+init_sentry("api")
 
 logger = logging.getLogger(__name__)
 

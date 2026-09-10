@@ -60,6 +60,13 @@ Tear down with `docker stop meetiq-test-pg meetiq-test-redis`.
 |---|---|---|
 | `test_scheduler_claim.py` | A1 | Two replicas sweeping the same due meeting dispatch exactly one bot; the missed-window and calendar-revalidation paths still behave with the claim moved ahead of them. |
 | `test_transcription_queue.py` | A3 | A queued job survives with no worker running; a re-index interrupted between its delete and insert keeps the meeting's chunks; a retry over an existing transcript never calls Gemini; exhausted retries write a terminal state. |
+| `test_observability.py` | A4 | Sentry is disabled and harmless with no `SENTRY_DSN`; a request that raises inside a route produces an event with no Supabase JWT anywhere in it - header, frame locals or exception message; `meeting_id`/`user_id` ride along on transcription events. |
+
+`test_observability.py` needs neither Postgres nor Redis of its own, but it
+lives in the same suite so `conftest.py`'s `TEST_DATABASE_URL` interlock still
+applies. It never opens a network connection: `init_sentry` is handed a
+`CapturingTransport` that keeps the envelope, and the placeholder DSN points at
+`.invalid`.
 
 Test dependencies live in `requirements-dev.txt`, which `Dockerfile.dev`
 installs. The production image (`backend/Dockerfile`) installs

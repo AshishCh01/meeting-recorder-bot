@@ -127,6 +127,20 @@ class Settings(BaseSettings):
     # ThreadPoolExecutor used, so deploy 2 doesn't change AI provider load.
     worker_max_jobs: int = 4
 
+    # Observability (Phase A4). Optional, like the fallback provider keys
+    # above: an empty SENTRY_DSN means Sentry is never initialised and both
+    # the API and the worker start exactly as they did before. Local dev and
+    # the test suite need no DSN.
+    sentry_dsn: str = ""
+    # Errors only by default. Performance tracing is a separate (and billable)
+    # thing to turn on deliberately; A4 exists to see error *rates*, not spans.
+    sentry_traces_sample_rate: float = 0.0
+
+    # Root log level for both entrypoints. app/observability.py configures the
+    # root logger from this - without it neither uvicorn nor arq gives root a
+    # handler and every logger.info() in app.* is silently dropped.
+    log_level: str = "INFO"
+
     # Cost tracking: per-million-token USD rates for the [cost] log lines
     # in transcription_service.py, chat_service.py, and embedding_service.py.
     # Update these via env vars when Gemini's pricing changes - never hardcode

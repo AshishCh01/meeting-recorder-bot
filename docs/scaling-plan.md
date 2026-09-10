@@ -2,7 +2,8 @@
 
 Date: 2026-09-08 (restructured 2026-09-09 around execution phases)
 Status: **A1 shipped** (`8dc0844`) and **A3 shipped** (`d3b424d`), both
-verified in a running stack. A2 is blocked on infrastructure; A4 is next.
+verified in a running stack - including A3's last open claim, that a queued
+job survives a Redis restart. A2 is blocked on infrastructure; **A4 is next**.
 Deployment target: single AWS EC2 instance — see `docs/aws-ec2-deploy.md`.
 
 Scope: what it takes to move this from a well-built single-node system to one
@@ -560,21 +561,53 @@ Deployed to a local stack in the two-deploy sequence:
   Under the `ThreadPoolExecutor` that restart would have stranded the meeting
   in `transcribing` until the watchdog TTL failed it. **This is the single
   behaviour the phase exists to produce.**
+- **Redis restart with a job queued** — the last design claim without
+  evidence, now closed. A job was enqueued through the real `_enqueue()`
+  path with `worker` stopped, then Redis was restarted:
+
+  | Stage | Redis state |
+  |---|---|
+  | after enqueue | `DBSIZE=2` — `arq:job:fdddd4d0…`, `arq:queue` |
+  | after `docker compose restart redis` | `DBSIZE=2` — identical keys |
+
+  The startup log is the proof it came from the AOF and not a snapshot:
+  `Done loading RDB, keys loaded: 0` followed by `DB loaded from incr file
+  appendonly.aof.1.incr.aof`. arq then read it back as a complete job with
+  its original `enqueue_time`, and on starting `worker` executed it:
+  `52.00s → …:transcribe_job(…) delayed=52.00s` then `1.68s ← … ●`. The
+  `delayed=52.00s` is the whole test in one line - the job waited across
+  the restart and still ran. `--appendonly yes` plus the `redis-data`
+  volume are doing real work.
 
 ### Still unproven in a running system
 
-Not gaps in the work - just the difference between tested and observed, worth
-recording so nobody assumes more evidence exists than does:
+One item, and it is the difference between tested and observed rather than a
+gap in the work:
 
 - **No job has ever failed.** arq reports `j_failed=0 j_retried=0`, so the
   retry ladder, `record_terminal_failure`'s branch on transcript, and the
   `IndexingFailed` re-raise have run only against stubs. They are covered by
-  the falsified tests above; they have not run against a real provider outage.
-- **A Redis restart with a job queued has not been tested.** `--appendonly yes`
-  plus the `redis-data` volume are configured for exactly that, and Redis loads
-  its AOF at startup - but with `keys loaded: 0`, which proves an empty file
-  parses, not that a pending job survives. To close it: stop `worker`, enqueue,
-  `docker compose restart redis`, start `worker`, confirm the job still runs.
+  the falsified tests above; they have not run against a real provider
+  outage. Deferred by decision - A4 configures the worker's logging, which
+  is what would make a real retry observable when one happens.
+
+### Fixed while testing this phase
+
+Neither is part of A3, both were found by running it end to end:
+
+- **`meeting-bot` had no DNS fallback** (`b7ab3c8`). A recording was lost to
+  `[SupabaseUploader] Upload failed: fetch failed` - Docker Desktop's embedded
+  resolver intermittently failing on Windows/WSL2, the same fault `backend`
+  already carried a `dns: 8.8.8.8 / 1.1.1.1` block for. Node's `fetch` does
+  not retry a failed lookup, so one unlucky resolve failed the upload
+  outright. `meeting-bot` now has the same block; verified afterwards with
+  5/5 clean HTTPS round-trips to Supabase from inside the container.
+- **`PYTHONUNBUFFERED` was committed but never built** (`1c00428`). The fix
+  was in git while the running images predated it, because `docker compose
+  start` reuses the existing container - only `up --build` applies a
+  Dockerfile change. Worker `print()` output was still being buffered away
+  until `backend` and `worker` were rebuilt. Worth remembering before the
+  EC2 deploy: **`start` reuses, `up --build` applies.**
 
 ## Effort
 
@@ -582,33 +615,93 @@ Largest of Phase A, as expected. The risk was in retry safety, not plumbing.
 
 ---
 
-# Phase A4 — Sentry
+# Phase A4 — Sentry ✅ done
 
-> **Ships:** alone. **Risk:** none. **Revert:** remove the DSN.
+> **Revert:** unset `SENTRY_DSN` and restart — no code change. The logging fix
+> below has no DSN to remove and should stay either way.
+>
+> Landed as `backend/app/observability.py` (`configure_logging`, `init_sentry`,
+> `scrub_event`, `set_meeting_context`), called from both entrypoints, plus
+> `sentry-sdk` in `requirements.txt` and 8 tests in
+> `backend/tests/test_observability.py`. Two things worth knowing, neither of
+> which was in this plan's original text:
+>
+> - **Sentry's own credential filtering was not enough, and that was only
+>   visible by looking at a real payload.** Every request to this API carries a
+>   Supabase JWT. `send_default_pii=False` does filter it out of
+>   `request.headers`, and the SDK's `EventScrubber` does check frame locals
+>   whose *name* looks sensitive — but a request that raised inside a route
+>   still arrived with the caller's token in roughly twenty stack frames, under
+>   names no denylist flags: `scope.headers`, `conn.headers`,
+>   `request.headers`, the bound `functools.partial` in `func`, and FastAPI's
+>   `solved_result`. Any frame in `app/services/*` would additionally have
+>   carried a `settings` local, whose repr is every API key this app has. The
+>   answer is `include_local_variables=False` — fail closed, at the cost of
+>   variable values in tracebacks — plus a shape-based JWT scrub in
+>   `before_send`, because a token can also arrive inside an exception
+>   *message* (`api/auth.py` raises
+>   `HTTPException(detail=f"Could not validate credentials: {e}")`).
+> - **The worker's logging fix works because of arq's startup ordering.** The
+>   `arq` CLI imports the settings module *before* applying its own log config,
+>   and that config names only the `arq` logger — it has no `root` key and
+>   `disable_existing_loggers: False` — so configuring root at import time in
+>   `app/worker.py` survives it. `logging.getLogger("arq").propagate = False`
+>   goes with it, or every arq line prints twice. `WorkerSettings.on_startup`
+>   re-asserts both after arq is fully up, so the fix does not depend on that
+>   ordering staying true.
 
 Pulled forward out of its original grouping for one reason: **A5 is a change you
 cannot safely validate without seeing its error rate in production.**
 
-Roughly a day:
+What shipped:
 
-- Sentry for unhandled exceptions in both the API and the A3 worker.
-- Structured logging with `meeting_id` and `user_id` on every line — there are
-  currently 40 `print()` calls in `backend/app`.
+- Sentry for unhandled exceptions in both the API and the A3 worker. Two
+  processes, two `init_sentry()` calls; the worker gets `ArqIntegration`, which
+  opens a per-job isolation scope and captures what escapes the job, so nothing
+  wraps `transcribe_job` by hand.
+- Python logging configured at both entrypoints, so `logger.*` emits at all.
+- `meeting_id` and `user_id` as Sentry tags on transcription events —
+  `arq-job.args` is redacted under `send_default_pii=False`, so without them a
+  failed transcription arrives with no indication of which meeting it was.
 
-**A3 surfaced one concrete gap to fix here.** `app/worker.py` uses
+`SENTRY_DSN` is optional and empty by default, like `GROQ_API_KEY` and
+`JINA_API_KEY`: unset means Sentry is never initialised and both processes start
+exactly as before. Local dev and the test suite need no DSN.
+
+**What was verified, precisely.** The credential-scrubbing and tagging claims
+were checked against the payload **as it would have been sent** — captured at
+the transport, after `before_send`, before the wire (`CapturingTransport` in
+`backend/tests/test_observability.py`). No event was transmitted to a real
+Sentry project, so nothing here evidences *delivery*: that a real DSN is
+accepted and the event lands in the UI is a separate check, and it is
+deliberately the pre-A5 step in
+[aws-ec2-deploy.md §8b](aws-ec2-deploy.md). The distinction matters in this
+direction too — a Sentry project's UI would only show what survived their
+server-side processing, which is the weaker claim for "nothing leaked".
+
+The disabled path was checked in the running stack, not argued: with
+`SENTRY_DSN` unset, `docker compose up -d --build backend worker` starts both
+services clean and all 40 tests pass (the 31 from A1/A3, unchanged, plus 9 new).
+
+**A3 surfaced one concrete gap, and this fixed it.** `app/worker.py` used
 `logging.getLogger(__name__)`, but arq configures only its own `arq.*` logger,
-so the root logger stays at WARNING and every `logger.info(...)` in the worker
-is dropped. That is why the running stack showed arq's own job lines but never
-`[worker] transcribing meeting ... (attempt 1/3)`. The consequence that matters:
-**a job that succeeds on attempt 3 currently looks identical to one that
-succeeded first time.** Configuring logging in the worker entrypoint is the fix,
-and it should land before anything depends on reading retry behaviour from logs.
+so the root logger stayed at WARNING and every `logger.info(...)` in the worker
+was dropped. That is why the running stack showed arq's own job lines but never
+`[worker] transcribing meeting ... (attempt 1/3)`. The consequence that mattered:
+**a job that succeeded on attempt 3 looked identical to one that succeeded first
+time**, because the retry `logger.warning` and the "gave up after N attempts"
+`logger.error` were the only evidence either way.
 
 (The related symptom in local dev — `print()` output buffered away because
 `Dockerfile.dev` lacked `PYTHONUNBUFFERED` — was fixed in `1c00428`.)
 
-The rest of the observability work (turning `log_cost` into a real metric) stays
-in Phase B. This phase is deliberately the minimum that de-risks A5.
+Deliberately *not* done here, both moved to Phase B: converting the 45 `print()`
+calls in `backend/app` to `logger.*`, and turning `log_cost` into a real metric.
+The `print()` calls already emit and are already visible in `docker compose
+logs` — a bulk rewrite touching every service file is a large diff that de-risks
+nothing about A5, which is the only reason this phase exists. `configure_logging`
+writes to stdout rather than logging's default stderr specifically so the
+converted and unconverted lines interleave in order until that happens.
 
 ---
 
@@ -732,8 +825,20 @@ Add `pytest` + `pytest-asyncio`, and a Postgres service in CI (SQLite will not d
 
 ## Remaining observability
 
-A4 covers Sentry and structured logging. Left here: turning `log_cost` into a
-real metric. Per-user AI spend is a business number, not a debug line.
+A4 shipped Sentry, root logging config for both entrypoints, and `meeting_id` /
+`user_id` on transcription events. Two pieces were deliberately left here:
+
+1. **Convert the 45 `print()` calls in `backend/app` to `logger.*`**, with
+   `meeting_id` and `user_id` as structured fields rather than interpolated
+   into the message. This was originally listed under A4 and moved here on the
+   A4 deploy: the calls already emit (`PYTHONUNBUFFERED` is set in both
+   Dockerfiles) and are already visible in `docker compose logs`, so the
+   rewrite buys log *structure*, not log *visibility* — and it is a diff across
+   every file in `app/services/`, which is the opposite of what a phase whose
+   whole purpose is de-risking the A5 deploy wants to ship. A4 left root
+   logging on stdout so the two styles interleave in order in the meantime.
+2. **Turn `log_cost` into a real metric.** Per-user AI spend is a business
+   number, not a debug line.
 
 ## Rate limiting
 
@@ -786,6 +891,45 @@ And there is no backpressure: `trigger_bot_join` is a synchronous
 `httpx.post(timeout=10)`, so a bot at capacity returns 409 and the meeting fails
 outright. Two meetings scheduled at 10:00 with `MAX_CONCURRENT_MEETINGS=1` means
 one is simply lost.
+
+## Known bug in this tier, found while testing A3
+
+**A failed upload destroys the only copy of the recording.** Independent of
+the bot-pool work below, and worth fixing sooner - it is data loss, not a
+scaling limit.
+
+`MeetingLifecycle.js` unlinks the local `.m4a` in a block deliberately placed
+outside the upload's success/failure handling:
+
+```js
+} catch (uploadErr) {
+  session.markFailed(`Upload failed: ${uploadErr.message}`);
+}
+
+// Cleanup is best-effort and deliberately separate from the
+// upload's success/failure ...
+fs.unlinkSync(localPath);
+```
+
+The comment's intent is sound - a file still locked by ffmpeg on Windows
+should not be misreported as an upload failure - but the consequence is that
+when the upload genuinely fails, the audio is deleted anyway. Observed for
+real: meeting `4e7fe19b` recorded fine (`ffmpeg closed with code 0`), the
+upload failed on the DNS fault above, and the file was unlinked one line
+later. Checked afterwards - `storage files = EMPTY`, nothing on disk.
+
+**Retry cannot help.** `retry_meeting`
+([meetings.py:127-132](../backend/app/api/meetings.py#L127-L132)) re-runs
+*transcription* from a file already in storage; it checks the bucket first
+and correctly 404s with "Recording file not found in storage. Cannot retry."
+There is no path that re-uploads, because there is nothing left to upload.
+
+The DNS fix makes this rarer, not safe - a Supabase outage, an expired token
+or a dropped transfer would strand a recording the same way. The fix is to
+unlink only when the upload succeeded, and to keep the file otherwise; making
+that *useful* also needs a backend path that retries the upload rather than
+only the transcription, which is why it is written up here rather than done
+in passing.
 
 ## Design
 
