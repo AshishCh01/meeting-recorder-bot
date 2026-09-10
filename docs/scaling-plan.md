@@ -1,9 +1,14 @@
 # Scaling & Production-Readiness Plan
 
 Date: 2026-09-08 (restructured 2026-09-09 around execution phases)
-Status: **A1 shipped** (`8dc0844`) and **A3 shipped** (`d3b424d`), both
-verified in a running stack - including A3's last open claim, that a queued
-job survives a Redis restart. A2 is blocked on infrastructure; **A4 is next**.
+Status: **A1** (`8dc0844`), **A3** (`d3b424d`), **A4** (`69e595a`) and **A5**
+(`588ceb9`) shipped - Phase A is functionally complete except A2, which is
+blocked on infrastructure, not on code. A5 was the highest-risk phase in this
+document and was verified against a real token, real forged tokens, and a
+real host-side benchmark. **Next: Phase C** (Phase B stays deferred by
+decision). One thing A5's own benchmark surfaced and left open: a Supabase
+connection-pool limit that isn't sized for concurrent load - see the end of
+the A5 section.
 Deployment target: single AWS EC2 instance — see `docs/aws-ec2-deploy.md`.
 
 Scope: what it takes to move this from a well-built single-node system to one
@@ -27,8 +32,8 @@ draft was numbered as steps 1–7; those numbers still appear in conversation, s
 | 🎯 | **Milestone: horizontally scalable. Safe to stop here indefinitely.** | | |
 | | *A2 is blocked on infrastructure — do it when you move off the single EC2 instance.* | | |
 | ~~**A3**~~ | ~~Transcription moves to a queue + worker~~ — **done, `d3b424d`** | Medium | Env flag back to the executor |
-| **A4** | Sentry | None | Removing the DSN |
-| **A5** | JWTs verified locally | High | Fallback wrapper, then revert |
+| ~~**A4**~~ | ~~Sentry~~ — **done, `69e595a`** | None | Removing the DSN |
+| ~~**A5**~~ | ~~JWTs verified locally~~ — **done, `588ceb9`** | High | Fallback wrapper, then revert |
 | **B** | Tests, structured logging, rate limiting | — | Deferred by decision |
 | **C** | Bot pool — the recording tier | High | Per sub-step |
 
@@ -705,10 +710,60 @@ converted and unconverted lines interleave in order until that happens.
 
 ---
 
-# Phase A5 — Verify JWTs locally
+# Phase A5 — Verify JWTs locally ✅ done
 
-> **Ships:** alone, on a quiet deploy window. **Risk:** highest — fails for
-> every user at once. **Revert:** fallback wrapper, then revert.
+> **Shipped** in `588ceb9`. **Revert, in order of cost:**
+> `JWT_LOCAL_VERIFICATION_ENABLED=false` and
+> restart — no rebuild, no code change, straight back to
+> `supabase.auth.get_user()` on every request. The fallback wrapper below sits
+> under that as an automatic net. Reverting the commit is the third resort,
+> not the first.
+>
+> Landed as `backend/app/services/jwt_verifier.py`, a rewritten
+> `backend/app/api/auth.py`, `PyJWT` in `requirements.txt`, and 26 tests in
+> `backend/tests/test_jwt_auth.py`. Four things worth knowing, none of which
+> were in this plan's original text:
+>
+> - **`PyJWKClient` refetches the JWKS on *every* unknown `kid`, with no
+>   cooldown.** So the naive implementation of "refresh on unknown `kid`" is
+>   one outbound request to Supabase Auth *per request* — a key rotation, or
+>   anyone replaying junk tokens in a loop, becomes a self-inflicted DDoS on
+>   the dependency this phase exists to stop leaning on. `_SigningKeys` does
+>   the `kid` lookup itself and puts a locked cooldown in front of the
+>   refetch: 50 unknown-`kid` requests cost one refetch, and a real rotation
+>   is still picked up by the first request that sees the new key.
+> - **The published JWKS is a public key set - an algorithm-agnostic verifier
+>   turns it into a forgeable shared secret.** Not something this plan asked
+>   for; found during implementation. If `alg` were accepted from the token
+>   rather than pinned to `["ES256"]`, anyone could HMAC-sign a token with
+>   Supabase's own public key as the secret and mint a session for any `sub`.
+>   Verified independently, not just by the implementer's own tests: hand-built
+>   (not PyJWT-encoded, since PyJWT refuses to produce either shape) `alg:none`
+>   and HS256-signed-with-the-real-public-key tokens were both rejected with
+>   `bad_algorithm` against the running server.
+> - **`include_local_variables=False` closes a leak `send_default_pii=False`
+>   does not.** Verified, not assumed: a captured payload with locals on put
+>   the caller's JWT into ~20 stack frames under ordinary-looking names -
+>   `scope.headers`, `conn.headers`, `request.headers`, FastAPI's
+>   `solved_result` - none of which a name-based scrubber would flag. Any
+>   frame in `app/services/*` also holds a `settings` local whose `repr`
+>   contains the Supabase **service-role key** and every other secret this app
+>   has, independently confirmed by checking `repr(settings)` directly. Cost:
+>   captured tracebacks lose variable values; file/line/function/source
+>   context survive, which is what an error rate needs.
+> - **The user-row cache was worth more than the JWT change itself.** Measured
+>   below. Both the Supabase Auth call and the `users` SELECT are round-trips
+>   to remote services, and the SELECT was the slower of the two.
+> - **`alg` is checked against an allow-list before the JWKS is touched.** That
+>   is what makes `alg: none` a rejection, and it also means a junk `alg` can
+>   never cost a network fetch. The allow-list must never gain an HMAC
+>   algorithm: the JWKS is public, so HS256 would make the published key a
+>   valid shared secret. Both are tested with hand-built raw tokens, because
+>   PyJWT refuses to *encode* either and testing through its encoder would
+>   prove nothing about what an attacker actually sends.
+> - **The fallback fires on expired tokens too, which costs a round-trip to
+>   confirm a rejection.** Deliberate for this release — see the fallback
+>   section — but it is the first thing to narrow when the wrapper comes out.
 
 ## Problem
 
@@ -735,18 +790,46 @@ Not a slow degradation — instant and total. Hence A4 first.
 
 ## Design
 
-First establish which signing scheme your project uses. This changes the
-implementation and the answer is project-age dependent — **check your project's
-settings, do not assume:**
+**Signing scheme — resolved, no longer an open question.** This project is
+**asymmetric, ES256**. `${SUPABASE_URL}/auth/v1/.well-known/jwks.json` returns
+200 with exactly one key:
 
-- **Asymmetric (newer projects):** RS256/ES256, public keys at
-  `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`. Fetch once, cache, refresh on
-  unknown `kid`. Nothing secret stored in the backend.
-- **Legacy symmetric:** HS256 with the project's JWT secret as a shared secret.
-  Simpler, but the secret must be stored and rotated like any other credential.
+```
+kty=EC  alg=ES256  use=sig  kid=59cc524a-85fb-4cd2-bae7-7004d50bf9aa
+```
+
+So there is no JWT secret to store, rotate or leak — the backend holds only
+public keys, fetched at runtime. `PyJWT`'s `PyJWKClient` does the fetching and
+caching; `cryptography` was already a dependency and is what makes ES256 work.
+
+**`aud` and `iss` were read off a real access token, not assumed.** This is the
+one detail a unit test cannot validate — a fixture encodes whatever value the
+test author guessed, so a wrong guess passes the suite and fails every user
+simultaneously in production. Decoded without verification, a live token
+carries:
+
+| claim | value |
+|---|---|
+| `alg` / `kid` | `ES256` / `59cc524a-85fb-4cd2-bae7-7004d50bf9aa` (matches the JWKS) |
+| `aud` | `authenticated` |
+| `iss` | `https://<project-ref>.supabase.co/auth/v1` |
+| `sub` | the user id |
+| `email` | present as a top-level claim |
+
+Both happen to match the documented convention, but they are now configuration
+(`JWT_AUDIENCE`, `JWT_ISSUER`, blank meaning "derive from `SUPABASE_URL`")
+rather than hardcoded, precisely because being wrong about either is an outage
+that has to be fixable by an env var and a restart.
 
 Verify signature, `exp`, `aud` and `iss`. Extract `sub` as the user id and
-`email` from the claims. `cryptography` is already a dependency; add `PyJWT`.
+`email` from the claims.
+
+**Legacy HS256 tokens still in flight** — if a project was migrated to
+asymmetric keys, sessions issued before the migration carry HS256 tokens that
+local verification will reject. They are not special-cased, and the JWT secret
+is deliberately *not* stored in order to validate them. They take the fallback
+path instead: `bad_algorithm`, one Supabase round-trip, user stays logged in,
+and they drain as sessions refresh. Decided, rather than discovered.
 
 **Cache the user-row upsert separately.** The `SELECT`-then-maybe-`INSERT` on
 `users` is a second per-request cost, and once verification is local it becomes
@@ -767,20 +850,161 @@ but decide it is acceptable rather than discover it.
 
 ## Files touched
 
-- `backend/requirements.txt` — `PyJWT`.
-- `backend/app/api/auth.py` — `get_current_user`.
-- `backend/app/config.py` — JWKS URL / JWT secret, audience, issuer.
+- `backend/requirements.txt` — `PyJWT==2.13.0`.
+- `backend/app/api/auth.py` — `get_current_user`, the fallback wrapper and its
+  counters, and the user-row TTL cache.
+- `backend/app/config.py` — JWKS URL, audience, issuer, algorithm allow-list,
+  the kill switch, the fallback switch and both cache TTLs. No JWT secret —
+  the scheme is asymmetric.
+- `backend/app/observability.py` — `capture_message`, so the fallback is
+  visible in Sentry and not only on stdout.
 - New: `backend/app/services/jwt_verifier.py` — JWKS fetch/cache and verify.
+- New: `backend/tests/test_jwt_auth.py` — 26 tests.
 
-## Gate
+## Gate — results
 
-- Valid token → correct `sub`. Expired → 401. Wrong signature → 401. Wrong `aud`
-  or `iss` → 401. **`alg: none` → 401** (test this explicitly; it is the classic
-  JWT bug).
-- Unknown `kid` triggers exactly one JWKS refetch, not one per request.
-- Measure p50 latency on an authenticated endpoint before and after. It should be
-  visibly faster — if it is not, something is still round-tripping.
-- In production: fallback counter at zero before deleting the fallback.
+- **Valid token → correct `sub`.** Verified with a real access token against
+  the live JWKS, not only a self-signed fixture.
+- **Every rejection path returns 401:** expired, wrong signature, wrong `aud`,
+  wrong `iss`, `alg: none`, HS256-signed-with-the-public-key, missing `sub`,
+  and unparseable garbage. Each asserted twice — at `verify_token`, for the
+  specific reason, and end-to-end through the FastAPI dependency for the
+  status code.
+- **Unknown `kid` triggers exactly one JWKS refetch.** 50 consecutive
+  unknown-`kid` requests cost 1 refetch. With the cooldown set to 0 the same
+  test goes back to one fetch per miss, which is what demonstrates the
+  cooldown is doing the work rather than some incidental caching.
+- **p50 on `GET /users/me`**, 100 samples after 15 warm-up requests, same
+  image and same network path, configuration switched by env var:
+
+  | configuration | p50 | p95 |
+  |---|---|---|
+  | pre-A5 (Supabase Auth call + `users` SELECT per request) | 128.42 ms | 173.22 ms |
+  | local JWT, no user-row cache | 106.88 ms | 282.59 ms |
+  | **local JWT + user-row cache (shipped)** | **59.90 ms** | **83.56 ms** |
+
+  **53% off p50.** Note the middle row: removing the Supabase Auth round-trip
+  on its own bought 22 ms of the 69 ms. The `users` SELECT was carrying the
+  larger share — the concrete version of the warning above. Shipping the JWT
+  change without the user-row cache would have captured roughly a third of the
+  available win and looked like the phase underdelivered. (The remaining 60 ms
+  is real work: `/users/me` runs its own `SELECT` in the route body, against
+  the same remote Postgres.)
+- **Fallback counter: 0** across the 116 authenticated requests of the
+  benchmark run — no `[auth] local verification failed` line, so every one was
+  verified locally. That is also **Phase A exit criterion 4** ("an
+  authenticated request makes zero outbound Supabase Auth calls in the steady
+  state") satisfied.
+- **Still open, in production:** watch that counter under real traffic before
+  deleting the fallback. Zero here is one user and one token, which is not the
+  same claim.
+
+## The fallback wrapper, and how it comes out
+
+`AUTH_FALLBACK_ENABLED=true` wraps local verification: on **any** verification
+failure, ask `supabase.auth.get_user` before rejecting. That is what makes a
+wrong `aud` a log line rather than an outage, and it is why this phase can ship
+on a quiet window instead of needing a maintenance one.
+
+Because it works, it is silent — a fallback firing on 100% of requests and one
+that never fires look identical from the outside. So every fire is counted by
+reason, logged with the running total, and reported to Sentry (A4, `69e595a`),
+rate-limited to one event per reason per minute with the totals carried inside
+the event so the volume stays legible without sending 100% of requests to
+Sentry.
+
+Deleting it is a separate, later change, gated on that counter sitting at zero
+under real traffic. When it happens, narrow `expired` first: an expired token
+is unambiguous — local verification cannot be wrong about it the way it can be
+wrong about `aud` — so falling back on it spends an HTTPS round-trip to confirm
+a rejection, and it is reachable by anyone replaying an old token.
+
+## Verified independently, and from the host
+
+Two passes beyond the implementer's own report, because a phase this
+security-sensitive is only worth as much as evidence someone else can
+reproduce:
+
+**Forgery, run against the live server, not re-derived from the code:**
+
+```
+alg=none                                    -> rejected (bad_algorithm)
+alg=None (case)                             -> rejected (bad_algorithm)
+HS256 forged with the real public key (PEM) -> rejected (bad_algorithm)
+HS256 forged with the real public key (text)-> rejected (bad_algorithm)
+garbage / empty token                       -> rejected (malformed)
+```
+
+`frames carrying vars: 0` when the same exception was captured with a real
+Supabase key and Gemini key sitting in scope - neither reached the payload.
+
+**Host-side benchmark** (`backend/benchmark_auth.py`, crossing Docker
+Desktop's port proxy the way a browser does - a different vantage point
+from the implementer's in-container numbers, and the more honest one for
+"what a user experiences"), isolated run, `/meetings`:
+
+| | before | after | change |
+|---|---|---|---|
+| min | 301.91 ms | 68.03 ms | -77% |
+| p50 | 368.69 ms | 151.01 ms | -59% |
+| p99 | 1127.44 ms | 400.51 ms | -64% |
+| max | 8086.32 ms | 513.24 ms | -94% |
+
+The tail matters more than the median here: an 8-second authenticated
+request was a visible hang, and it is gone - not because it got faster, but
+because the Supabase round-trip that occasionally stalled that badly no
+longer happens on the hot path at all.
+
+## Found by this phase's own benchmark, not yet fixed
+
+A later run with `-c 8` (concurrent) surfaced a real, pre-existing bug this
+phase did not cause and does not fix:
+
+```
+psycopg.OperationalError: ... FATAL: (EMAXCONNSESSION) max clients reached
+in session mode - max clients are limited to pool_size: 15
+```
+
+60 occurrences in one run; 5-6 requests came back as 500s, and a `/meetings`
+serial pass right after the concurrent one had a 6-second p99 - almost
+certainly the same exhaustion showing up as a pool-checkout wait instead of
+an outright rejection.
+
+**Cause:** `backend/app/db/database.py` sets `pool_size=10, max_overflow=20`
+- 30 connections per process. Two processes import it and each get their own
+engine: `backend` and A3's `worker`. Worst case, 60 connections requested
+against Supabase's session-mode pooler, which is capped at 15 - a limit set
+by the Supabase plan/pooler config, not by this app, and not something A5's
+fix touches.
+
+**This predates A5.** It surfaced now because A5's benchmark is the first
+thing that has ever driven real concurrent load at this backend - the same
+way A3's atomicity bug predated A3 but only became reachable once a queue
+introduced retries.
+
+Deferred, by decision, to its own change - not bundled into A5 and not
+blocking the move to Phase C. When it is picked up: size `pool_size` +
+`max_overflow` for both processes combined with headroom under 15, consider
+whether Supabase's transaction-mode pooler (port 6543) removes the ceiling
+rather than just fitting under it, and reproduce this exact benchmark
+command first so the fix is proven against the failure that found it.
+
+## Behaviour change accepted: revocation is no longer immediate
+
+Local verification cannot see server-side session revocation. After a sign-out,
+or an admin revoking a session, **that access token keeps working until its
+`exp`** — up to one hour on Supabase's default lifetime; the token used for the
+measurements above had a 60-minute window.
+
+What still holds: the *refresh* token is revoked immediately, so the session
+cannot extend itself past that one access token's expiry. The exposure is
+bounded by the access-token lifetime rather than open-ended.
+
+Accepted knowingly, not overlooked. If it ever stops being acceptable — a
+compliance requirement, or a "sign out everywhere" feature that has to be
+instant — the options are shortening the access-token lifetime in Supabase, or
+`JWT_LOCAL_VERIFICATION_ENABLED=false` to go back to asking Supabase on every
+request and pay the latency again.
 
 ---
 
@@ -801,27 +1025,47 @@ Do not declare Phase A done on "the code is merged." Prove all four:
 
 ## Tests
 
-There is currently **no test suite**. `backend/.pytest_cache` exists but there
-are no test files anywhere in the repo.
+**A suite now exists** — 40 tests in `backend/tests/`, built as the gates of the
+phases that needed them rather than as a phase of its own:
 
-For a system whose correctness lives in retry ladders, provider fallbacks and a
-multi-status state machine, this is the single largest production risk. Recent
-chat work had to be verified with throwaway scripts that were then deleted.
+| File | Tests | Landed with |
+|---|---|---|
+| `test_scheduler_claim.py` | 16 | A1 |
+| `test_transcription_queue.py` | 15 | A3 |
+| `test_observability.py` | 9 | A4 |
+
+That was the deliberate consequence of deferring this phase: A1 and A3 carry
+their own tests because a concurrency fix is unobservable without one, and A3
+could silently leave a `completed` meeting with nothing to search. Each was
+*falsified* — the fix reverted, the test shown failing with the real symptom.
+
+What remains is **broadening coverage**, not creating a suite. For a system
+whose correctness lives in retry ladders, provider fallbacks and a multi-status
+state machine, the untested parts are still the largest production risk.
 
 Highest-value targets, in order:
 
 1. **The meeting status machine** — every transition, and that no path leaves a
    meeting non-terminal forever.
 2. **Webhook idempotency** — the `rowcount == 0` "already processed" branch.
-3. **Scheduler claiming** — A1's race, permanently pinned.
-4. **The AI fallback ladders** — Gemini→Groq for chat, Gemini→Sarvam for
+3. **The AI fallback ladders** — Gemini→Groq for chat, Gemini→Sarvam for
    transcription, Gemini→Jina for embedding. Assert the fallback fires on
    transient errors and does *not* fire on a 400.
-5. **`chat_service` reset semantics** — a mid-answer stream break resets and
+4. **`chat_service` reset semantics** — a mid-answer stream break resets and
    falls back rather than erroring, and a failed request stores nothing.
+5. **Worker failure and retry** — A3's one untested-live path. `j_failed=0
+   j_retried=0` to date, so `record_terminal_failure`'s branch on transcript
+   and the `IndexingFailed` re-raise have only ever run against stubs.
 
-Add `pytest` + `pytest-asyncio`, and a Postgres service in CI (SQLite will not do
-— pgvector, `ARRAY`, RLS).
+(A1's scheduler race is already pinned by `test_scheduler_claim.py` and is no
+longer on this list.)
+
+`pytest` is in `requirements-dev.txt`. `pytest-asyncio` is **not** needed - the
+async paths are driven with `asyncio.run(...)` directly, which keeps the async
+boundary explicit in each test. **CI is the real gap**: nothing runs these
+automatically, so they only protect you when someone remembers. A workflow with
+a `pgvector/pgvector:pg18` service (SQLite will not do - pgvector, `ARRAY`, RLS)
+is the highest-value item in this phase.
 
 ## Remaining observability
 
