@@ -127,6 +127,59 @@ class Settings(BaseSettings):
     # ThreadPoolExecutor used, so deploy 2 doesn't change AI provider load.
     worker_max_jobs: int = 4
 
+    # Local JWT verification (Phase A5). This project signs access tokens
+    # asymmetrically with ES256; the public keys live at the JWKS URL below
+    # and nothing secret is stored here.
+    #
+    # The kill switch. False restores the pre-A5 behaviour exactly -
+    # supabase.auth.get_user() on every request - with no rebuild and no code
+    # change, which is the fastest possible revert for the riskiest phase in
+    # the plan. Same role TRANSCRIPTION_USE_QUEUE plays for A3.
+    jwt_local_verification_enabled: bool = True
+    # The safety net under the kill switch: on ANY local verification failure,
+    # ask Supabase before rejecting. Every fire is counted, logged and sent to
+    # Sentry. Turning this off is the second, separate change - do it only
+    # once that counter has sat at zero under real traffic.
+    auth_fallback_enabled: bool = True
+    # At most one Sentry event per reason per this many seconds. The running
+    # total rides along in every event, so a fallback firing on 100% of
+    # requests is still visible without sending 100% of requests to Sentry.
+    auth_fallback_sentry_interval_seconds: float = 60.0
+
+    # Blank means derive from supabase_url, which is correct for a normal
+    # Supabase project. Both are overridable because a wrong value here fails
+    # for every user at once, so it must be fixable by env var alone.
+    supabase_jwks_url: str = ""
+    jwt_issuer: str = ""
+    # Read off a real access token, not assumed - see docs/scaling-plan.md A5.
+    jwt_audience: str = "authenticated"
+    # An allow-list, and the whole defence against `alg: none` and the
+    # HS256-confusion trick. Never widen this to include an HMAC algorithm:
+    # the JWKS public key would become a valid shared secret.
+    jwt_algorithms: str = "ES256"
+    # Clock skew tolerance on exp/iat. Small on purpose - it directly extends
+    # how long an expired token keeps working.
+    jwt_leeway_seconds: int = 10
+
+    # How long a fetched JWKS is reused. Long, deliberately: an unknown `kid`
+    # forces a refetch immediately, so a key rotation is picked up by the
+    # first request that sees the new key rather than by this expiring.
+    jwks_cache_seconds: int = 3600
+    jwks_fetch_timeout_seconds: float = 5.0
+    # Floor on how often an unknown `kid` may force a JWKS refetch. Without
+    # it, PyJWKClient refetches on every miss - one outbound request to
+    # Supabase per junk token.
+    jwks_unknown_kid_cooldown_seconds: int = 60
+
+    # "user id X has a row in users" - a TTL cache in front of the
+    # SELECT-then-maybe-INSERT that get_current_user does on every request.
+    # Once verification stops going over the network that query is the
+    # dominant per-request cost, and skipping this makes A5's win much
+    # smaller than expected. A stale positive is harmless: the worst case is
+    # one redundant INSERT the primary key rejects.
+    user_cache_ttl_seconds: int = 300
+    user_cache_max_entries: int = 10000
+
     # Observability (Phase A4). Optional, like the fallback provider keys
     # above: an empty SENTRY_DSN means Sentry is never initialised and both
     # the API and the worker start exactly as they did before. Local dev and

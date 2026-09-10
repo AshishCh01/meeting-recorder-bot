@@ -250,6 +250,28 @@ def sentry_enabled() -> bool:
     return _sentry_enabled
 
 
+def capture_message(message: str, level: str = "warning", tags: Optional[dict] = None,
+                    extra: Optional[dict] = None) -> None:
+    """
+    Report something that is not an exception - a degraded path that worked.
+
+    Phase A5's auth fallback is the motivating case: it succeeds, so nothing
+    raises, and stdout alone cannot tell you whether it fired twice or on
+    every request in the fleet. A no-op when Sentry is disabled.
+    """
+    if not _sentry_enabled:
+        return
+
+    import sentry_sdk
+
+    with sentry_sdk.new_scope() as scope:
+        for key, value in (tags or {}).items():
+            scope.set_tag(key, value)
+        for key, value in (extra or {}).items():
+            scope.set_extra(key, value)
+        sentry_sdk.capture_message(message, level=level)
+
+
 def set_meeting_context(meeting_id: str, user_id: Any = None) -> None:
     """
     Attach the meeting (and its owner) to whatever Sentry captures next.

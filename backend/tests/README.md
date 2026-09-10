@@ -61,12 +61,24 @@ Tear down with `docker stop meetiq-test-pg meetiq-test-redis`.
 | `test_scheduler_claim.py` | A1 | Two replicas sweeping the same due meeting dispatch exactly one bot; the missed-window and calendar-revalidation paths still behave with the claim moved ahead of them. |
 | `test_transcription_queue.py` | A3 | A queued job survives with no worker running; a re-index interrupted between its delete and insert keeps the meeting's chunks; a retry over an existing transcript never calls Gemini; exhausted retries write a terminal state. |
 | `test_observability.py` | A4 | Sentry is disabled and harmless with no `SENTRY_DSN`; a request that raises inside a route produces an event with no Supabase JWT anywhere in it - header, frame locals or exception message; `meeting_id`/`user_id` ride along on transcription events. |
+| `test_jwt_auth.py` | A5 | Every rejection path 401s - expired, wrong signature, wrong `aud`, wrong `iss`, `alg: none`, HS256-signed-with-the-public-key; 50 unknown-`kid` requests cost exactly one JWKS refetch; the fallback wrapper keeps an unverifiable token logged in and counts itself; the user-row lookup happens once, not per request. |
 
 `test_observability.py` needs neither Postgres nor Redis of its own, but it
 lives in the same suite so `conftest.py`'s `TEST_DATABASE_URL` interlock still
 applies. It never opens a network connection: `init_sentry` is handed a
 `CapturingTransport` that keeps the envelope, and the placeholder DSN points at
 `.invalid`.
+
+`test_jwt_auth.py` uses Postgres (the user-row cache test counts real queries)
+but no network: it generates its own ES256 key pair, serves a JWKS through a
+stubbed `urllib.request.urlopen`, and counts the stub's calls - that count
+*is* the unknown-`kid` refetch assertion.
+
+What it deliberately does **not** prove is that `JWT_AUDIENCE` and `JWT_ISSUER`
+match what Supabase actually issues. Its tokens are self-signed, so they carry
+whatever claims the fixture chose; a wrong value in `config.py` would pass this
+suite and 401 every user in production. Those two were read off a real access
+token instead - see docs/scaling-plan.md A5.
 
 Test dependencies live in `requirements-dev.txt`, which `Dockerfile.dev`
 installs. The production image (`backend/Dockerfile`) installs
