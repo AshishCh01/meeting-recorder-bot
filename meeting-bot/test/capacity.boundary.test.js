@@ -23,6 +23,10 @@ async function listenOnEphemeralPort(app) {
 // Set before the import: server.js reads MAX_CONCURRENT_MEETINGS at module load.
 process.env.MAX_CONCURRENT_MEETINGS = '0';
 process.env.BEARER_TOKEN = 'test-token-for-capacity-boundary';
+// Importing server.js builds the Supabase client, which throws without a URL.
+// Nothing here uploads: a dead port and a fake key, never meeting-bot/.env.
+process.env.SUPABASE_URL = 'http://127.0.0.1:9';
+process.env.SUPABASE_KEY = 'test-key-not-a-credential';
 
 const { default: app } = await import('../src/api/server.js');
 const { baseUrl, close } = await listenOnEphemeralPort(app);

@@ -1,10 +1,11 @@
 import { createClient } from '@supabase/supabase-js';
 import fs from 'fs';
-import dotenv from 'dotenv';
 
-// Load variables from your .env file
-dotenv.config();
-
+// No dotenv here. src/index.js imports 'dotenv/config' first, and ES modules
+// evaluate imports in order, so the env is loaded before this module runs; in
+// Docker, compose's env_file supplies it anyway. Loading .env here as well
+// only ever mattered to code that imports this without index.js - the tests -
+// and there it put the developer's real credentials into the test process.
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 const bucketName = process.env.SUPABASE_RECORDINGS_BUCKET || 'recordings';

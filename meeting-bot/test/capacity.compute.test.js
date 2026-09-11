@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeCapacity } from '../src/api/server.js';
+
+// Importing server.js builds the Supabase client, which throws without a URL.
+// Nothing here uploads: a dead port and a fake key, never meeting-bot/.env.
+// A dynamic import, because a static one is hoisted above these assignments.
+process.env.SUPABASE_URL = 'http://127.0.0.1:9';
+process.env.SUPABASE_KEY = 'test-key-not-a-credential';
+const { computeCapacity } = await import('../src/api/server.js');
 
 // The arithmetic, at counts an in-process test can never reach through the
 // endpoint: a real active recording needs a real browser.

@@ -1312,6 +1312,20 @@ in `os.environ`.
   `bot_dispatch_use_queue=true` failed the original 4. Both are now pinned in
   that file, and all six inversions give identical per-test outcomes.
 
+- **The meeting-bot suite is isolated too.** `SupabaseUploader.js` called
+  `dotenv.config()` at import, so every test importing `server.js` loaded
+  `meeting-bot/.env`: the real `BEARER_TOKEN`, `BACKEND_WEBHOOK_URL`, and the
+  service-role `SUPABASE_KEY` for any test that hadn't set its own. That call
+  was redundant in production: `src/index.js` imports `dotenv/config` first,
+  and compose supplies the env. It is removed.
+  - `test/env.isolation.test.js` failed on the old code naming 6 keys that
+    appeared on import, with 0 values in the output.
+  - Three capacity test files turned out to have been relying on `.env` for
+    `SUPABASE_URL`, and crashed at import without it. They now set the same
+    placeholders the upload tests already did.
+  - 22 tests pass, and the rebuilt bot still answers `GET /capacity` with the
+    real token.
+
 ## Remaining observability
 
 A4 shipped Sentry, root logging config for both entrypoints, and `meeting_id` /
