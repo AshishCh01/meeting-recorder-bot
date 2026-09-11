@@ -27,6 +27,30 @@ def _assert_chattable(db: Session, meeting_id: UUID, user_id: str) -> Meeting:
         )
     return meeting
 
+
+def _release_request_session(db: Session) -> None:
+    """
+    Returns the request's pooled connection before any model work starts.
+
+    The checks above leave a transaction open, and SQLAlchemy keeps its
+    connection checked out until that transaction ends - through the whole
+    answer, and for the streaming route until the last chunk, since FastAPI
+    runs get_db's cleanup only after the response finishes. With the backend's
+    pool at 8 (db_pool_size), eight concurrent chats would take all of it and
+    every other request would 503.
+
+    It is this session, not a separate one for the checks, because
+    get_current_user shares it: on a user-row cache miss, _ensure_user_row's
+    SELECT checks out the same connection and does not commit.
+
+    chat_service opens its own short sessions for history, tools and saving,
+    so nothing after this needs the request's. The Meeting returned by
+    _assert_chattable is detached by this - don't read attributes off it
+    afterwards. get_db's own close() is then a no-op.
+    """
+    db.close()
+
+
 @router.get("/{meeting_id}/chat", response_model=ChatHistoryResponse)
 def get_chat_history(
     meeting_id: UUID,
@@ -76,6 +100,7 @@ async def chat_with_meeting(
     user_id: str = Depends(get_current_user)
 ):
     _assert_chattable(db, meeting_id, user_id)
+    _release_request_session(db)
     result = await ask_question(str(meeting_id), payload.question, payload.session_id, user_id)
     return ChatResponse(**result)
 
@@ -96,6 +121,10 @@ async def chat_with_meeting_stream(
     a normal 404/409 rather than a 200 stream containing an error.
     """
     _assert_chattable(db, meeting_id, user_id)
+    # Here in the route body, not in event_source: the generator only runs
+    # after this returns, and the checks above must still fail as a real
+    # 404/409 rather than inside a 200 stream.
+    _release_request_session(db)
 
     async def event_source():
         try:
