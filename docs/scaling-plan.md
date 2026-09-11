@@ -1158,6 +1158,20 @@ One commit each, in priority order. Every test stubs the slow call and reads
   excluded, and the meeting's own provider is still passed through
   (`tests/test_search_transcript_session.py`, 7 tests). Reverting the file fails
   the connection test again.
+- **`_ensure_user_row`** (`api/auth.py`), on every route that uses
+  `get_current_user` and misses the user-row cache, which after a restart means
+  every user's first request at once. It shares the route's session and
+  returned with a transaction open on two paths: the existing-user `SELECT`,
+  and the insert race, where a concurrent insert makes `commit()` raise
+  `IntegrityError`, followed by a rollback and a second `SELECT`. Both now roll
+  back, and so does the email-collision path before it re-raises. It uses
+  rollback rather than `close()`, because the route keeps using the session.
+  Each path is tested for no open transaction and nothing checked out; the race
+  uses a real `IntegrityError` from a second connection. A route that calls a
+  stub straight after a cache-miss auth read **1 → 0**
+  (`tests/test_auth_user_row_session.py`, 5 tests; reverting fails 4). Chat
+  keeps its own `_release_request_session`: `_assert_chattable` opens a new
+  transaction after auth.
 
 ## Behaviour change accepted: revocation is no longer immediate
 

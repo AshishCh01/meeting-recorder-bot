@@ -171,6 +171,12 @@ def _ensure_user_row(db: Session, user_id: str, email: str) -> None:
     if user_row_cache.known(user_id):
         return
 
+    # Every way out of here ends its transaction. `db` is the route's own
+    # session (FastAPI hands get_current_user and the route the same get_db),
+    # so a SELECT left open would keep a pooled connection checked out for the
+    # rest of the request - through whatever slow call the route makes next,
+    # and for every user at once right after a restart empties the cache.
+    # Rollback, not close(): the route queries this session straight after.
     db_user = db.query(User).filter(User.id == user_id).first()
     if db_user is None:
         db.add(User(id=user_id, email=email))
@@ -183,8 +189,12 @@ def _ensure_user_row(db: Session, user_id: str, email: str) -> None:
             # unique-email collision lands here too and that one must not be
             # cached as "exists".
             db.rollback()
-            if db.query(User).filter(User.id == user_id).first() is None:
+            exists = db.query(User).filter(User.id == user_id).first() is not None
+            db.rollback()  # the re-check's own transaction, on both outcomes
+            if not exists:
                 raise
+    else:
+        db.rollback()  # read-only: nothing to commit, just release
 
     user_row_cache.remember(user_id)
 
