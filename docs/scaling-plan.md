@@ -5,8 +5,11 @@ Status: **A1** (`8dc0844`), **A3** (`d3b424d`), **A4** (`69e595a`) and **A5**
 (`588ceb9`) shipped - Phase A is functionally complete except A2, which is
 blocked on infrastructure, not on code. A5 was the highest-risk phase in this
 document and was verified against a real token, real forged tokens, and a
-real host-side benchmark. **Phase C is underway: C1 (`GET /capacity`) has
-shipped; C2 is next** (Phase B stays deferred by decision). One thing A5's own benchmark surfaced and left open: a Supabase
+real host-side benchmark. **Phase C is underway: C1 (`GET /capacity`) and C2
+(dispatch behind a queue) have shipped, so a meeting requested while the
+recorder is busy now waits instead of being lost. C3-C5 are the multi-host
+step and should wait until concurrent recordings are demonstrably the binding
+constraint** (Phase B stays deferred by decision). One thing A5's own benchmark surfaced and left open: a Supabase
 connection-pool limit that isn't sized for concurrent load - see the end of
 the A5 section.
 Deployment target: single AWS EC2 instance — see `docs/aws-ec2-deploy.md`.
@@ -35,7 +38,7 @@ draft was numbered as steps 1–7; those numbers still appear in conversation, s
 | ~~**A4**~~ | ~~Sentry~~ — **done, `69e595a`** | None | Removing the DSN |
 | ~~**A5**~~ | ~~JWTs verified locally~~ — **done, `588ceb9`** | High | Fallback wrapper, then revert |
 | **B** | Tests, structured logging, rate limiting | — | Deferred by decision |
-| **C** | Bot pool — the recording tier | High | Per sub-step |
+| **C** | Bot pool — the recording tier — **C1, C2 done** | High | Per sub-step |
 
 **The rule for every phase:** independently deployable, independently revertable,
 and it leaves the system in a coherent state. Never half-migrated.
@@ -1180,10 +1183,10 @@ in passing.
 **C1. Make capacity externally visible.** ~~Add `GET /capacity` to the bot
 returning `{active, max, available}`.~~ **done** — see below.
 
-**C2. Move dispatch behind a queue.** Reuse A3's broker. `trigger_bot_join`
+**C2. Move dispatch behind a queue.** ~~Reuse A3's broker. `trigger_bot_join`
 enqueues a join request instead of posting synchronously; a dispatcher assigns
 queued meetings to bots with free capacity. This turns "meeting lost" into
-"meeting waits."
+"meeting waits."~~ **done** — see below.
 
 **C3. Bot registry.** Bots register themselves (host, capacity, heartbeat) in
 Postgres or Redis on boot; the dispatcher picks a host with free capacity and
@@ -1249,6 +1252,75 @@ fallback. The code already anticipates this.
 > untouched — C2 is what dispatches against this endpoint, and a caller written
 > before the queue exists would be speculative.
 
+## C2 — Dispatch moves behind a queue ✅ done
+
+> **Shipped** in `backend/` plus one `frontend/src/lib/status.js` entry.
+> **Risk:** medium — it changes what `POST /meetings` returns when the bot is
+> full. **Revert:** `BOT_DISPATCH_USE_QUEUE=false` and recreate — no code
+> change, no rebuild, same two-deploy pattern as A3 and A5.
+>
+> `trigger_bot_join` stays the seam both callers (`meetings.py` and
+> `scheduler.py`) go through; with the flag on it enqueues
+> `dispatch_bot_join_job` instead of posting. The job runs in the **existing**
+> arq worker against the **existing** `SessionLocal` — no new broker, no new
+> process, no second `create_engine` (the Supabase pool limit at the end of A5
+> is still open and unfixed). It asks C1's `GET /capacity`, posts the join if
+> there is room, and re-enqueues itself deferred by 30s if there is not.
+> 25 tests in `backend/tests/test_bot_dispatch_queue.py`. Five things worth
+> knowing:
+>
+> - **A queued meeting could not reuse `joining`, and that was the whole
+>   phase.** `watchdog_joining_ttl_minutes` is 10, so a meeting parked in
+>   `joining` while it waited would be swept to `failed` after 11 minutes of
+>   doing exactly what it was asked to do — the same lost recording this phase
+>   exists to prevent, just slower. Hence a distinct `queued` status with its
+>   own 30-minute TTL, and `queued` added to `_NON_TERMINAL_STATUSES`.
+> - **The dispatcher's cap and the watchdog's TTL are ordered on purpose.**
+>   40 attempts x 30s = 20 minutes of waiting, then the *dispatcher* writes the
+>   failure — "Waited 20 minutes for a free recorder and never got one - the
+>   recorder was busy (1/1 in use)". The watchdog's 30-minute `queued` TTL
+>   never fires first, so the user gets that message rather than "Timed out
+>   while 'queued' - swept by watchdog". A test asserts the inequality on the
+>   shipped defaults, because it is a config relationship, not a code path.
+> - **`/capacity` is an optimisation; the bot's 409 is the authority.** The
+>   check and the join are not atomic, so two jobs can both read
+>   `available: 1`. A 409 re-queues rather than fails. C1 made the endpoint and
+>   the admission rule share one expression, so the number is honest — it is
+>   just not a lock.
+> - **The dispatcher claims `queued -> joining` *before* posting**, the same
+>   conditional-UPDATE pattern as `scheduler._claim`, so two workers cannot
+>   both post; a join that then fails is put back to `queued`. The cost is that
+>   a crash between the claim and the post leaves the meeting in `joining` with
+>   no bot — bounded by the 10-minute joining TTL, which is exactly what a
+>   failed synchronous join did before C2.
+> - **This was not backend-only.** `status.js` maps status to label and tone,
+>   and a status missing from it renders as nothing. `queued` is labelled
+>   "Waiting for a recorder" — not "Joining", which would be a lie — and its
+>   `processing` tone is load-bearing: `Dashboard.jsx` polls while any meeting
+>   has that tone, so a queued meeting refreshes itself into "Joining" on its
+>   own.
+>
+> **Deliberate behaviour change.** `POST /meetings` used to return **502
+> "Could not start recording bot"** when the bot was full or unreachable. With
+> the flag on it returns **success**, and the meeting shows as `queued`. That
+> is the point of the phase, but it means the API no longer tells the caller
+> synchronously that recording will not start — the meeting's status does,
+> moments later. The one case that still 502s is the *enqueue* failing (Redis
+> down), which is the only remaining "this genuinely will not happen" answer.
+>
+> **Two known gaps, deliberately left for a follow-up:**
+>
+> - **A queued meeting cannot be stopped, only deleted.** `stop_meeting`
+>   accepts `("joining", "waiting_for_admission", "recording")` and 409s on
+>   anything else. That is *safe* — a queued meeting has no bot session for
+>   `stop_bot` to stop — but "Cancel" on a waiting meeting is a delete, which
+>   is not obvious. Fixing it means a stop path that never calls the bot.
+> - **`MeetingDetails.jsx` shows no progress card for `queued`.** Its
+>   `PROCESSING_STATUSES` / `PROCESSING_LABEL` lists are separate from
+>   `status.js` and were out of C2's scope. The badge and the dashboard polling
+>   are correct; the detail page just omits the explanatory "Waiting for a free
+>   recorder..." block. Two lines, whenever the next frontend change happens.
+
 ## C1 and C2 are worth shipping on their own
 
 They fix the worst user-visible failure — "meeting rejected because the bot was
@@ -1298,6 +1370,9 @@ A3 is the hinge: it introduces the broker that Phase B and C2 both build on.
 | `TRANSCRIPTION_WORKER_CONCURRENCY` | A3 | Replaces the hardcoded `max_workers=4`. |
 | `TRANSCRIPTION_USE_QUEUE` | A3 | The two-deploy cutover flag. |
 | `SENTRY_DSN` | A4 | |
+| `BOT_DISPATCH_USE_QUEUE` | C2 | The cutover flag. Reuses A3's `REDIS_URL` and worker. |
+| `BOT_DISPATCH_MAX_ATTEMPTS`, `BOT_DISPATCH_RETRY_DELAY_SECONDS` | C2 | How long a meeting may wait (40 x 30s = 20 min) before it is failed with a specific message. |
+| `WATCHDOG_QUEUED_TTL_MINUTES` | C2 | 30. Must stay above the product of the two above. |
 | `TEST_DATABASE_URL` | A1 | Already in use — `backend/tests/conftest.py` refuses to run without it. Test-only, never set in production. |
 | `SUPABASE_JWKS_URL` / `SUPABASE_JWT_SECRET` | A5 | Which one depends on your project's signing scheme. |
 | `SUPABASE_JWT_AUDIENCE`, `SUPABASE_JWT_ISSUER` | A5 | Must be verified, not just decoded. |

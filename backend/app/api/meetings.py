@@ -6,7 +6,7 @@ from app.db.models import Meeting, MeetingChunk, User
 from app.api.auth import get_current_user
 from app.models.meeting import MeetingCreate
 from app.services.platform_detector import detect_platform
-from app.services.bot_service import trigger_bot_join, stop_bot
+from app.services.bot_service import initial_status, trigger_bot_join, stop_bot
 import httpx
 from app.services.storage_service import get_signed_recording_url
 from app.services.transcription_service import submit_transcription
@@ -56,11 +56,22 @@ def create_meeting(
     db.refresh(meeting)
 
     try:
-        meeting.status = "joining"
+        # "joining" pre-C2, "queued" once BOT_DISPATCH_USE_QUEUE is on - the
+        # bot has not been contacted yet on the queued path, and parking the
+        # meeting in "joining" while it waits would have the watchdog sweep it
+        # after 10 minutes. bot_service owns that choice; see initial_status.
+        #
+        # Committed before the trigger either way, so the dispatch job can
+        # never read this row before it says "queued".
+        meeting.status = initial_status()
         db.commit()
         db_user = db.query(User).filter(User.id == user_id).first()
         trigger_bot_join(platform, meeting_url, str(meeting.id), user_id, db_user.bot_display_name)
     except Exception as e:
+        # Still reached on the queued path if the *enqueue* itself fails
+        # (Redis down), which is the one case where the caller genuinely
+        # cannot be told "it will happen later". A busy bot no longer lands
+        # here at all - that is the phase.
         meeting.status = "failed"
         meeting.error_message = f"Failed to start bot: {e}"
         db.commit()

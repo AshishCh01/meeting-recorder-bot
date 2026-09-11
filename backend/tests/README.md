@@ -19,7 +19,9 @@ stray `pytest` can never point the suite at the real `DATABASE_URL` in
 and truncates them between tests — use a throwaway database.
 
 `TEST_REDIS_URL` is optional: without it, `test_transcription_queue.py` skips
-and the scheduler tests still run. The Redis database is **flushed** around
+entirely and the three Redis-backed tests in `test_bot_dispatch_queue.py` skip
+(the other 22 in that file run against Postgres alone), while the scheduler
+tests still run. The Redis database is **flushed** around
 every test in that module, so point it at a throwaway too.
 
 ## Running
@@ -61,6 +63,7 @@ Tear down with `docker stop meetiq-test-pg meetiq-test-redis`.
 | `test_scheduler_claim.py` | A1 | Two replicas sweeping the same due meeting dispatch exactly one bot; the missed-window and calendar-revalidation paths still behave with the claim moved ahead of them. |
 | `test_transcription_queue.py` | A3 | A queued job survives with no worker running; a re-index interrupted between its delete and insert keeps the meeting's chunks; a retry over an existing transcript never calls Gemini; exhausted retries write a terminal state. |
 | `test_observability.py` | A4 | Sentry is disabled and harmless with no `SENTRY_DSN`; a request that raises inside a route produces an event with no Supabase JWT anywhere in it - header, frame locals or exception message; `meeting_id`/`user_id` ride along on transcription events. |
+| `test_bot_dispatch_queue.py` | C2 | A meeting requested while the recorder is full reaches `queued` and joins when capacity frees; a queued meeting survives the sweep that would have killed it in `joining`, and is still swept at its own TTL; a deleted or stopped meeting is dropped rather than joined; a 409 re-queues instead of failing; exhausted waiting writes a terminal failure naming the cause; the flag off still posts synchronously, raises on a busy bot, and enqueues nothing. |
 | `test_jwt_auth.py` | A5 | Every rejection path 401s - expired, wrong signature, wrong `aud`, wrong `iss`, `alg: none`, HS256-signed-with-the-public-key; 50 unknown-`kid` requests cost exactly one JWKS refetch; the fallback wrapper keeps an unverifiable token logged in and counts itself; the user-row lookup happens once, not per request. |
 
 `test_observability.py` needs neither Postgres nor Redis of its own, but it

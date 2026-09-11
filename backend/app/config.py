@@ -104,6 +104,18 @@ class Settings(BaseSettings):
     watchdog_recording_margin_minutes: int = 15
     watchdog_uploading_ttl_minutes: int = 20
     watchdog_transcribing_ttl_minutes: int = 30
+    # "queued" (Phase C2) is the one non-terminal status where waiting is
+    # legitimate rather than a symptom - the meeting is holding for a free
+    # recorder. It still needs a bound: a meeting queued for hours is a
+    # meeting nobody is joining.
+    #
+    # This MUST stay larger than the dispatcher's own cap
+    # (bot_dispatch_max_attempts x bot_dispatch_retry_delay_seconds, 20
+    # minutes by default). If the watchdog fired first, the user would get
+    # "Timed out while 'queued' - swept by watchdog" instead of the
+    # dispatcher's specific "no recorder ever became free", which is the
+    # difference between a diagnosable failure and a generic one.
+    watchdog_queued_ttl_minutes: int = 30
 
     # Transcription queue (Phase A3). Redis is the arq broker; the worker
     # runs `arq app.worker.WorkerSettings` from the same image as the API.
@@ -126,6 +138,28 @@ class Settings(BaseSettings):
     # Concurrent jobs per worker container. Matches the max_workers=4 the
     # ThreadPoolExecutor used, so deploy 2 doesn't change AI provider load.
     worker_max_jobs: int = 4
+
+    # Bot dispatch queue (Phase C2). Reuses A3's Redis and the same worker
+    # container - no new broker, no new process, no second engine.
+    #
+    # The cutover flag, same two-deploy pattern as TRANSCRIPTION_USE_QUEUE
+    # and JWT_LOCAL_VERIFICATION_ENABLED. False is deploy 1: the task, the
+    # "queued" status and the dispatcher all shipped and inert, with
+    # trigger_bot_join still posting synchronously and POST /meetings still
+    # returning 502 when the bot is unreachable. True is deploy 2, and
+    # flipping it back is the rollback.
+    bot_dispatch_use_queue: bool = False
+    # How many times a dispatch job re-checks for a free recorder before it
+    # gives up and fails the meeting. Deferring forever would turn "meeting
+    # lost" into "meeting pending forever", which is worse: nothing surfaces
+    # it. 40 x 30s = 20 minutes of waiting, then a terminal failure that
+    # names the real cause.
+    bot_dispatch_max_attempts: int = 40
+    bot_dispatch_retry_delay_seconds: int = 30
+    # Short: GET /capacity is a cheap in-memory read on the bot, and a slow
+    # one is itself a reason to wait rather than dispatch. Separate from the
+    # 10s join timeout, which covers a real browser launch.
+    bot_capacity_timeout_seconds: float = 5.0
 
     # Local JWT verification (Phase A5). This project signs access tokens
     # asymmetrically with ES256; the public keys live at the JWKS URL below

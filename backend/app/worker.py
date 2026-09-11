@@ -1,5 +1,6 @@
 """
-arq worker entrypoint for the transcription queue (docs/scaling-plan.md, Phase A3).
+arq worker entrypoint for the transcription queue (docs/scaling-plan.md, Phase A3)
+and the bot-join dispatch queue (Phase C2).
 
 Run it with the same image as the API, just a different command:
 
@@ -15,11 +16,17 @@ eliminate them, and a job that is never picked up at all is invisible to arq.
 """
 import asyncio
 import logging
+from datetime import timedelta
 
 from arq.connections import RedisSettings
 
 from app.config import settings
 from app.observability import configure_logging, init_sentry, set_meeting_context
+from app.services.bot_dispatch import (
+    dispatch_queued_meeting,
+    record_dispatch_exhausted,
+)
+from app.services.bot_service import DISPATCH_JOB, _enqueue_dispatch
 from app.services.transcription_service import (
     record_terminal_failure,
     transcribe_recording,
@@ -106,6 +113,64 @@ async def transcribe_job(ctx, meeting_id: str, storage_path: str):
         return None
 
 
+async def dispatch_bot_join_job(ctx, meeting_id: str, attempt: int = 1):
+    """
+    One attempt at placing one queued meeting on a recorder (Phase C2).
+
+    Not arq's own retries, deliberately. `Retry` counts against the worker's
+    max_tries, which is shared with transcribe_job and sized for 3 attempts at
+    a transcription; waiting for a recorder needs ~40 at a much longer spacing.
+    So the job re-enqueues *itself* with an incremented attempt, deferred by
+    bot_dispatch_retry_delay_seconds. The attempt count is an argument rather
+    than worker state, which means it survives a worker restart the same way
+    the job does - and makes the whole loop testable by calling this function
+    with a plain dict for ctx.
+
+    Re-enqueues through ctx["redis"], the pool the worker already holds - not
+    a new connection per defer.
+    """
+    set_meeting_context(meeting_id)
+    result = await asyncio.to_thread(dispatch_queued_meeting, meeting_id)
+
+    if not result.should_retry:
+        # Dispatched, or dropped because the meeting was deleted, stopped or
+        # swept while it waited. Either way this job is finished.
+        return result.outcome
+
+    if attempt >= settings.bot_dispatch_max_attempts:
+        # Something has to write the terminal state, for the same reason
+        # transcribe_job does it on its last attempt: a meeting left in
+        # "queued" with no job behind it is invisible until the watchdog
+        # sweeps it with a much vaguer message.
+        logger.error(
+            "[worker] meeting %s gave up after %s dispatch attempts: %s",
+            meeting_id, attempt, result.reason,
+        )
+        await asyncio.to_thread(record_dispatch_exhausted, meeting_id, result.reason)
+        return "exhausted"
+
+    logger.info(
+        "[worker] meeting %s still queued (attempt %s/%s) - %s; retrying in %ss",
+        meeting_id, attempt, settings.bot_dispatch_max_attempts,
+        result.reason, settings.bot_dispatch_retry_delay_seconds,
+    )
+    await _requeue(ctx, meeting_id, attempt + 1)
+    return "waiting"
+
+
+async def _requeue(ctx, meeting_id: str, attempt: int):
+    """
+    Defers the next attempt. Uses the worker's own Redis pool when it has one
+    (the normal path) and falls back to a short-lived connection otherwise, so
+    the task is still callable outside a real worker.
+    """
+    redis = ctx.get("redis")
+    defer = timedelta(seconds=settings.bot_dispatch_retry_delay_seconds)
+    if redis is None:
+        return await _enqueue_dispatch(meeting_id, attempt)
+    return await redis.enqueue_job(DISPATCH_JOB, meeting_id, attempt, _defer_by=defer)
+
+
 async def startup(ctx):
     """
     Re-assert the logging config once arq has applied its own.
@@ -127,11 +192,17 @@ async def startup(ctx):
 
 
 class WorkerSettings:
-    functions = [transcribe_job]
+    functions = [transcribe_job, dispatch_bot_join_job]
     on_startup = startup
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     # Matches the ThreadPoolExecutor's max_workers=4, so the cutover does not
     # change how much concurrent load reaches Gemini.
     max_jobs = settings.worker_max_jobs
     job_timeout = settings.transcription_job_timeout_seconds
+    # Applies to transcribe_job. dispatch_bot_join_job never raises on a
+    # "still waiting" outcome - it returns and re-enqueues itself - so its
+    # ~40 attempts do not run through this. arq's retries are left covering
+    # only what they should: an unexpected exception (the database being
+    # down, say), after which the meeting stays "queued" and the watchdog's
+    # queued TTL is the backstop.
     max_tries = settings.transcription_max_tries

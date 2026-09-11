@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 
 
 def _ttl_minutes_for(status: str) -> int:
+    if status == "queued":
+        return settings.watchdog_queued_ttl_minutes
     if status == "joining":
         return settings.watchdog_joining_ttl_minutes
     if status == "waiting_for_admission":
@@ -24,13 +26,21 @@ def _ttl_minutes_for(status: str) -> int:
     raise ValueError(f"No TTL defined for status: {status}")
 
 
-_NON_TERMINAL_STATUSES = ("joining", "waiting_for_admission", "recording", "uploading", "transcribing")
+# "queued" (Phase C2) is here for completeness, not because it is expected to
+# fire. A queued meeting has a dispatch job behind it that gives up after
+# bot_dispatch_max_attempts and writes its own, far more specific failure -
+# this only catches a meeting whose job was lost entirely (a Redis flush, an
+# enqueue that never landed), which is exactly the invisible-forever case the
+# watchdog exists for. Its TTL is deliberately the longest of the five:
+# waiting for a recorder is legitimate, unlike being stuck in any of the
+# others. See watchdog_queued_ttl_minutes in config.py.
+_NON_TERMINAL_STATUSES = ("queued", "joining", "waiting_for_admission", "recording", "uploading", "transcribing")
 
 
 def sweep_stale_meetings(db: Session) -> int:
     """
     Fails any meeting that's been sitting in a non-terminal status
-    (joining/recording/uploading/transcribing) with no update since
+    (queued/joining/recording/uploading/transcribing) with no update since
     longer than that status's TTL.
 
     This is the backstop for two gaps that otherwise leave a meeting

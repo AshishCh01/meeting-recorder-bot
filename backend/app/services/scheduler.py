@@ -8,7 +8,7 @@ from app.config import settings
 from app.db.models import Meeting, User
 from app.services import calendar_service
 from app.services import google_oauth_service as oauth
-from app.services.bot_service import trigger_bot_join
+from app.services.bot_service import initial_status, trigger_bot_join
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +174,11 @@ def trigger_due_meetings(db: Session) -> int:
         # network call to Google, and there is no point spending that
         # request - or the quota - on a meeting another replica is already
         # joining.
-        if not _claim(db, meeting, status="joining"):
+        # Same status as POST /meetings writes: "joining" pre-C2, "queued"
+        # once the dispatch queue is on. The claim is what keeps two replicas
+        # from both queueing the same meeting; what it claims it *for* is
+        # bot_service's decision, not the scheduler's.
+        if not _claim(db, meeting, status=initial_status()):
             continue
 
         if meeting.calendar_event_id and not _revalidate_calendar_meeting(db, meeting, now):
