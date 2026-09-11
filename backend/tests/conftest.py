@@ -14,6 +14,11 @@ import os
 
 import pytest
 
+# Key names only, taken before this file sets anything and before any app.*
+# import: exactly what whoever ran pytest (a shell, CI) provided on purpose.
+# tests/test_env_isolation.py measures everything else against it.
+RUNNER_ENV_KEYS = frozenset(os.environ)
+
 # Everything in this file that touches app.* must happen *after* DATABASE_URL
 # is redirected, because app/db/database.py builds its engine at import time
 # from the environment. Redirecting it here is also the safety interlock: an
@@ -29,6 +34,15 @@ if not TEST_DATABASE_URL:
     )
 
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+# Tests never read backend/.env, by either route it has into the process -
+# Settings' env_file and load_dotenv() in database.py both honour this. Without
+# it the suite ran whatever configuration the developer's .env held (a queue
+# flag flipped there failed four scheduler tests) with real provider keys in
+# the process. Set here, before the app.* imports below, because settings is
+# built at import time. A test needing a non-default setting sets it with
+# monkeypatch.setattr(settings, ...); an override from the shell or CI still
+# works, since explicit environment variables are read either way.
+os.environ["IGNORE_DOTENV"] = "1"
 # app.config.Settings has required fields with no defaults. Real values live
 # in backend/.env, but the tests must not depend on that file existing or
 # pull live credentials into a test process - os.environ outranks env_file in
@@ -45,6 +59,12 @@ os.environ.setdefault(
 )
 os.environ.setdefault("MEETING_BOT_BEARER_TOKEN", "stub-token")
 os.environ.setdefault("GEMINI_API_KEY", "stub-key")
+# The variables above, set deliberately. Anything else in the environment
+# must have come from RUNNER_ENV_KEYS.
+CONFTEST_ENV_KEYS = frozenset({
+    "DATABASE_URL", "IGNORE_DOTENV",
+    "SUPABASE_URL", "SUPABASE_KEY", "MEETING_BOT_BEARER_TOKEN", "GEMINI_API_KEY",
+})
 
 from app.db import database  # noqa: E402
 from app.db.models import Meeting, MeetingChunk, User  # noqa: E402
@@ -75,6 +95,16 @@ def _expected_url() -> str:
 # image: its embedding column is a Vector(768), which needs the extension.
 # chat_messages is still left out - nothing under test writes to it.
 _TABLES = [User.__table__, Meeting.__table__, MeetingChunk.__table__]
+
+
+@pytest.fixture(scope="session")
+def runner_env_keys():
+    return RUNNER_ENV_KEYS
+
+
+@pytest.fixture(scope="session")
+def conftest_env_keys():
+    return CONFTEST_ENV_KEYS
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -1,4 +1,13 @@
+import os
+
 from pydantic_settings import BaseSettings
+
+# Opt-out for the test suite: tests/conftest.py sets IGNORE_DOTENV=1 before any
+# app.* import, so settings come from code defaults plus explicitly set env vars
+# and never from backend/.env. A .env reaches the process two ways, and both
+# have to honour this: Settings' env_file below, and load_dotenv() in
+# app/db/database.py. Unset everywhere else, so real runs are unchanged.
+IGNORE_DOTENV = os.environ.get("IGNORE_DOTENV") == "1"
 
 
 class Settings(BaseSettings):
@@ -272,7 +281,7 @@ class Settings(BaseSettings):
     gemini_embedding_cost_per_mtok: float = 0.15
 
     class Config:
-        env_file = ".env"
+        env_file = None if IGNORE_DOTENV else ".env"
         extra = "ignore"
 
 

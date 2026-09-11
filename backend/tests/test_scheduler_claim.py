@@ -19,12 +19,32 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from app.config import settings
 from app.db.database import SessionLocal
 from app.db.models import Meeting
 from app.services import calendar_service, scheduler
 
 MEET_URL = "https://meet.google.com/abc-defg-hij"
 OTHER_MEET_URL = "https://meet.google.com/zzz-yyyy-xxx"
+
+
+@pytest.fixture(autouse=True)
+def scheduler_flags(monkeypatch):
+    """
+    State the two flags this file depends on instead of inheriting defaults.
+
+    - calendar_scheduler_enabled: trigger_due_meetings returns 0 immediately
+      when it is off, which would fail every sweep test here.
+    - bot_dispatch_use_queue: these tests predate Phase C2 and assert the
+      synchronous path, where a claimed meeting goes to "joining". The
+      scheduler now claims to initial_status(), which is "queued" with the
+      queue on, and that default is expected to flip once C2 is fully live.
+      The queued side is covered in test_bot_dispatch_queue.py.
+
+    Both were found by running the suite with each boolean setting inverted.
+    """
+    monkeypatch.setattr(settings, "calendar_scheduler_enabled", True)
+    monkeypatch.setattr(settings, "bot_dispatch_use_queue", False)
 
 
 def make_meeting(db, user_id, *, due_minutes=-1, status="scheduled", calendar_event_id=None):

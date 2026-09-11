@@ -18,6 +18,26 @@ stray `pytest` can never point the suite at the real `DATABASE_URL` in
 `backend/.env`. It creates and drops `users`, `meetings` and `meeting_chunks`,
 and truncates them between tests — use a throwaway database.
 
+**The suite never reads `backend/.env`.** `conftest.py` sets `IGNORE_DOTENV=1`
+before any `app.*` import, and both routes a `.env` has into the process honour
+it: `Settings`' `env_file` and `load_dotenv()` in `app/db/database.py`. Tests see
+code defaults, the stub values `conftest.py` sets, and anything you export
+yourself, so results no longer depend on whose machine runs them, and no real
+provider key is ever in the test process. `test_env_isolation.py` enforces
+this and fails with setting names only, never values.
+
+- A test that needs a non-default setting sets it with
+  `monkeypatch.setattr(settings, "...", value)`. Don't rely on a default either:
+  pin every flag the test's result depends on. Running the suite with each
+  boolean setting inverted is how the scheduler tests' two hidden dependencies
+  were found.
+- A shell or CI override still works (`BOT_DISPATCH_USE_QUEUE=true pytest`),
+  except for credentials. The isolation test rejects a real provider key from
+  any source; stub the call instead.
+- Never put `os.environ` or `settings` into an assertion or a print. pytest
+  renders both operands of a failed assert, and `repr(settings)` contains every
+  key it holds.
+
 `TEST_REDIS_URL` is optional: without it, `test_transcription_queue.py` skips
 entirely and the three Redis-backed tests in `test_bot_dispatch_queue.py` skip
 (the other 22 in that file run against Postgres alone), while the scheduler
@@ -60,6 +80,7 @@ Tear down with `docker stop meetiq-test-pg meetiq-test-redis`.
 
 | File | Phase | What it proves |
 |---|---|---|
+| `test_env_isolation.py` | B | No `Settings` field differs from its code default unless `conftest.py` or the runner's own environment set it, and never a credential; no key appears in `os.environ` that neither set. Failed on the old code listing 10 settings and 12 environment variables that came from `backend/.env`. |
 | `test_scheduler_claim.py` | A1 | Two replicas sweeping the same due meeting dispatch exactly one bot; the missed-window and calendar-revalidation paths still behave with the claim moved ahead of them. |
 | `test_transcription_queue.py` | A3 | A queued job survives with no worker running; a re-index interrupted between its delete and insert keeps the meeting's chunks; a retry over an existing transcript never calls Gemini; exhausted retries write a terminal state. |
 | `test_observability.py` | A4 | Sentry is disabled and harmless with no `SENTRY_DSN`; a request that raises inside a route produces an event with no Supabase JWT anywhere in it - header, frame locals or exception message; `meeting_id`/`user_id` ride along on transcription events. |

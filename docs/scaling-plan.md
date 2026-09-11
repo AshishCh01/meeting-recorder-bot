@@ -1285,6 +1285,33 @@ automatically, so they only protect you when someone remembers. A workflow with
 a `pgvector/pgvector:pg18` service (SQLite will not do - pgvector, `ARRAY`, RLS)
 is the highest-value item in this phase.
 
+**Isolation fixed, a prerequisite for CI.** The backend suite used to read the
+developer's `backend/.env` in two independent ways: `load_dotenv()` in
+`database.py` copied every key into `os.environ`, and `Settings`' `env_file` read
+the file directly. So results depended on the machine; four scheduler tests
+failed whenever `BOT_DISPATCH_USE_QUEUE=true` was in someone's `.env`. Real
+Groq, Jina, Sarvam and Google secrets were also sitting in the test process,
+one unstubbed fallback away from a billed call. A CI runner, having no `.env`,
+would have run yet another configuration.
+`conftest.py` now sets `IGNORE_DOTENV=1` before any `app.*` import, and both
+paths honour it. Either path alone still leaks: closing only `load_dotenv`
+left 10 settings read from the file, and closing only `env_file` left 12 keys
+in `os.environ`.
+
+- **The guard:** `test_env_isolation.py` failed on the old code with those
+  names, and never values. A scan for every real `.env` value found 0 of 17 in
+  the output.
+- **Real `.env` in place:** the suite now passes with both queue flags `true`
+  there and nothing pinned on the command line, 135 tests. A `git worktree`
+  with no `.env` anywhere above it gives the same 135.
+- **Real runs are unchanged:** the backend container still reads
+  `bot_dispatch_use_queue=True`, and host `alembic current` still resolves.
+- **Flag dependencies:** running the suite with each of the 6 boolean settings
+  inverted by env var exposed two in `test_scheduler_claim.py`.
+  `calendar_scheduler_enabled=false` failed 12 tests, and
+  `bot_dispatch_use_queue=true` failed the original 4. Both are now pinned in
+  that file, and all six inversions give identical per-test outcomes.
+
 ## Remaining observability
 
 A4 shipped Sentry, root logging config for both entrypoints, and `meeting_id` /
