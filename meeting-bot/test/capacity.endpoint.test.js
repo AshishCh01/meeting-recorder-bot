@@ -17,11 +17,15 @@ async function listenOnEphemeralPort(app) {
 // MAX_CONCURRENT_MEETINGS is read once, at module load (server.js:18), so
 // it must be set BEFORE the dynamic import below - a value set after would
 // silently leave this file asserting against the default instead. Same for
-// BEARER_TOKEN vs. the .env dotenv loads (dotenv never overrides an
-// already-set var, so these win). node --test gives each file its own
-// process, which is what makes per-file env like this safe.
+// BEARER_TOKEN. Tests never load meeting-bot/.env (see env.isolation.test.js),
+// so everything the import needs is set here. node --test gives each file its
+// own process, which is what makes per-file env like this safe.
 process.env.MAX_CONCURRENT_MEETINGS = '3';
 process.env.BEARER_TOKEN = 'test-token-for-capacity-endpoint';
+// Importing server.js builds the Supabase client, which throws without a URL.
+// Nothing here uploads: a dead port and a fake key.
+process.env.SUPABASE_URL = 'http://127.0.0.1:9';
+process.env.SUPABASE_KEY = 'test-key-not-a-credential';
 
 const { default: app } = await import('../src/api/server.js');
 const { baseUrl, close } = await listenOnEphemeralPort(app);
