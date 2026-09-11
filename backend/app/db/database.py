@@ -3,6 +3,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from dotenv import load_dotenv
 
+from app.config import settings
+
 load_dotenv()
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -15,8 +17,13 @@ engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
     pool_recycle=1800,
-    pool_size=10,
-    max_overflow=20
+    # Per process, sized so backend + worker fit under Supabase's
+    # 15-connection pooler cap - the budget is next to db_pool_size in
+    # config.py. This used to be 10 + 20 overflow: 30 per process, 60 worst
+    # case against a cap of 15.
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_max_overflow,
+    pool_timeout=settings.db_pool_timeout_seconds,
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

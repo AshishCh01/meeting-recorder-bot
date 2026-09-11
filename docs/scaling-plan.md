@@ -958,7 +958,10 @@ request was a visible hang, and it is gone - not because it got faster, but
 because the Supabase round-trip that occasionally stalled that badly no
 longer happens on the hot path at all.
 
-## Found by this phase's own benchmark, not yet fixed
+## Found by this phase's own benchmark ✅ fixed
+
+> **Fixed** as a standalone change — see [the fix](#the-fix-a-15-connection-budget-and-503-not-500)
+> below. The write-up that follows is the bug as it was found.
 
 A later run with `-c 8` (concurrent) surfaced a real, pre-existing bug this
 phase did not cause and does not fix:
@@ -991,6 +994,87 @@ blocking the move to Phase C. When it is picked up: size `pool_size` +
 whether Supabase's transaction-mode pooler (port 6543) removes the ceiling
 rather than just fitting under it, and reproduce this exact benchmark
 command first so the fix is proven against the failure that found it.
+
+### The fix: a 15-connection budget, and 503 not 500
+
+**The budget.** Pool sizes are now settings (`db_pool_size`, `db_max_overflow`,
+`db_pool_timeout_seconds`), and the arithmetic sits beside them in
+`config.py`:
+
+| | pool | overflow | why |
+|---|---|---|---|
+| `backend` | 8 | 0 | request handlers, plus the watchdog and scheduler sweeps |
+| `worker` | 4 | 0 | `worker_max_jobs = 4`, one session per job |
+| headroom | 3 | | `alembic upgrade head` at boot, SQL editor, ad-hoc `psql` |
+| **total** | **15** | | was 30 + 30 = 60 worst case |
+
+Both processes import the same `database.py`, and `env_file` is shared, so the
+worker's 4 comes from an `environment:` override on the `worker` service in
+both compose files. Overflow is 0 because an overflow connection still takes a
+pooler slot. The arithmetic breaks the moment a process is added:
+`--scale worker=2` is 16, and a second backend replica (A2) has to split the
+backend's 8.
+
+**The trap it had to avoid.** Once the pool fits under 15, excess demand stops
+being *rejected* by the pooler and starts *queueing* in SQLAlchemy — for its
+default `pool_timeout` of 30s, which nothing set. So the backend's timeout is
+now 3s, and `main.py` answers **503** with `Retry-After: 2` for both shapes of
+saturation: `sqlalchemy.exc.TimeoutError` (the pool had no free connection)
+and an `OperationalError` carrying `EMAXCONNSESSION` (the pooler refused).
+Any other `OperationalError` is re-raised and stays a 500. The handler is
+app-level because `get_db()` never touches the database. A side effect worth
+having: the 503 carries CORS headers, which the old unhandled 500 did not, so a
+browser sees a retryable error instead of a CORS failure. The worker's timeout
+is 30s, not 3s. No user is waiting on a job, and a job that gives up on a pool
+wait burns an arq retry.
+
+**Results**, `benchmark_auth.py -c 8`, host-side, same token and stack:
+
+| | before (10 + 20 per process) | after (8 + 0 / 4 + 0) |
+|---|---|---|
+| `EMAXCONNSESSION` in logs | 1 rejection | 0 |
+| 500s | 1 (`/meetings`, concurrent) | 0 of 840 |
+| `/users/me` x8, p50 / p95 / p99 | 198 / 537 / 924 ms | 301 / 413 / 858 ms |
+| `/meetings` x8, p50 / p95 / p99 | 318 / 529 / 1034 ms | 267 / 305 / 317 ms |
+
+One run is noise at this network distance: two identical runs on the same
+config differed by 190 ms at `/users/me` p50. So the latency question was
+settled A/B instead, alternating backend pool config on the same code and the
+same client, 200 requests x8 per endpoint, two runs each. The new pool's
+p99s were 431–811 ms; the old 10 + 20 pool's were 829–1723 ms. A pool of 8 is
+not queueing requests that 30 would have served.
+
+**Forced exhaustion**, backend at `DB_POOL_SIZE=1`, 32 concurrent clients, 200
+requests to `/meetings`: 56 × 200, **144 × 503, 0 × 500**, 0 tracebacks. The
+503s came back at p50 3.03s, max 4.1s — the configured timeout, not SQLAlchemy's
+30s. Each logged one line, `[db] connection pool checkout timed out - returning
+503: QueuePool limit of size 1 overflow 0 reached`.
+
+**Verified inside the running containers**, not read off compose: the worker's
+`arq` process (PID 1) carries `DB_POOL_SIZE=4 DB_MAX_OVERFLOW=0
+DB_POOL_TIMEOUT_SECONDS=30` and builds `QueuePool size=4 max_overflow=0
+timeout=30.0`; the backend carries no `DB_*` vars and builds `size=8
+max_overflow=0 timeout=3.0`.
+
+Tests: `backend/tests/test_db_pool_errors.py` (6). One exhausts a real
+1-connection pool against Postgres for the timeout shape. With the handlers
+disabled, the three 503 tests fail `500 == 503`.
+
+**Still open:**
+
+- **One unexplained 30-second stall.** In the first post-fix benchmark run, one
+  `/meetings` request passed the client's 30s read timeout. The backend logged
+  no 503, no error and no access line for it. It did not recur in the five
+  runs after it, about 2,400 requests, two of them on the old pool config. Pool checkout cannot be the cause, since it
+  gives up at 3s. The benchmark opens a new TCP connection per request through
+  Docker Desktop's port proxy, which is the main suspect but not proven.
+- **The chat routes hold a connection for a whole LLM turn.** `POST /chat` and
+  `/chat/stream` query through the request's session (`_assert_chattable`) and
+  never commit, so SQLAlchemy keeps that connection checked out while the answer
+  is generated, and the tools take a second one alongside it. Eight
+  simultaneous chats would occupy the backend's entire pool for the length of a
+  Gemini call. The fix is to release the session before awaiting the model, in
+  `app/api/chat.py`, which was outside this change.
 
 ## Behaviour change accepted: revocation is no longer immediate
 

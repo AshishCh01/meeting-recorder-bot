@@ -2,9 +2,11 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI
+import psycopg
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.exc import OperationalError
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import OperationalError, TimeoutError as PoolTimeoutError
 from app.config import settings
 from app.api import calendar, chat, meetings, users, webhooks
 from app.db.database import SessionLocal
@@ -108,6 +110,59 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Database saturation is a 503, not a 500. It has two shapes, and a request
+# can hit either depending on where the ceiling is met:
+#
+# - PoolTimeoutError: this process's pool (db_pool_size in config.py) had no
+#   free connection within db_pool_timeout_seconds. The normal shape now that
+#   the pool fits under the pooler's cap - demand queues here, not at Postgres.
+# - OperationalError carrying EMAXCONNSESSION: Supabase's pooler refused the
+#   connection outright because the project's 15 were taken - by another
+#   process, a migration, or a psql session outside this budget.
+#
+# A caller can retry a 503; a 500 with a traceback looks like a bug. This is
+# app-level rather than in get_db() because get_db() never touches the
+# database - the connection is taken lazily on a route's first query.
+DB_BUSY_DETAIL = "The service is busy right now. Please try again in a few seconds."
+
+
+def _db_busy(reason: str, exc: Exception) -> JSONResponse:
+    logger.warning("[db] %s - returning 503: %s", reason, exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": DB_BUSY_DETAIL},
+        headers={"Retry-After": "2"},
+    )
+
+
+def _is_pooler_rejection(exc: Exception) -> bool:
+    return "EMAXCONNSESSION" in str(exc)
+
+
+@app.exception_handler(PoolTimeoutError)
+async def _pool_timeout_handler(request: Request, exc: PoolTimeoutError):
+    return _db_busy("connection pool checkout timed out", exc)
+
+
+@app.exception_handler(OperationalError)
+async def _sqlalchemy_operational_error_handler(request: Request, exc: OperationalError):
+    if _is_pooler_rejection(exc):
+        return _db_busy("database pooler rejected the connection", exc)
+    # Any other OperationalError (a DNS blip, a dropped connection) is not
+    # saturation. Re-raising leaves it exactly as unhandled as before: a 500,
+    # a logged traceback, and a Sentry event.
+    raise exc
+
+
+@app.exception_handler(psycopg.OperationalError)
+async def _psycopg_operational_error_handler(request: Request, exc: psycopg.OperationalError):
+    # SQLAlchemy normally wraps this in its own OperationalError (handled
+    # above); this catches the same rejection if it ever arrives unwrapped.
+    if _is_pooler_rejection(exc):
+        return _db_busy("database pooler rejected the connection", exc)
+    raise exc
+
 
 app.include_router(meetings.router)
 app.include_router(webhooks.router)
