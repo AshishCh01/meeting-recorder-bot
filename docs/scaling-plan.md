@@ -1139,7 +1139,10 @@ And there is no backpressure: `trigger_bot_join` is a synchronous
 outright. Two meetings scheduled at 10:00 with `MAX_CONCURRENT_MEETINGS=1` means
 one is simply lost.
 
-## Known bug in this tier, found while testing A3
+## Known bug in this tier, found while testing A3 ✅ fixed
+
+> **Fixed** — see [the fix](#the-fix-retry-keep-recover) at the end of this
+> section. The write-up below is the bug as it was found, kept for the record.
 
 **A failed upload destroys the only copy of the recording.** Independent of
 the bot-pool work below, and worth fixing sooner - it is data loss, not a
@@ -1177,6 +1180,92 @@ unlink only when the upload succeeded, and to keep the file otherwise; making
 that *useful* also needs a backend path that retries the upload rather than
 only the transcription, which is why it is written up here rather than done
 in passing.
+
+### The fix: retry, keep, recover
+
+Three parts, each useless without the others.
+
+1. **Retry the upload.** `SupabaseUploader.upload` makes up to 4 attempts
+   (waits of 2s, 5s, 10s — at most 17s waiting). Network failures and 5xx are
+   retried; a Storage 4xx other than 408/429 fails at once, since re-sending
+   an 86MB body to be refused again helps no one. `upsert: true` makes a
+   repeat upload to the same key safe. **Each attempt opens its own read
+   stream**: a stream consumed by a failed attempt cannot be re-read, and
+   reusing it makes attempt 2 upload zero bytes *and report success*. A test
+   pins this by byte count. With the stream hoisted out of the loop it fails
+   `0 !== 300000`. The plain "retry succeeds" test *passes* in that state,
+   which is exactly why it is not enough on its own.
+2. **Delete only after a confirmed upload.** The unlink in
+   `MeetingLifecycle.uploadRecording` is gated on a storage key having been
+   returned. It is still best-effort (the Windows lock concern stands), just no
+   longer unconditional. On final failure the file stays and the meeting fails
+   with `Upload failed: <cause>. The recording is preserved on the recorder and
+   can be retried.` That message is distinct from a recording that is actually
+   gone. Putting the unconditional unlink back fails the "permanent failure"
+   test with `recording must survive a failed upload`.
+3. **Make a kept file recoverable.** meeting-bot has `POST /reupload`
+   (`requireAuth`, `{meetingId, userId}`). The file is found by id through
+   `RecordingFile.pathFor`. No file → 404; an active or already re-uploading
+   session → 409; otherwise **202**, then the upload (with retry), the unlink
+   on success, and the normal `completed` webhook carrying `recording_path`.
+   It is async because the backend calls the bot with `timeout=10`.
+   Re-uploads are tracked apart from `activeMeetings`, so they never count
+   against `/capacity`.
+
+   On the backend, `retry_meeting` asks the bot to re-upload when storage has no
+   file. **The meeting is moved to `uploading`, and committed, before the bot is
+   called.** `retry_meeting` claims `failed → transcribing`, and the webhook's
+   `completed` branch only accepts meetings `notin_(["transcribing",
+   "completed"])`. A meeting left in `transcribing` would have the recovered
+   recording's completion rejected as `already_processed`, and it would never
+   be transcribed. `uploading` also carries the watchdog's 20-minute TTL,
+   which bounds a re-upload whose webhook never arrives. If the bot call errors,
+   the meeting goes back to `failed` through an update conditional on
+   `uploading`, so a slow-but-successful bot whose webhook already landed is not
+   overwritten. A bot 404 means the recording is on neither side, and the old
+   "Recording file not found in storage. Cannot retry." message is kept.
+
+Tests: `meeting-bot/test/upload.retry.test.js` and
+`reupload.endpoint.test.js` (8 tests); `backend/tests/test_retry_reupload.py`
+(5 tests, including the full retry → `uploading` → `completed` webhook
+accepted → `transcribing` chain). With the flip to `uploading` removed, 4 of
+those 5 fail. Besides the webhook rejection, the fail-back conditional on
+`uploading` never matches, so a failed bot call strands the meeting in
+`transcribing`.
+
+**Verified live** against the compose stack and real Supabase, using two
+throwaway meeting rows that were deleted afterwards:
+
+- *Recovery.* A `failed` meeting, storage empty, with a 61.5s spoken `.m4a` at
+  `recordings/<id>.m4a`. Retry → `{"status": "reuploading"}`, row `uploading` →
+  bot `Upload successful` → `Local recording file cleaned up` → webhook
+  `200` → `transcribing` → `completed` about 11s later, with transcript and 1
+  chunk. The storage object was 1,493,134 bytes, byte-identical in size to the
+  local file.
+- *Genuinely gone.* A `failed` meeting with no file on either side. Retry →
+  404 `Recording file not found in storage. Cannot retry.`, row back to
+  `failed` with that message. The bot, asked directly, answered
+  `404 No preserved recording for meeting <id>`.
+
+**Known limitations, deliberately not built:**
+
+- **Kept files accumulate.** A preserved recording now outlives its meeting
+  until someone presses Retry, and nothing sweeps `meeting-bot/recordings/`.
+  This predates the fix: the failed-before-upload branch has always kept
+  files, and `3427298f-….m4a` (43KB, Aug 23) has been sitting there since. A
+  retention policy is a separate decision, not a side effect of this one.
+  Deleting a meeting does not remove its kept file either.
+- **Retry now recovers any kept file, not only failed uploads.** A meeting
+  cancelled by the user mid-recording also keeps its (finalised) file, so Retry
+  on it uploads and transcribes what was recorded up to the cancel, where it
+  used to say "not found".
+- **A crashed bot's partial `.m4a` is not recoverable.** ffmpeg writes the
+  index at the end, so a file from a crash mid-meeting will not play. Nothing
+  here tries to detect that: Retry would re-upload it, and it would fail at
+  transcription.
+- **Duration is not reported on a re-upload.** The original session's timings
+  are gone. Nothing is lost, though: the backend never stored a duration for the
+  failed meeting either.
 
 ## Design
 

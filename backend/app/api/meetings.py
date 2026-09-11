@@ -138,20 +138,84 @@ def retry_meeting(
 
     try:
         files = supabase.storage.from_(settings.supabase_recordings_bucket).list(folder_path)
-        if not files or not isinstance(files, list) or not any(f.get('name') == 'recording.m4a' for f in files):
-            db.execute(update(Meeting).where(Meeting.id == meeting_id).values(status="failed", error_message="Recording file not found in storage. Cannot retry."))
-            db.commit()
-            raise HTTPException(404, "Recording file not found in storage. Cannot retry.")
-    except HTTPException:
-        raise
+        in_storage = bool(files) and isinstance(files, list) and any(f.get('name') == 'recording.m4a' for f in files)
     except Exception as e:
         db.execute(update(Meeting).where(Meeting.id == meeting_id).values(status="failed", error_message=f"Error communicating with storage: {e}"))
         db.commit()
         raise HTTPException(500, f"Error communicating with storage: {e}")
 
+    if not in_storage:
+        # The upload itself may have failed, in which case meeting-bot kept
+        # the local file - ask it to upload again before calling it lost.
+        return _reupload_from_bot(db, meeting)
+
     submit_transcription(str(meeting.id), storage_path)
-    
+
     return {"status": "retrying"}
+
+
+RECORDING_NOT_FOUND = "Recording file not found in storage. Cannot retry."
+
+
+def _reupload_from_bot(db: Session, meeting: Meeting):
+    """
+    Asks meeting-bot to re-upload a recording it kept after a failed upload.
+    The bot answers 202 and reports the outcome later through the normal
+    recording-complete webhook, exactly as a fresh recording would.
+
+    The meeting must be "uploading" - not the "transcribing" retry_meeting
+    claimed it as - before the bot is called. The webhook's completed branch
+    only accepts meetings notin_(["transcribing", "completed"]), so a meeting
+    left in "transcribing" would have the bot's completion rejected as
+    already processed and the recovered recording would never be transcribed.
+    "uploading" also carries the watchdog's 20-minute TTL, which bounds a
+    re-upload whose webhook never arrives.
+
+    Lives here rather than in bot_service.py only to keep this fix to the
+    files it had to touch.
+    """
+    result = db.execute(
+        update(Meeting)
+        .where(Meeting.id == meeting.id, Meeting.status == "transcribing")
+        .values(status="uploading")
+    )
+    db.commit()
+    if result.rowcount == 0:
+        # Something moved the meeting between the claim and here (the
+        # watchdog, a delete). Its status is no longer ours to drive.
+        raise HTTPException(409, "Meeting changed state during retry.")
+
+    def fail(message: str):
+        # Conditional on "uploading": if the bot did accept the job despite
+        # the error seen here (a timeout on a slow 202), its webhook may have
+        # already moved the meeting on, and that must not be overwritten.
+        db.execute(
+            update(Meeting)
+            .where(Meeting.id == meeting.id, Meeting.status == "uploading")
+            .values(status="failed", error_message=message)
+        )
+        db.commit()
+
+    try:
+        response = httpx.post(
+            f"{settings.meeting_bot_url}/reupload",
+            json={"meetingId": str(meeting.id), "userId": str(meeting.user_id)},
+            headers={"Authorization": f"Bearer {settings.meeting_bot_bearer_token}"},
+            timeout=10,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            # Not in storage and not on the bot: genuinely gone.
+            fail(RECORDING_NOT_FOUND)
+            raise HTTPException(404, RECORDING_NOT_FOUND)
+        fail(f"Could not re-upload recording: bot returned {e.response.status_code}. Try again.")
+        raise HTTPException(502, f"Could not re-upload recording: {e.response.text}")
+    except Exception as e:
+        fail(f"Could not reach recording bot to re-upload recording: {e}. Try again.")
+        raise HTTPException(502, f"Could not reach recording bot to re-upload recording: {e}")
+
+    return {"status": "reuploading"}
 
 
 @router.post("/{meeting_id}/stop")
