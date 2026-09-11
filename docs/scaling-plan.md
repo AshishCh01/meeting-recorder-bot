@@ -1266,7 +1266,8 @@ fallback. The code already anticipates this.
 > process, no second `create_engine` (the Supabase pool limit at the end of A5
 > is still open and unfixed). It asks C1's `GET /capacity`, posts the join if
 > there is room, and re-enqueues itself deferred by 30s if there is not.
-> 25 tests in `backend/tests/test_bot_dispatch_queue.py`. Five things worth
+> 25 tests in `backend/tests/test_bot_dispatch_queue.py` (32 with the
+> follow-up below). Five things worth
 > knowing:
 >
 > - **A queued meeting could not reuse `joining`, and that was the whole
@@ -1308,18 +1309,29 @@ fallback. The code already anticipates this.
 > moments later. The one case that still 502s is the *enqueue* failing (Redis
 > down), which is the only remaining "this genuinely will not happen" answer.
 >
-> **Two known gaps, deliberately left for a follow-up:**
+> **Two gaps from the first cut, since closed:**
 >
-> - **A queued meeting cannot be stopped, only deleted.** `stop_meeting`
->   accepts `("joining", "waiting_for_admission", "recording")` and 409s on
->   anything else. That is *safe* — a queued meeting has no bot session for
->   `stop_bot` to stop — but "Cancel" on a waiting meeting is a delete, which
->   is not obvious. Fixing it means a stop path that never calls the bot.
-> - **`MeetingDetails.jsx` shows no progress card for `queued`.** Its
->   `PROCESSING_STATUSES` / `PROCESSING_LABEL` lists are separate from
->   `status.js` and were out of C2's scope. The badge and the dashboard polling
->   are correct; the detail page just omits the explanatory "Waiting for a free
->   recorder..." block. Two lines, whenever the next frontend change happens.
+> - **A queued meeting can be stopped, not only deleted.** `stop_meeting`
+>   originally 409'd on anything outside `("joining", "waiting_for_admission",
+>   "recording")`. A queued meeting has no bot session, so it is now cancelled
+>   directly by `bot_dispatch.cancel_queued_meeting` — a `queued -> failed`
+>   conditional UPDATE that never calls the bot. It races the dispatcher's
+>   `queued -> joining` claim fairly: both are guarded on `status == "queued"`,
+>   so Postgres lets exactly one match. If the stop wins, the job's next
+>   attempt drops without contacting the bot; if the dispatcher won, the route
+>   falls through and stops the now-joining bot the ordinary way. Because the
+>   terminal state is known immediately, the route returns the updated meeting
+>   and `MeetingView` applies it at once, rather than re-enabling the button
+>   for up to 5s while waiting on a webhook that will never come.
+> - **`MeetingDetails.jsx` shows a progress card for `queued`** — "Waiting for
+>   a free recorder…", with a line explaining the recorder is busy with
+>   another meeting, and a **Cancel** button (not "Stop bot": there is no bot
+>   yet).
+>
+> 7 more tests in the same file (32 total): the cancel never reaches the bot,
+> a stopped meeting's job drops, a stop that loses the race to the dispatcher
+> stops the bot instead of overwriting the claim, and meetings with nothing to
+> stop still 409.
 
 ## C1 and C2 are worth shipping on their own
 

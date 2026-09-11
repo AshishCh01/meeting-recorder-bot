@@ -76,10 +76,17 @@ export const MeetingView = () => {
 
   const handleStop = async () => {
     try {
-      await api.post(`/meetings/${id}/stop`);
-      // Actual "failed" status lands via meeting-bot's webhook once it
-      // finishes shutting down (closing the browser, stopping ffmpeg) -
-      // the 5s poll above picks that up, no need to set it optimistically.
+      const { data } = await api.post(`/meetings/${id}/stop`);
+      if (data?.meeting) {
+        // A queued meeting had no bot, so the backend cancelled it on the
+        // spot and says so. Show it now - otherwise "Cancel" re-enables for
+        // up to 5s over a meeting that is already stopped, and a second
+        // click earns a 409 alert.
+        setMeeting(prev => ({ ...prev, ...data.meeting }));
+      }
+      // Otherwise the actual "failed" status lands via meeting-bot's webhook
+      // once it finishes shutting down (closing the browser, stopping
+      // ffmpeg) - the 5s poll above picks that up.
     } catch (err) {
       console.error(err);
       alert(err.response?.data?.detail || 'Failed to stop the bot.');

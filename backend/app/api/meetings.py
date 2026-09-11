@@ -7,6 +7,7 @@ from app.api.auth import get_current_user
 from app.models.meeting import MeetingCreate
 from app.services.platform_detector import detect_platform
 from app.services.bot_service import initial_status, trigger_bot_join, stop_bot
+from app.services.bot_dispatch import cancel_queued_meeting
 import httpx
 from app.services.storage_service import get_signed_recording_url
 from app.services.transcription_service import submit_transcription
@@ -162,6 +163,23 @@ def stop_meeting(
     meeting = db.query(Meeting).filter(Meeting.id == meeting_id, Meeting.user_id == user_id).first()
     if not meeting:
         raise HTTPException(404, "Meeting not found")
+
+    if meeting.status == "queued":
+        # Phase C2: waiting for a recorder, so there is no bot to ask. The
+        # cancel is a conditional UPDATE that races the dispatcher's claim
+        # fairly - see cancel_queued_meeting. Unlike the bot path below, the
+        # terminal status is known right now, so it is returned for the page
+        # to show immediately instead of waiting on a webhook that will never
+        # come.
+        if cancel_queued_meeting(db, meeting.id):
+            db.refresh(meeting)
+            return {"status": "stopped", "meeting": meeting_to_dict(meeting)}
+        # Lost the race: a recorder freed up and the dispatcher claimed this
+        # meeting between the read above and the cancel. It is joining now,
+        # so stop it the ordinary way. (If the join POST itself has not landed
+        # on the bot yet, stop_bot 404s into the 409 below and the user can
+        # press Stop again a moment later - a millisecond window.)
+        db.refresh(meeting)
 
     if meeting.status not in ("joining", "waiting_for_admission", "recording"):
         raise HTTPException(409, "Meeting is not currently active - nothing to stop.")

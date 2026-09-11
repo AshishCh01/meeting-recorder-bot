@@ -16,7 +16,7 @@ from docs/scaling-plan.md's Phase C2 gate:
   5. Exhausted waiting writes a terminal failure naming the real cause.
   6. With the flag off, the old synchronous path is untouched.
 
-Postgres is required. Redis only for the two tests that assert real
+Postgres is required. Redis only for the three tests that assert real
 enqueue/defer behaviour - see tests/README.md.
 """
 import asyncio
@@ -595,3 +595,111 @@ def test_the_dispatch_task_is_registered_under_the_name_the_enqueue_uses():
 
     assert dispatch_bot_join_job in WorkerSettings.functions
     assert dispatch_bot_join_job.__name__ == bot_service.DISPATCH_JOB
+
+
+# ---------------------------------------------------------------------------
+# Follow-up - a queued meeting can be stopped, not only deleted
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def bot_stop_tripwire(monkeypatch):
+    """A queued meeting has no bot session - reaching stop_bot is the bug."""
+    from app.api import meetings
+
+    def boom(meeting_id):
+        raise AssertionError("called the bot to stop a meeting that never had a bot")
+
+    monkeypatch.setattr(meetings, "stop_bot", boom)
+    return boom
+
+
+def test_stopping_a_queued_meeting_cancels_it_without_calling_the_bot(db, user, queue_on, bot_stop_tripwire):
+    from app.api import meetings
+
+    meeting = make_meeting(db, user.id)
+
+    response = meetings.stop_meeting(meeting_id=meeting.id, db=db, user_id=str(user.id))
+
+    assert response["status"] == "stopped"
+    # Returned so the page can show it at once - no webhook is coming.
+    assert response["meeting"]["status"] == "failed"
+    row = reread(meeting.id)
+    assert row.status == "failed"
+    assert "before a recorder became free" in row.error_message
+    assert "No recording was made" in row.error_message
+
+
+def test_a_stopped_queued_meeting_is_never_dispatched(db, user, bot, queue_on, bot_stop_tripwire):
+    """
+    The job is still in Redis after the stop. When it fires, it must drop
+    without so much as asking the bot for capacity.
+    """
+    from app.api import meetings
+
+    meeting = make_meeting(db, user.id)
+    meetings.stop_meeting(meeting_id=meeting.id, db=db, user_id=str(user.id))
+
+    result = bot_dispatch.dispatch_queued_meeting(str(meeting.id))
+
+    assert result.outcome == "dropped"
+    assert bot.joins == [], "joined a meeting the user had stopped"
+    assert bot.capacity_calls == 0
+
+
+def test_a_stop_that_loses_the_race_to_the_dispatcher_stops_the_bot(db, user, queue_on, monkeypatch):
+    """
+    The user presses Stop on a queued meeting at the moment a recorder frees
+    up, and the dispatcher's claim lands between the route's read and its
+    cancel. The cancel must not match, and the meeting - now joining - must be
+    stopped the ordinary way rather than 409ing as "not active".
+    """
+    from app.api import meetings
+
+    meeting = make_meeting(db, user.id)
+    real_cancel = bot_dispatch.cancel_queued_meeting
+
+    def dispatcher_claims_first(session, meeting_id):
+        other = SessionLocal()
+        try:
+            other.execute(
+                update(Meeting)
+                .where(Meeting.id == meeting_id, Meeting.status == "queued")
+                .values(status="joining")
+            )
+            other.commit()
+        finally:
+            other.close()
+        return real_cancel(session, meeting_id)
+
+    stopped = []
+    monkeypatch.setattr(meetings, "cancel_queued_meeting", dispatcher_claims_first)
+    monkeypatch.setattr(meetings, "stop_bot", lambda mid: stopped.append(mid) or {"status": "stopping"})
+
+    response = meetings.stop_meeting(meeting_id=meeting.id, db=db, user_id=str(user.id))
+
+    assert response == {"status": "stopping"}
+    assert stopped == [str(meeting.id)]
+    assert reread(meeting.id).status == "joining", "the cancel overwrote a meeting the dispatcher had claimed"
+
+
+def test_cancel_leaves_a_meeting_that_already_left_the_queue_alone(db, user):
+    """The guard that makes the race above safe, on its own."""
+    meeting = make_meeting(db, user.id, status="joining")
+
+    assert bot_dispatch.cancel_queued_meeting(db, meeting.id) is False
+    row = reread(meeting.id)
+    assert row.status == "joining"
+    assert row.error_message is None
+
+
+@pytest.mark.parametrize("status", ["completed", "failed", "transcribing"])
+def test_stop_still_refuses_meetings_with_nothing_to_stop(db, user, bot_stop_tripwire, status):
+    from fastapi import HTTPException
+    from app.api import meetings
+
+    meeting = make_meeting(db, user.id, status=status)
+
+    with pytest.raises(HTTPException) as exc:
+        meetings.stop_meeting(meeting_id=meeting.id, db=db, user_id=str(user.id))
+    assert exc.value.status_code == 409
+    assert reread(meeting.id).status == status

@@ -15,12 +15,15 @@ const TABS = [
   { id: 'transcript', label: 'Transcript' },
 ];
 
-const PROCESSING_STATUSES = ['joining', 'waiting_for_admission', 'recording', 'uploading', 'transcribing'];
-// Only these are still controlled by the meeting-bot process - once it's
-// past "recording" (uploading/transcribing), the bot has already left and
-// there's nothing left for a stop request to interrupt.
-const STOPPABLE_STATUSES = ['joining', 'waiting_for_admission', 'recording'];
+const PROCESSING_STATUSES = ['queued', 'joining', 'waiting_for_admission', 'recording', 'uploading', 'transcribing'];
+// Stoppable means there is still something to call off. "queued" has no bot
+// yet - the backend cancels it directly - and joining through recording are
+// controlled by the meeting-bot process. Once it's past "recording"
+// (uploading/transcribing), the bot has already left and there's nothing
+// left for a stop request to interrupt.
+const STOPPABLE_STATUSES = ['queued', 'joining', 'waiting_for_admission', 'recording'];
 const PROCESSING_LABEL = {
+  queued: 'Waiting for a free recorder…',
   joining: 'Bot is joining the meeting…',
   waiting_for_admission: 'Waiting for the host to admit MeetIQ…',
   recording: 'Recording in progress…',
@@ -153,16 +156,20 @@ export const MeetingDetails = ({ meeting, onRetry, onStop, onDeleteRequest }) =>
           <div className="p-5 bg-status-done-bg border border-border-strong rounded-xl flex flex-col items-center text-center gap-2">
             <Loader2 className="w-6 h-6 text-brand-blue animate-spin" />
             <h3 className="text-sm font-bold text-brand-dark">{PROCESSING_LABEL[meeting.status]}</h3>
-            <p className="text-xs text-muted">This page will update automatically when finished.</p>
+            <p className="text-xs text-muted">
+              {meeting.status === 'queued'
+                ? 'The recorder is busy with another meeting. MeetIQ will join as soon as it frees up.'
+                : 'This page will update automatically when finished.'}
+            </p>
             {STOPPABLE_STATUSES.includes(meeting.status) && (
               <button
                 onClick={handleStopClick}
                 disabled={isStopping}
-                title="Stop the bot and abandon this recording"
+                title={meeting.status === 'queued' ? 'Stop waiting and cancel this recording' : 'Stop the bot and abandon this recording'}
                 className="mt-1 px-3.5 py-2 bg-surface text-status-failed-fg text-sm font-bold border border-red-200 dark:border-red-500/20 rounded-lg disabled:opacity-50 flex items-center gap-2"
               >
                 <Square className="w-3.5 h-3.5 fill-current" />
-                {isStopping ? 'Stopping…' : 'Stop bot'}
+                {isStopping ? 'Stopping…' : meeting.status === 'queued' ? 'Cancel' : 'Stop bot'}
               </button>
             )}
           </div>

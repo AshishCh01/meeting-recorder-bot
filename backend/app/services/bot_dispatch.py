@@ -182,6 +182,38 @@ def record_dispatch_exhausted(meeting_id: str, reason: str) -> None:
         db.close()
 
 
+def cancel_queued_meeting(db, meeting_id) -> bool:
+    """
+    Stops a meeting that is still waiting for a recorder. Returns True if it
+    was cancelled, False if it had already left "queued".
+
+    There is no bot session to stop - no join was ever posted - so this never
+    calls the bot. It is one conditional UPDATE, and it is safe against the
+    dispatcher for the same reason two dispatch jobs are safe against each
+    other: the dispatcher's claim is `queued -> joining` and this is
+    `queued -> failed`, both guarded on status == "queued". Postgres lets
+    exactly one of them match the row. If this wins, the dispatcher's next
+    attempt re-reads the row, sees "failed" and drops the job without
+    contacting the bot. If the dispatcher won, this returns False and the
+    caller stops the bot the ordinary way.
+
+    Written as "failed", the same terminal status a bot-side stop ends in, so
+    a meeting the user stopped looks the same whether it had a bot yet or not.
+    """
+    result = db.execute(
+        update(Meeting)
+        .where(Meeting.id == meeting_id, Meeting.status == QUEUED)
+        .values(
+            status="failed",
+            error_message="Stopped before a recorder became free. No recording was made.",
+        )
+    )
+    db.commit()
+    if result.rowcount:
+        logger.info("[dispatch] meeting %s stopped while queued - its dispatch job will drop", meeting_id)
+    return result.rowcount == 1
+
+
 def _return_to_queue(db, meeting_id: str) -> None:
     """
     Undoes the claim after a join that did not take, so the next attempt can

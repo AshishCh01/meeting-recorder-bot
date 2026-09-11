@@ -140,7 +140,8 @@ def stop_bot(meeting_id: str) -> dict:
     its usual webhook, same as any other in-flight failure.
 
     Never called for a "queued" meeting: it has no bot session to stop,
-    because no join was ever posted. Cancelling one is a delete.
+    because no join was ever posted. POST /meetings/{id}/stop cancels those
+    with bot_dispatch.cancel_queued_meeting instead.
     """
     response = httpx.post(
         f"{settings.meeting_bot_url}/stop",
