@@ -1,7 +1,9 @@
 import express from 'express';
 import crypto from 'crypto';
+import fs from 'fs';
 import { MeetingSession } from '../core/MeetingSession.js';
-import { runMeetingLifecycle } from '../core/MeetingLifecycle.js';
+import { runMeetingLifecycle, runReupload } from '../core/MeetingLifecycle.js';
+import { RecordingFile } from '../recording/RecordingFile.js';
 
 const app = express();
 app.use(express.json());
@@ -17,6 +19,11 @@ app.use(express.json());
 // audio specifically, not yet a full concurrency guarantee.
 const MAX_CONCURRENT_MEETINGS = Number(process.env.MAX_CONCURRENT_MEETINGS || 1);
 const activeMeetings = new Map(); // meetingId -> MeetingSession
+// Re-uploads in progress (POST /reupload). Kept apart from activeMeetings on
+// purpose: an upload holds no browser or audio sink, so it must not count
+// against recording capacity - GET /capacity would otherwise report a free
+// recorder as busy for the length of an upload.
+const reuploadsInFlight = new Set(); // meetingId
 
 function timingSafeTokenEqual(provided, expected) {
   // An unset/empty server secret or an unset/empty provided token must
@@ -149,6 +156,48 @@ app.post('/stop', requireAuth, (req, res) => {
   console.log(`[server] Stop requested for meeting ${onlyMeetingId}`);
   onlySession.requestCancel();
   res.json({ status: 'stopping', meetingId: onlyMeetingId });
+});
+
+// Recovers a recording whose upload failed. MeetingLifecycle keeps the local
+// file in that case, and RecordingFile.pathFor is deterministic, so the id is
+// enough to find it. 202-then-webhook rather than synchronous: the backend
+// calls this with a 10s timeout, and an hour-long recording is ~86MB. The
+// outcome arrives as the normal completed/failed webhook.
+app.post('/reupload', requireAuth, (req, res) => {
+  const { meetingId, userId } = req.body;
+  if (!meetingId || !userId) {
+    return res.status(400).json({ error: 'meetingId and userId are required' });
+  }
+  // Not just defense-in-depth here: meetingId is joined straight into a
+  // local file path below, before any session exists to vouch for it.
+  if (!UUID_RE.test(meetingId) || !UUID_RE.test(userId)) {
+    return res.status(400).json({ error: 'meetingId and userId must be UUIDs' });
+  }
+
+  // An active session may still be writing this file; a second re-upload
+  // would race the first one's unlink.
+  if (activeMeetings.has(meetingId)) {
+    return res.status(409).json({ error: `Meeting ${meetingId} is still active` });
+  }
+  if (reuploadsInFlight.has(meetingId)) {
+    return res.status(409).json({ error: `Meeting ${meetingId} is already being re-uploaded` });
+  }
+
+  const localPath = RecordingFile.pathFor(meetingId);
+  if (!fs.existsSync(localPath)) {
+    return res.status(404).json({ error: `No preserved recording for meeting ${meetingId}` });
+  }
+
+  reuploadsInFlight.add(meetingId);
+  res.status(202).json({ status: 'accepted', meetingId });
+
+  runReupload({ meetingId, userId })
+    .catch((err) => {
+      console.error(`[reupload] meeting ${meetingId} failed:`, err.message);
+    })
+    .finally(() => {
+      reuploadsInFlight.delete(meetingId);
+    });
 });
 
 // Unlike /health, this requires auth: it discloses operational state

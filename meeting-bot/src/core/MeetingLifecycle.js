@@ -4,6 +4,7 @@ import { ZoomBot } from '../platforms/zoom/ZoomBot.js';
 import { Recorder } from '../recording/Recorder.js';
 import { RecordingFile } from '../recording/RecordingFile.js';
 import { AudioSink } from '../recording/AudioSink.js';
+import { MeetingSession } from './MeetingSession.js';
 import { SupabaseUploader } from '../storage/SupabaseUploader.js';
 import fs from 'fs';
 
@@ -77,27 +78,7 @@ export async function runMeetingLifecycle(session) {
 
     if (localPath && session.status !== 'failed') {
       console.log(`[Lifecycle] 4. Audio saved to: ${localPath}`);
-      try {
-        const storageKey = RecordingFile.storageKeyFor(session.userId, session.meetingId);
-        await SupabaseUploader.upload(localPath, storageKey);
-        uploadedStorageKey = storageKey;
-        console.log('[Lifecycle] 5. Upload successful.');
-        session.markCompleted();
-      } catch (uploadErr) {
-        console.error('[Lifecycle] 5. Upload failed:', uploadErr.message);
-        session.markFailed(`Upload failed: ${uploadErr.message}`);
-      }
-
-      // Cleanup is best-effort and deliberately separate from the
-      // upload's success/failure - a locked file (e.g. ffmpeg not yet
-      // having released the handle, seen on Windows) shouldn't get
-      // reported as an upload failure when the upload itself succeeded.
-      try {
-        fs.unlinkSync(localPath);
-        console.log('[Lifecycle] Local recording file cleaned up.');
-      } catch (cleanupErr) {
-        console.error('[Lifecycle] Could not delete local recording file:', cleanupErr.message);
-      }
+      uploadedStorageKey = await uploadRecording(session, localPath);
     } else if (localPath && session.status === 'failed') {
       console.log('[Lifecycle] 4. Session failed — skipping upload, keeping local file for debug.');
     } else {
@@ -107,6 +88,65 @@ export async function runMeetingLifecycle(session) {
     await notifyBackend(session, uploadedStorageKey);
     console.log(`[Lifecycle] Done. Meeting ${session.meetingId} status: ${session.status}`);
   }
+}
+
+// Uploads a finished recording and marks the session completed or failed.
+// Returns the storage key on success, null on failure. `upload` is injectable
+// so tests can drive this without Supabase.
+//
+// The local file is deleted only after a confirmed upload. It used to be
+// deleted either way, which made a failed upload destroy the only copy of the
+// recording (meeting 4e7fe19b). Kept, it can be recovered with POST /reupload.
+export async function uploadRecording(session, localPath, {
+  upload = (filePath, storageKey) => SupabaseUploader.upload(filePath, storageKey),
+} = {}) {
+  let uploadedStorageKey = null;
+  try {
+    const storageKey = RecordingFile.storageKeyFor(session.userId, session.meetingId);
+    await upload(localPath, storageKey);
+    uploadedStorageKey = storageKey;
+    console.log('[Lifecycle] 5. Upload successful.');
+    session.markCompleted();
+  } catch (uploadErr) {
+    console.error('[Lifecycle] 5. Upload failed:', uploadErr.message);
+    session.markFailed(
+      `Upload failed: ${uploadErr.message}. The recording is preserved on the recorder and can be retried.`
+    );
+  }
+
+  if (uploadedStorageKey) {
+    // Still best-effort, and still separate from the upload's try/catch - a
+    // locked file (e.g. ffmpeg not yet having released the handle, seen on
+    // Windows) shouldn't get reported as an upload failure when the upload
+    // itself succeeded. It is just no longer unconditional.
+    try {
+      fs.unlinkSync(localPath);
+      console.log('[Lifecycle] Local recording file cleaned up.');
+    } catch (cleanupErr) {
+      console.error('[Lifecycle] Could not delete local recording file:', cleanupErr.message);
+    }
+  } else {
+    console.log(`[Lifecycle] Keeping local recording for retry: ${localPath}`);
+  }
+
+  return uploadedStorageKey;
+}
+
+// POST /reupload's background half: uploads a recording kept by an earlier
+// failed upload, then reports through the normal webhook. `completed` carries
+// recording_path, which the backend's completed branch requires. There is no
+// duration to report - the original session's timings died with it - but the
+// backend never stored one for the failed meeting either, so nothing is lost.
+export async function runReupload({ meetingId, userId }) {
+  const session = new MeetingSession({ meetingId, userId, meetingUrl: null, platform: null });
+  session.markUploading();
+
+  const localPath = RecordingFile.pathFor(meetingId);
+  console.log(`[Lifecycle] Re-uploading preserved recording: ${localPath}`);
+  const uploadedStorageKey = await uploadRecording(session, localPath);
+
+  await notifyBackend(session, uploadedStorageKey);
+  console.log(`[Lifecycle] Re-upload done. Meeting ${meetingId} status: ${session.status}`);
 }
 
 // Best-effort progress ping, distinct from notifyBackend() below - a single
