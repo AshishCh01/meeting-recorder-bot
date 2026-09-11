@@ -1068,13 +1068,79 @@ disabled, the three 503 tests fail `500 == 503`.
   runs after it, about 2,400 requests, two of them on the old pool config. Pool checkout cannot be the cause, since it
   gives up at 3s. The benchmark opens a new TCP connection per request through
   Docker Desktop's port proxy, which is the main suspect but not proven.
-- **The chat routes hold a connection for a whole LLM turn.** `POST /chat` and
-  `/chat/stream` query through the request's session (`_assert_chattable`) and
-  never commit, so SQLAlchemy keeps that connection checked out while the answer
-  is generated, and the tools take a second one alongside it. Eight
-  simultaneous chats would occupy the backend's entire pool for the length of a
-  Gemini call. The fix is to release the session before awaiting the model, in
-  `app/api/chat.py`, which was outside this change.
+- ~~**The chat routes hold a connection for a whole LLM turn.**~~ **Fixed** —
+  see below.
+
+### Follow-up: chat no longer holds a connection during the answer ✅
+
+Both chat routes ran `_assert_chattable` through the request's session and then
+spent the whole model call — for `/chat/stream`, the route the frontend uses,
+the whole stream, because FastAPI 0.141 runs `get_db`'s cleanup after the last
+chunk — with that transaction open and its connection checked out. Eight
+concurrent chats would take all 8. The routes now `db.close()` the request's
+session after the checks and before any model work: in the route body, so a
+bad or not-ready meeting still fails as a plain 404/409 before a stream starts.
+
+It has to be the *request's* session. `get_current_user` shares it, and on a
+user-row cache miss `_ensure_user_row` runs a `SELECT` and returns without
+committing. A separate short session for the checks alone was tried as a
+falsification. It passed the cache-hit tests and **failed both cache-miss
+tests**, with auth's connection still held.
+
+**Measured** with the model call replaced by a fake that reads
+`engine.pool.checkedout()` mid-answer (`tests/test_chat_connection_release.py`,
+8 tests): before, **1** on both routes on a cache hit and a cache miss; after,
+**0** on all four. Removing the release fails all four again.
+
+**Live**, backend at `DB_POOL_SIZE=2`, 3 concurrent streamed chats on a
+completed meeting, `GET /meetings` ×3 while they streamed:
+
+| | before | after |
+|---|---|---|
+| `GET /meetings` | 3 × 503, each at ~3.0s | 3 × 200, 390–472 ms |
+| the 3 chats | 1 × 503; 2 completed, 57s and 62s | 3 completed, 11–29s |
+| pool timeouts inside chat | thread load failed, a tool call timed out, one exchange not saved | none |
+
+The test Q&A rows were deleted afterwards.
+
+**Residual, observed rather than fixed.** A chat turn still takes short-lived
+connections of its own: `_load_thread`, one per tool call (run in parallel with
+`asyncio.gather`), and `_save_exchange`. At pool 2 with 3 chats, the run after
+the fix logged no contention. The *before* run showed what saturation looks
+like there: the history load and the save each give up after the 3s pool
+timeout and log `[chat] could not load/store thread`. The answer still streams,
+without its history or without being stored. At the real pool of 8 this
+needs many chats in their tool phase at the same instant; watch for those log
+lines rather than redesign for it now.
+
+**Audit — same pattern elsewhere, not fixed here.** Routes that check out a
+connection with a query and then make a slow network call before the
+transaction ends (from reading the code, not measured):
+
+- `app/rag/tools.py:142-151` — `search_transcript` queries the meeting, then
+  calls `embed_query` (Gemini embeddings) before its vector search; inside every
+  parallel tool call.
+- `app/api/calendar.py:108-121` `list_events` and `:148-156` `schedule_event` —
+  `calendar_service.get_valid_access_token` queries `CalendarConnection`
+  (`calendar_service.py:31`) and then refreshes the token with Google (`:35`);
+  the route then calls Google again (`list_upcoming_events` / `get_event`).
+- `app/api/meetings.py:99-107` `get_meeting` — query, then a Supabase Storage
+  signed-URL request.
+- `app/api/meetings.py:131-140` `retry_meeting` — commits, but reading
+  `meeting.user_id` at `:136` after the commit re-loads it (`expire_on_commit`
+  is the default), so the storage listing at `:140` runs with a connection out.
+  Same at `:182-202` in `_reupload_from_bot`, around the bot call (10s timeout).
+- `app/api/meetings.py:227-252` `stop_meeting` and `:272-297` `delete_meeting` —
+  query, then `stop_bot` (10s timeout) and, for delete, a Storage removal before
+  the commit.
+- `app/api/meetings.py:69-70` `create_meeting` — the `User` query after the
+  commit holds through `trigger_bot_join` (a 10s bot call with the queue off, a
+  Redis enqueue with it on).
+- `app/api/meetings.py:308-316` `export_meeting_pdf` — holds through PDF
+  generation, but that is local CPU work, not a network call.
+
+And in general: any route using `get_current_user` holds a connection from auth
+onward on a user-row cache miss, whether or not the route itself queries first.
 
 ## Behaviour change accepted: revocation is no longer immediate
 
