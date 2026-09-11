@@ -38,7 +38,7 @@ cd meeting-recorder-bot
 ### Set up Supabase
 
 1. In **Storage**, create a new bucket named `recordings` and make it **private** (not public).
-2. That's it for manual steps — the entire schema (`meetings`, `users`, `meeting_chunks`, `calendar_connections`, indexes, Row Level Security policies, the pgvector extension) is created automatically the first time the backend container starts, via Alembic migrations baked into its startup command. You don't need to run any SQL by hand. ([`supabase/migrations/create_meetings.sql`](supabase/migrations/create_meetings.sql) is kept only as a historical record of the original pre-Alembic table — running it is redundant.)
+2. That's it for manual steps — the entire schema (`meetings`, `users`, `meeting_chunks`, `calendar_connections`, indexes, Row Level Security policies, the pgvector extension) is created automatically the first time the backend container starts, via Alembic migrations baked into its startup command. You don't need to run any SQL by hand.
 3. From your project's **Settings**, collect the values you'll need in the next step:
    - **Settings → API**: Project URL, `service_role` key (secret — backend/meeting-bot use this), `anon` key (public — frontend uses this).
    - **Settings → Database → Connection pooling**: the pooled connection string (`DATABASE_URL`).

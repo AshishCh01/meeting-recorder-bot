@@ -25,7 +25,7 @@ import logging
 import threading
 import time
 from collections import OrderedDict
-from typing import Optional, Tuple
+from typing import Tuple
 
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials

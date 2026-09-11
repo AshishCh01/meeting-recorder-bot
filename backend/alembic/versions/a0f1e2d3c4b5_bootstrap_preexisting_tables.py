@@ -7,7 +7,7 @@ Create Date: 2026-09-04 00:00:00.000000
 Makes the migration chain able to build a database from nothing.
 
 `meetings` and `meeting_chunks` were originally created out-of-band (by hand
-in the Supabase SQL editor - see supabase/migrations/create_meetings.sql),
+in the Supabase SQL editor),
 so the first tracked migration, 475e9ee29ad9, assumes they already exist: it
 opens with `TRUNCATE TABLE meeting_chunks`, then ALTERs columns on both
 tables and drops an index. Against a genuinely empty database that fails on
@@ -43,8 +43,8 @@ def upgrade() -> None:
     # 475e9ee29ad9 also runs it (harmlessly) for the production path.
     op.execute('CREATE EXTENSION IF NOT EXISTS vector;')
 
-    # Shape mirrors supabase/migrations/create_meetings.sql - deliberately
-    # without user_id/title/embedding_provider/scheduled_at/calendar_event_id/
+    # Shape mirrors the original hand-run SQL - deliberately without
+    # user_id/title/embedding_provider/scheduled_at/calendar_event_id/
     # updated_at, which later migrations add.
     op.execute("""
         CREATE TABLE IF NOT EXISTS meetings (
