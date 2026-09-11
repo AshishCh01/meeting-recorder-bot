@@ -49,6 +49,17 @@ services:
     command: ["arq", "app.worker.WorkerSettings"]
     env_file:
       - ./backend/.env
+    environment:
+      # This process's share of Supabase's 15-connection pooler cap - the
+      # budget is next to db_pool_size in backend/app/config.py. env_file is
+      # shared with backend, so this block is the only way the worker gets
+      # different values from the same database.py; `environment:` outranks
+      # env_file. 4 = worker_max_jobs, one session per job.
+      DB_POOL_SIZE: "4"
+      DB_MAX_OVERFLOW: "0"
+      # Not the backend's 3s. No user is waiting on a job, and a job that gives
+      # up on a pool wait burns one of its arq retries for nothing.
+      DB_POOL_TIMEOUT_SECONDS: "30"
     volumes:
       - ./backend:/app
       - /app/venv

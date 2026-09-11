@@ -139,6 +139,41 @@ class Settings(BaseSettings):
     # ThreadPoolExecutor used, so deploy 2 doesn't change AI provider load.
     worker_max_jobs: int = 4
 
+    # Database connection pool, per process (app/db/database.py).
+    #
+    # The ceiling is not ours to set: DATABASE_URL goes through Supabase's
+    # session-mode pooler (port 5432), which allows this project 15 client
+    # connections in total, and rejects the 16th with EMAXCONNSESSION. Every
+    # process that imports database.py builds its own engine, so 15 is split
+    # across processes:
+    #
+    #   backend   8  request handlers, plus the watchdog and scheduler sweeps
+    #   worker    4  worker_max_jobs = 4, and each job holds one session at a time
+    #   headroom  3  `alembic upgrade head` at container boot, the Supabase SQL
+    #                editor, any ad-hoc psql
+    #   total    15
+    #
+    # The defaults here are the backend's. env_file is shared by both
+    # services, so the worker gets its share from an `environment:` override
+    # on the worker service in both compose files - the only per-process
+    # lever there is. Overflow is 0 for both: an overflow connection still
+    # takes a pooler slot, so it would only hide where the real cap is.
+    #
+    # Anything that adds a process breaks this arithmetic. `--scale worker=2`
+    # is 8 + 4 + 4 = 16; a second backend replica (Phase A2) has to split the
+    # backend's 8. With TRANSCRIPTION_USE_QUEUE=false, transcription runs in
+    # the backend's own 4-thread executor and spends up to 4 of its 8.
+    db_pool_size: int = 8
+    db_max_overflow: int = 0
+    # How long a request waits for a free pooled connection before giving up,
+    # which main.py turns into a 503. SQLAlchemy's default is 30s, and that
+    # default is the trap: once the pool fits under the pooler's cap, Postgres
+    # stops rejecting excess demand and SQLAlchemy queues it instead, so a busy
+    # moment becomes a 30-second spinner followed by an error. A healthy
+    # checkout waits milliseconds - 3s of waiting is saturation, not jitter.
+    # It does not include connect time, only the wait for a free slot.
+    db_pool_timeout_seconds: float = 3.0
+
     # Bot dispatch queue (Phase C2). Reuses A3's Redis and the same worker
     # container - no new broker, no new process, no second engine.
     #
