@@ -1117,9 +1117,9 @@ lines rather than redesign for it now.
 connection with a query and then make a slow network call before the
 transaction ends (from reading the code, not measured):
 
-- `app/rag/tools.py:142-151` — `search_transcript` queries the meeting, then
+- ~~`app/rag/tools.py:142-151` — `search_transcript` queries the meeting, then
   calls `embed_query` (Gemini embeddings) before its vector search; inside every
-  parallel tool call.
+  parallel tool call.~~ **Fixed** — see below.
 - `app/api/calendar.py:108-121` `list_events` and `:148-156` `schedule_event` —
   `calendar_service.get_valid_access_token` queries `CalendarConnection`
   (`calendar_service.py:31`) and then refreshes the token with Google (`:35`);
@@ -1141,6 +1141,23 @@ transaction ends (from reading the code, not measured):
 
 And in general: any route using `get_current_user` holds a connection from auth
 onward on a user-row cache miss, whether or not the route itself queries first.
+
+### Follow-up: three more places release before the network call
+
+One commit each, in priority order. Every test stubs the slow call and reads
+`engine.pool.checkedout()` from inside it.
+
+- **`search_transcript`** (`rag/tools.py`). `embed_query` retries Gemini four
+  times with backoff sleeps and then falls back to Jina, which is about 10s on a
+  429, and it runs inside chat's parallel tool calls. Now three steps: a short
+  session reads the ownership check and `embedding_provider` into plain values,
+  the embed runs with no session open, and a second short session does the
+  vector search. The retry logic is untouched. Checked out during the embed:
+  **1 → 0**. Real pgvector rows with fixed vectors return the same chunks in the
+  same order before and after, another meeting's identical vector stays
+  excluded, and the meeting's own provider is still passed through
+  (`tests/test_search_transcript_session.py`, 7 tests). Reverting the file fails
+  the connection test again.
 
 ## Behaviour change accepted: revocation is no longer immediate
 
