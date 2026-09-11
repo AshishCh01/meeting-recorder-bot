@@ -139,17 +139,32 @@ def search_transcript(query: str, tool_context: ToolContext) -> dict:
     if not query or not query.strip():
         return {"note": "No query provided."}
 
+    # Three steps, and no session is open during the middle one. embed_query is
+    # a network call that retries with backoff sleeps and can then fall back to
+    # Jina - around 10s on a Gemini 429 - and chat runs tool calls in parallel,
+    # so holding a pooled connection across it could take several of the
+    # backend's 8 for one chat turn. Only plain values cross the gap.
     db = SessionLocal()
     try:
-        meeting = db.query(Meeting).filter(Meeting.id == meeting_id, Meeting.user_id == user_id).first()
-        if not meeting:
-            return {"note": "Meeting not found or unauthorized."}
+        row = (
+            db.query(Meeting.embedding_provider)
+            .filter(Meeting.id == meeting_id, Meeting.user_id == user_id)
+            .first()
+        )
+    finally:
+        db.close()
+    if row is None:
+        return {"note": "Meeting not found or unauthorized."}
 
-        # Must match whichever provider embedded this meeting's chunks
-        # (older meetings indexed before this column existed default to
-        # "gemini", since that's all that existed then).
-        query_embedding = embed_query(query, provider=meeting.embedding_provider or "gemini")
+    # Must match whichever provider embedded this meeting's chunks
+    # (older meetings indexed before this column existed default to
+    # "gemini", since that's all that existed then).
+    query_embedding = embed_query(query, provider=row.embedding_provider or "gemini")
 
+    # Ownership was settled by the read above. If the meeting is deleted
+    # during the embed, its chunks go with it and this finds none.
+    db = SessionLocal()
+    try:
         chunks = (
             db.query(MeetingChunk)
             .filter(MeetingChunk.meeting_id == meeting_id)
