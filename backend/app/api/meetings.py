@@ -101,6 +101,10 @@ def get_meeting(
         raise HTTPException(404, "Meeting not found")
 
     m_dict = meeting_to_dict(meeting)
+    # Release the pooled connection before the signed-URL request below - a
+    # round-trip to Supabase Storage. Everything past this point reads the
+    # plain dict, never the ORM object, so keep it that way.
+    db.close()
     if m_dict.get("status") == "completed":
         storage_path = f"{m_dict['user_id']}/{m_dict['id']}/recording.m4a"
         try:

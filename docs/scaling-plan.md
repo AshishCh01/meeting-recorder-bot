@@ -1124,8 +1124,8 @@ transaction ends (from reading the code, not measured):
   `calendar_service.get_valid_access_token` queries `CalendarConnection`
   (`calendar_service.py:31`) and then refreshes the token with Google (`:35`);
   the route then calls Google again (`list_upcoming_events` / `get_event`).
-- `app/api/meetings.py:99-107` `get_meeting` — query, then a Supabase Storage
-  signed-URL request.
+- ~~`app/api/meetings.py:99-107` `get_meeting` — query, then a Supabase Storage
+  signed-URL request.~~ **Fixed** — see below.
 - `app/api/meetings.py:131-140` `retry_meeting` — commits, but reading
   `meeting.user_id` at `:136` after the commit re-loads it (`expire_on_commit`
   is the default), so the storage listing at `:140` runs with a connection out.
@@ -1172,6 +1172,40 @@ One commit each, in priority order. Every test stubs the slow call and reads
   (`tests/test_auth_user_row_session.py`, 5 tests; reverting fails 4). Chat
   keeps its own `_release_request_session`: `_assert_chattable` opens a new
   transaction after auth.
+- **`get_meeting`** (`api/meetings.py`). The session is closed after
+  `meeting_to_dict`, before the Storage signed-URL request, and only the plain
+  dict is read afterwards. Checked out while signing: **1 → 0**, on both a
+  cache hit and a cache miss (`tests/test_get_meeting_session.py`, 4 tests;
+  reverting fails both).
+
+**How fixes 2 and 3 interact:** not the way the task predicted. With only fix
+3, a cache-miss `get_meeting` already reads 0 (the cache miss was asserted to
+have happened). `close()` ends the shared session's transaction, including the
+one auth left open. Fix 2 matters for routes that never release their session;
+the after-auth route test reads 1 without it.
+
+| | `get_meeting` miss | `get_meeting` hit | route that doesn't release |
+|---|---|---|---|
+| only fix 3 | 0 | 0 | **1** |
+| only fix 2 | **1** | **1** | 0 |
+| both | 0 | 0 | 0 |
+
+**Live, inconclusive.** The post-restart burst of concurrent `GET
+/meetings/{id}` was run at `DB_POOL_SIZE=2`, from a fresh restart and again with
+the pool's two connections pre-opened, alternating code versions. It did not
+cleanly separate before from after. At 16 concurrent, both versions were all
+200s whenever the pool was warm. At 32, before gave 15 and 1 × 503, after gave
+1 and 3 × 503. From a cold restart the counts swung the other way. The first
+connections to the pooler took 0.7–2.5s to open, and that dominates a
+burst against a 3s pool timeout. At pool 2, each request's two remote
+`SELECT`s cost about as much as the signing call itself. So the fix roughly
+halves how long a connection is held, but cannot remove contention at 32 on 2.
+The deterministic tests above are the evidence; the live run is not.
+
+**Live search.** One real question ("quote what was said about deployment,
+with the timestamp") called `search_transcript` twice. Both Gemini embedding
+requests returned 200, with no Jina fallback and no pool timeouts, and the
+answer quoted the transcript at 00:17. The test rows were deleted.
 
 ## Behaviour change accepted: revocation is no longer immediate
 
