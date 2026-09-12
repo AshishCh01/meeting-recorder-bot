@@ -1,0 +1,161 @@
+# CI (docs/scaling-plan.md, Phase B2).
+#
+# Two suites, two independent jobs, so a Node failure never masks a Python one
+# and the log you open is already the log you needed.
+#
+# The thing this file is most carefully built to avoid is being green while
+# testing less than it looks like it is. Five backend test files skip
+# themselves when TEST_REDIS_URL is unset; with Postgres but no Redis the suite
+# reports "166 passed, 51 skipped" and exits 0. Those 51 are B1's atomicity
+# gate, C3's two-hosts-two-meetings gate, C4's per-platform auth gate and A3's
+# queue-durability gate - the concurrency work, and the tests nobody re-runs by
+# hand. So both services are provisioned, and PYTEST_REQUIRE_NO_SKIPS=1 makes a
+# skip a failure (the hook is at the bottom of backend/tests/conftest.py).
+#
+# No repository secret is used, or needed. `a2a80f9` and `d424ea9` made both
+# suites independent of any .env specifically so a runner with none behaves
+# identically to a developer's machine; conftest.py sets IGNORE_DOTENV=1 and
+# placeholder credentials. If a future change here seems to need a secret, the
+# isolation has regressed and that is the bug. The "No credentials" step below
+# enforces it rather than trusting it.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A force-push or a quick second commit shouldn't leave two runs racing; the
+# repo is private, so Actions minutes are metered.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: backend (python 3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      # pgvector, not plain postgres: meeting_chunks.embedding is a Vector(768)
+      # and conftest.py runs CREATE EXTENSION vector before create_all. The
+      # suite also uses ARRAY and RLS, so SQLite is not an option either.
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_PASSWORD: testpw
+          POSTGRES_DB: meetiq_test
+        # The same non-default host ports backend/tests/README.md uses, so the
+        # command in that file is the command that runs here, character for
+        # character. Nothing on the runner would collide at 5432/6379 - the
+        # point is having one connection string to keep correct, not two.
+        ports: ['55432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      redis:
+        image: redis:7-alpine
+        ports: ['56379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.12 deliberately: it is what backend/Dockerfile deploys on, and until
+      # this workflow existed nothing had ever run this code on it. Local
+      # containers are 3.11 (Dockerfile.dev) and the developer's venv is 3.13,
+      # so the 217-test runs everyone quotes happened on 3.13. Reconciling
+      # Dockerfile.dev to 3.12 is queued separately - it needs a backend +
+      # worker rebuild - and is deliberately sequenced after CI shows 3.12 is
+      # sound. Do not "fix" a 3.12-only failure by moving this to 3.13; that is
+      # a finding about deploy day, discovered in the one place it is cheap.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: No credentials in this job
+        shell: bash
+        run: |
+          # Enforced, not asserted. The hazard is real Groq / Jina / Sarvam /
+          # Google keys sitting in a test process, one unstubbed fallback away
+          # from a billed call on every push.
+          if grep -qE '[$][{][{][^}]*secrets[.]' .github/workflows/ci.yml; then
+            echo "::error::this workflow references a repository secret - see the header"
+            exit 1
+          fi
+          for f in backend/.env backend/.env.local meeting-bot/.env; do
+            if [ -f "$f" ]; then echo "::error::$f is in the checkout"; exit 1; fi
+          done
+          for v in GROQ_API_KEY JINA_API_KEY SARVAM_API_KEY GEMINI_API_KEY \
+                   GOOGLE_CLIENT_SECRET GOOGLE_TOKEN_ENCRYPTION_KEY \
+                   SUPABASE_KEY SENTRY_DSN DATABASE_URL; do
+            if [ -n "${!v:-}" ]; then echo "::error::$v is set in this job"; exit 1; fi
+          done
+          echo "no .env in the checkout, no credential-bearing variable set, no secret referenced"
+
+      - name: Install
+        working-directory: backend
+        run: pip install -r requirements-dev.txt
+
+      - name: pytest
+        working-directory: backend
+        env:
+          # backend/tests/README.md's exact invocation.
+          TEST_DATABASE_URL: postgresql://postgres:testpw@localhost:55432/meetiq_test
+          TEST_REDIS_URL: redis://localhost:56379
+          # The skip guard. Without it "166 passed, 51 skipped" is a green run.
+          PYTEST_REQUIRE_NO_SKIPS: '1'
+        run: python -m pytest -q
+
+  meeting-bot:
+    name: meeting-bot (node 22)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 22 matches meeting-bot/Dockerfile (node:22-bookworm-slim).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: meeting-bot/package-lock.json
+
+      - name: Install
+        working-directory: meeting-bot
+        env:
+          # playwright is a dependency, but no test launches a browser - they
+          # stage sessions that fail fast, and only src/core/BrowserManager.js
+          # imports it (importing the module needs no binaries, only .launch()
+          # does). Without this, npm ci spends minutes and ~400MB downloading
+          # three browsers nothing in this job will open.
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: npm ci
+
+      - name: node --test
+        working-directory: meeting-bot
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee "$RUNNER_TEMP/node-test.txt"
+          # Same guard as the backend's, in the shape this runner offers: node
+          # --test reports its own skip count in TAP. Nothing here skips today
+          # and nothing should start silently.
+          if ! grep -qE '^# skipped 0$' "$RUNNER_TEMP/node-test.txt"; then
+            echo "::error::the meeting-bot suite skipped tests - see the TAP summary above"
+            exit 1
+          fi

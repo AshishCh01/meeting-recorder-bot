@@ -1,7 +1,8 @@
 # Backend tests
 
-These run against a **real PostgreSQL**, not SQLite, and the Phase A3 tests
-additionally need **Redis**.
+These run against a **real PostgreSQL**, not SQLite, and five of the test files
+additionally need **Redis**. Both run automatically in CI — see "In CI" below,
+and note `PYTEST_REQUIRE_NO_SKIPS` if you are about to add a conditional skip.
 
 Postgres because the behaviour under test in `test_scheduler_claim.py` is two
 connections racing a conditional `UPDATE`; that depends on Postgres row-level
@@ -101,6 +102,39 @@ python -m pytest
 ```
 
 Tear down with `docker stop meetiq-test-pg meetiq-test-redis`.
+
+## In CI
+
+`.github/workflows/ci.yml` (Phase B2) runs this suite on every push to `main`
+and every pull request, on **Python 3.12** — which is what `backend/Dockerfile`
+deploys on, and which nothing had ever run this code on before that workflow
+existed (`Dockerfile.dev` is 3.11 and the developer venv is 3.13). It uses the
+same two images and the **same host ports** as the commands above, so the
+invocation in this file is the invocation that runs in CI, character for
+character. No repository secret is involved, and the workflow has a step that
+fails if one ever is.
+
+### `PYTEST_REQUIRE_NO_SKIPS=1`
+
+**A skip is a failure when this is set.** CI sets it; nothing else does.
+
+The reason is the numbers in the section above: with Postgres but no Redis this
+suite reports `166 passed, 51 skipped` and exits **0**. Those 51 are B1's
+atomicity gate, C3's two-hosts-two-meetings gate, C4's per-platform auth gate
+and A3's queue-durability gate — the concurrency work, and precisely the tests
+nobody re-runs by hand. A workflow that provisioned Postgres and forgot Redis
+would be green and blind to all of it, which is worse than having no CI at all:
+it converts "nobody ran the tests" into "the tests passed".
+
+The guard is a `pytest_sessionfinish` hook at the bottom of `conftest.py`. It
+lists every test that skipped and why, then sets a failing exit status. It is
+opt-in rather than always-on because locally a partial run is genuinely useful
+— run without Redis and you get the 166 tests that do not need one, plus a note
+about what you missed, instead of a red suite.
+
+It refuses *any* skip, not just Redis ones. There is no legitimately
+conditional test here today (with both services: `217 passed`, zero skipped),
+so a new skip is a question someone should have to answer in a pull request.
 
 ## What's covered
 

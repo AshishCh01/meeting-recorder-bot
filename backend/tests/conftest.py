@@ -187,3 +187,71 @@ def user(db):
     db.commit()
     db.refresh(row)
     return row
+
+
+# ---------------------------------------------------------------------------
+# The skip guard (docs/scaling-plan.md, B2)
+# ---------------------------------------------------------------------------
+#
+# Five test files skip themselves when TEST_REDIS_URL is unset:
+# test_rate_limit, test_bot_pool, test_bot_dispatch_queue, test_bot_auth_health
+# and test_transcription_queue. With Postgres but no Redis this suite reports
+# `166 passed, 51 skipped` and exits **0**.
+#
+# Those 51 are not filler. They are B1's atomicity gate, C3's
+# two-hosts-two-meetings gate, C4's per-platform auth gate and A3's
+# queue-durability gate - the concurrency work those phases existed to do, and
+# the tests least likely to be re-run by hand. A CI workflow that provisions
+# Postgres and forgets Redis would be green and blind to all of it, which is
+# strictly worse than having no CI: it converts "nobody ran the tests" into
+# "the tests passed".
+#
+# So CI sets PYTEST_REQUIRE_NO_SKIPS=1 and a skip becomes a failure, naming
+# every test that skipped and why. Opt-in rather than always-on, because
+# locally a partial run is genuinely useful - a developer with no Redis should
+# still get the 166 tests that do not need one, and be told what they missed
+# rather than handed a red suite.
+#
+# Deliberately "no skips at all" rather than "no *Redis* skips". This suite has
+# no legitimately-conditional test today (with both services: 217 passed, 0
+# skipped), so any future skip is a question worth forcing someone to answer in
+# a pull request rather than a category to pre-approve here.
+_skipped_in_this_run: list = []
+
+REQUIRE_NO_SKIPS = os.environ.get("PYTEST_REQUIRE_NO_SKIPS") == "1"
+
+
+def pytest_runtest_logreport(report):
+    if not REQUIRE_NO_SKIPS or not report.skipped:
+        return
+    reason = ""
+    # A skipif skip arrives as (path, lineno, "Skipped: <reason>").
+    if isinstance(report.longrepr, tuple) and len(report.longrepr) == 3:
+        reason = str(report.longrepr[2]).removeprefix("Skipped: ")
+    _skipped_in_this_run.append((report.nodeid, reason))
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    """
+    Turn skips into a failure when PYTEST_REQUIRE_NO_SKIPS=1.
+
+    `session.exitstatus` is what pytest returns to the shell after this hook
+    runs, so setting it here is what actually reddens the CI job - printing
+    alone would leave the run green. trylast so this lands after the terminal
+    summary rather than being scrolled away above it.
+    """
+    if not REQUIRE_NO_SKIPS or not _skipped_in_this_run:
+        return
+
+    print("")
+    print(
+        "PYTEST_REQUIRE_NO_SKIPS=1 and {} test(s) skipped. In CI a skip means a "
+        "service container is missing, so the suite is testing less than the "
+        "run claims - see tests/README.md.".format(len(_skipped_in_this_run))
+    )
+    for nodeid, reason in _skipped_in_this_run:
+        print("  SKIPPED {}{}".format(nodeid, " - " + reason if reason else ""))
+
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
