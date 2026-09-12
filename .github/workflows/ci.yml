@@ -135,6 +135,27 @@ jobs:
           cache: npm
           cache-dependency-path: meeting-bot/package-lock.json
 
+      # meeting-bot deploys as node:22-bookworm-slim *with pulseaudio*, and its
+      # entrypoint starts a daemon before node. A runner without one is not
+      # that environment, and three tests in stop.endpoint.test.js prove it:
+      # they stage a session that fails fast by pointing AUTH_STATE_PATH at a
+      # missing file, then assert the session is briefly registered. On Windows
+      # and macOS AudioSink.provision() is a documented no-op, so the first
+      # thing that fails is the auth read - slow enough to assert against. On
+      # Linux provision() really shells out to `pactl`, so with no PulseAudio
+      # it throws in milliseconds and the session is gone before the assertion.
+      # Those three tests had therefore never run their intended path on the
+      # platform this bot actually deploys to.
+      #
+      # Same daemon flags as meeting-bot/docker-entrypoint.sh, rather than
+      # relying on autospawn, so this is deterministic.
+      - name: PulseAudio (as the container has it)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pulseaudio
+          pulseaudio -D --exit-idle-time=-1 --disallow-exit --disallow-module-loading=no
+          pactl info | head -3
+
       - name: Install
         working-directory: meeting-bot
         env:
