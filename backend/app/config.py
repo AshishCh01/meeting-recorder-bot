@@ -205,6 +205,41 @@ class Settings(BaseSettings):
     # 10s join timeout, which covers a real browser launch.
     bot_capacity_timeout_seconds: float = 5.0
 
+    # The bot pool (Phase C3). A comma-separated, operator-maintained list of
+    # recorders, each entry either "id=url" or a bare "url" whose id is
+    # derived from host:port:
+    #
+    #   BOT_HOSTS=bot-a=http://meeting-bot:3000,bot-b=http://meeting-bot-2:3000
+    #
+    # Deliberately not self-registration, which is what the plan's text
+    # originally described. C4 provisions a Google/Zoom account and a machine
+    # by hand for every host, so the list is already human-maintained - and
+    # pulling it from config means meeting-bot needs no new code, no REDIS_URL
+    # and no new outbound credential to join a pool. See bot_registry.py.
+    #
+    # Empty means a pool of one built from MEETING_BOT_URL, which is exactly
+    # the pre-C3 deployment. Setting nothing here is the revert.
+    bot_hosts: str = ""
+    # How often the worker's heartbeat loop asks every host GET /capacity, and
+    # how stale a host's last answer may be before the dispatcher treats it as
+    # dead. The gap between them is the tolerance: at 5 and 20, a host has to
+    # miss three consecutive polls before it stops receiving meetings, so a
+    # single slow answer or a container restart does not take it out of the
+    # pool. Raising the interval reduces polling traffic and widens the window
+    # in which the cache disagrees with reality; the bot's 409 covers that
+    # disagreement either way.
+    bot_heartbeat_enabled: bool = True
+    bot_heartbeat_interval_seconds: float = 5.0
+    bot_heartbeat_ttl_seconds: float = 20.0
+    # How long a dispatcher's slot reservation on a host survives. It exists
+    # only to stop two simultaneous dispatches piling onto the same host while
+    # another sits idle - a bot registers a session before it answers 202, so
+    # one poll interval later the real /capacity already reflects the join and
+    # the reservation is redundant. A few multiples of the interval, so a
+    # reservation leaked by a crash between the claim and the post clears on
+    # its own. Never a lock: see bot_registry.claim_host.
+    bot_host_reservation_seconds: float = 20.0
+
     # Local JWT verification (Phase A5). This project signs access tokens
     # asymmetrically with ES256; the public keys live at the JWKS URL below
     # and nothing secret is stored here.

@@ -49,6 +49,9 @@ Thumbs.db
 # Project specifics
 recordings/
 !recordings/.gitkeep
+# The second recorder's kept recordings (docs/scaling-plan.md Phase C3).
+recordings-2/
+!recordings-2/.gitkeep
 browser-profiles/
 transcript.json
 test_file.ps

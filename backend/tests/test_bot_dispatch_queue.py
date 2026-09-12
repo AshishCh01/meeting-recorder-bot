@@ -36,6 +36,8 @@ from app.db.models import Meeting
 from app.services import bot_dispatch, bot_service, watchdog
 from app.worker import dispatch_bot_join_job
 
+from tests.fake_bot_pool import FakeBot, FakeBotPool, install
+
 REDIS_URL = os.environ.get("TEST_REDIS_URL")
 needs_redis = pytest.mark.skipif(
     not REDIS_URL,
@@ -102,54 +104,20 @@ def age_meeting(meeting_id, minutes):
         other.close()
 
 
-class FakeBot:
-    """
-    Stands in for meeting-bot's HTTP surface: GET /capacity (Phase C1) and
-    POST /{platform}/join. Its admission rule is the real one - the bot
-    refuses when active >= max, and C1 made /capacity report exactly that -
-    so a test that drives it into 409 is exercising the same disagreement the
-    dispatcher has to survive in production.
-    """
-
-    def __init__(self, max_concurrent=1, active=0, unreachable=False):
-        self.max = max_concurrent
-        self.active = active
-        self.unreachable = unreachable
-        self.joins = []
-        self.capacity_calls = 0
-
-    def capacity(self):
-        self.capacity_calls += 1
-        if self.unreachable:
-            raise httpx.ConnectError("connection refused")
-        return {
-            "active": self.active,
-            "max": self.max,
-            "available": max(0, self.max - self.active),
-            "meetingIds": [f"meeting-{i}" for i in range(self.active)],
-        }
-
-    def join(self, platform, url, meeting_id, user_id, bot_display_name):
-        if self.active >= self.max:
-            raise httpx.HTTPStatusError(
-                "409 Conflict",
-                request=httpx.Request("POST", "http://bot/join"),
-                response=httpx.Response(409, json={"error": "Bot is currently busy with another meeting"}),
-            )
-        self.active += 1
-        self.joins.append(meeting_id)
-        return {"status": "accepted", "meetingId": meeting_id}
-
-    def finish_one(self):
-        """A recording ends and the recorder frees up."""
-        self.active = max(0, self.active - 1)
-
-
 @pytest.fixture
 def bot(monkeypatch):
-    fake = FakeBot()
-    monkeypatch.setattr(bot_service, "get_bot_capacity", fake.capacity)
-    monkeypatch.setattr(bot_service, "post_join", fake.join)
+    """
+    A pool of exactly one recorder - which is what every test below was
+    written against, and still the shape of a single-host deployment.
+
+    Phase C3 moved the "is there room?" question off bot_service and onto
+    bot_registry, so this installs a fake pool (see tests/fake_bot_pool.py)
+    rather than stubbing get_bot_capacity. The recorder itself is unchanged:
+    the same admission rule, the same 409. Placement across *several* hosts is
+    test_bot_pool.py's subject, not this file's.
+    """
+    fake = FakeBot(host_id="bot-a")
+    install(monkeypatch, FakeBotPool(fake))
     return fake
 
 
@@ -390,26 +358,30 @@ def test_a_dropped_job_stops_the_retry_loop(db, user, bot, queue_on):
 
 def test_a_409_from_the_bot_requeues_rather_than_failing(db, user, bot, queue_on, monkeypatch):
     """
-    /capacity is an optimisation, never a lock: the check and the join are not
-    atomic, so two dispatch jobs can both read available: 1 and both post. The
-    loser gets the bot's 409, which is the authority - and must be treated as
-    "try again", not as a failed meeting.
+    The heartbeat cache is an optimisation, never a lock: what it holds and
+    what the bot will accept are not read atomically, so two dispatch jobs can
+    both be sent to a host with one free slot. The loser gets the bot's 409,
+    which is the authority - and must be treated as "try again", not as a
+    failed meeting.
 
-    Staged by having the recorder fill up between the capacity read and the
-    join, which is exactly what the losing job experiences.
+    Staged by having the recorder fill up between the cache read and the join,
+    which is exactly what the losing job experiences. Phase C3 widened that
+    window rather than closing it - the cache can be up to
+    bot_heartbeat_interval_seconds out of date - which is why this path
+    matters more now, not less.
     """
     bot.max = 1
     bot.active = 0
     meeting = make_meeting(db, user.id)
 
-    real_capacity = bot.capacity
+    real_read = bot.read_capacity
 
     def capacity_then_someone_else_takes_it():
-        payload = real_capacity()   # honest at the time it was read: available 1
-        bot.active = 1              # the other job's join lands here
+        payload = real_read()   # honest when it was polled: available 1
+        bot.active = 1          # the other job's join lands here
         return payload
 
-    monkeypatch.setattr(bot_service, "get_bot_capacity", capacity_then_someone_else_takes_it)
+    monkeypatch.setattr(bot, "read_capacity", capacity_then_someone_else_takes_it)
 
     result = bot_dispatch.dispatch_queued_meeting(str(meeting.id))
 
@@ -421,14 +393,22 @@ def test_a_409_from_the_bot_requeues_rather_than_failing(db, user, bot, queue_on
 
 
 def test_an_unreachable_bot_waits_rather_than_failing(db, user, bot, queue_on):
-    """A restarting recorder is a reason to wait, not to lose the recording."""
+    """
+    A restarting recorder is a reason to wait, not to lose the recording.
+
+    Phase C3 changed what this looks like, not whether it works: the
+    dispatcher no longer calls the bot to find out, so an unreachable host
+    surfaces as one that stopped answering the heartbeat poll - "no recorder
+    is reporting in" rather than "could not be reached". The meeting still
+    waits, which is the property under test.
+    """
     bot.unreachable = True
     meeting = make_meeting(db, user.id)
 
     result = bot_dispatch.dispatch_queued_meeting(str(meeting.id))
 
     assert result.outcome == "waiting"
-    assert "could not be reached" in result.reason
+    assert "no recorder is reporting in" in result.reason
     assert reread(meeting.id).status == "queued"
 
 
@@ -606,7 +586,7 @@ def bot_stop_tripwire(monkeypatch):
     """A queued meeting has no bot session - reaching stop_bot is the bug."""
     from app.api import meetings
 
-    def boom(meeting_id):
+    def boom(host, meeting_id):
         raise AssertionError("called the bot to stop a meeting that never had a bot")
 
     monkeypatch.setattr(meetings, "stop_bot", boom)
@@ -646,7 +626,7 @@ def test_a_stopped_queued_meeting_is_never_dispatched(db, user, bot, queue_on, b
     assert bot.capacity_calls == 0
 
 
-def test_a_stop_that_loses_the_race_to_the_dispatcher_stops_the_bot(db, user, queue_on, monkeypatch):
+def test_a_stop_that_loses_the_race_to_the_dispatcher_stops_the_bot(db, user, bot, queue_on, monkeypatch):
     """
     The user presses Stop on a queued meeting at the moment a recorder frees
     up, and the dispatcher's claim lands between the route's read and its
@@ -673,12 +653,18 @@ def test_a_stop_that_loses_the_race_to_the_dispatcher_stops_the_bot(db, user, qu
 
     stopped = []
     monkeypatch.setattr(meetings, "cancel_queued_meeting", dispatcher_claims_first)
-    monkeypatch.setattr(meetings, "stop_bot", lambda mid: stopped.append(mid) or {"status": "stopping"})
+    monkeypatch.setattr(
+        meetings, "stop_bot",
+        lambda host, mid: stopped.append((host.id, mid)) or {"status": "stopping"},
+    )
 
     response = meetings.stop_meeting(meeting_id=meeting.id, db=db, user_id=str(user.id))
 
     assert response == {"status": "stopping"}
-    assert stopped == [str(meeting.id)]
+    # The dispatcher's claim in dispatcher_claims_first writes no host, so
+    # require_host falls back to the sole configured recorder - which is what
+    # a single-host install always has.
+    assert stopped == [("bot-a", str(meeting.id))]
     assert reread(meeting.id).status == "joining", "the cancel overwrote a meeting the dispatcher had claimed"
 
 

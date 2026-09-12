@@ -7,6 +7,14 @@ services:
       - "8000:8000"
     env_file:
       - ./backend/.env
+    environment:
+      # The bot pool (docs/scaling-plan.md Phase C3). These are compose
+      # service names, so the list is topology and belongs here rather than in
+      # a hand-edited .env; `environment:` outranks `env_file:`. The backend
+      # needs it for stop/delete/re-upload, which resolve a meeting's
+      # bot_host_id against this list. Drop it and the pool is a pool of one
+      # built from MEETING_BOT_URL - which is the C3 revert.
+      BOT_HOSTS: "bot-a=http://meeting-bot:3000,bot-b=http://meeting-bot-2:3000"
     volumes:
       # Live-reloads your Python code without rebuilding
       - ./backend:/app
@@ -60,6 +68,10 @@ services:
       # Not the backend's 3s. No user is waiting on a job, and a job that gives
       # up on a pool wait burns one of its arq retries for nothing.
       DB_POOL_TIMEOUT_SECONDS: "30"
+      # Same list as the backend's, and it has to be: this container runs both
+      # the heartbeat loop that fills the cache and the dispatcher that reads
+      # it, so a host missing here is a host that never receives a meeting.
+      BOT_HOSTS: "bot-a=http://meeting-bot:3000,bot-b=http://meeting-bot-2:3000"
     volumes:
       - ./backend:/app
       - /app/venv
@@ -79,6 +91,10 @@ services:
       - "3000:3000"
     env_file:
       - ./meeting-bot/.env
+    environment:
+      # Pinned rather than left to .env so the pair below is symmetrical and
+      # the Phase C3 gate means the same thing on every machine.
+      MAX_CONCURRENT_MEETINGS: "1"
     dns:
       # Same fix as backend above: Docker Desktop's embedded DNS resolver
       # intermittently fails to resolve external hosts (e.g. Supabase Storage)
@@ -101,6 +117,48 @@ services:
     # adds its own shared-memory usage -- bumped to 4gb to cover testing at
     # MAX_CONCURRENT_MEETINGS=2. Scale further (or add per-container memory
     # limits) before raising the cap past that.
+    shm_size: '4gb'
+    depends_on:
+      - backend
+    networks:
+      - meeting-net
+
+  meeting-bot-2:
+    # The second recorder (docs/scaling-plan.md Phase C3). Same image, same
+    # code - "a second bot" is a second container, not a second build.
+    #
+    # It shares auth.json and zoom-auth.json with meeting-bot on purpose. C4
+    # is what gives each host its own Google/Zoom identity; until then two
+    # bots on one login is the expected state, not a bug to design around, and
+    # building credential separation here would be building C4 early. Two
+    # simultaneous real recordings will fight over that one identity - that is
+    # the limitation C4 exists to remove, and C3 is testable without it
+    # because dispatch, placement and stop routing do not touch auth.
+    build:
+      context: ./meeting-bot
+      dockerfile: Dockerfile
+    ports:
+      # 3001 on the host; still 3000 inside, which is what BOT_HOSTS uses.
+      - "3001:3000"
+    env_file:
+      - ./meeting-bot/.env
+    environment:
+      # Both recorders at 1 is what makes the C3 gate legible: two meetings
+      # dispatched at once *must* land on different hosts, because neither
+      # host can take both.
+      MAX_CONCURRENT_MEETINGS: "1"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    volumes:
+      # Its own recordings directory, unlike the auth files. A recording kept
+      # after a failed upload lives on the host that made it, and POST
+      # /reupload finds it by id on local disk - sharing one directory would
+      # let the wrong host answer for a file, which is exactly the confusion
+      # bot_host_id exists to remove.
+      - ./meeting-bot/recordings-2:/app/recordings
+      - ./meeting-bot/auth.json:/app/auth.json
+      - ./meeting-bot/zoom-auth.json:/app/zoom-auth.json
     shm_size: '4gb'
     depends_on:
       - backend

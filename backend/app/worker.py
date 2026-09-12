@@ -1,6 +1,7 @@
 """
-arq worker entrypoint for the transcription queue (docs/scaling-plan.md, Phase A3)
-and the bot-join dispatch queue (Phase C2).
+arq worker entrypoint for the transcription queue (docs/scaling-plan.md, Phase
+A3), the bot-join dispatch queue (Phase C2) and the bot pool's heartbeat loop
+(Phase C3).
 
 Run it with the same image as the API, just a different command:
 
@@ -16,6 +17,7 @@ eliminate them, and a job that is never picked up at all is invisible to arq.
 """
 import asyncio
 import logging
+from contextlib import suppress
 from datetime import timedelta
 
 from arq.connections import RedisSettings
@@ -26,6 +28,7 @@ from app.services.bot_dispatch import (
     dispatch_queued_meeting,
     record_dispatch_exhausted,
 )
+from app.services import bot_registry
 from app.services.bot_service import DISPATCH_JOB, _enqueue_dispatch
 from app.services.transcription_service import (
     record_terminal_failure,
@@ -135,6 +138,8 @@ async def dispatch_bot_join_job(ctx, meeting_id: str, attempt: int = 1):
     if not result.should_retry:
         # Dispatched, or dropped because the meeting was deleted, stopped or
         # swept while it waited. Either way this job is finished.
+        if result.host_id:
+            logger.info("[worker] meeting %s placed on recorder %s", meeting_id, result.host_id)
         return result.outcome
 
     if attempt >= settings.bot_dispatch_max_attempts:
@@ -171,6 +176,45 @@ async def _requeue(ctx, meeting_id: str, attempt: int):
     return await redis.enqueue_job(DISPATCH_JOB, meeting_id, attempt, _defer_by=defer)
 
 
+async def _heartbeat_loop():
+    """
+    Phase C3: keeps the "which recorders are alive, and how loaded" cache warm.
+
+    One loop, in the worker, for the whole pool - not a poll from each
+    dispatch attempt. With N hosts and a queue of meetings each retrying every
+    30 seconds, live calls are O(queued x hosts) requests to answer a question
+    whose answer changes about as often as a meeting starts; this is O(hosts)
+    per interval regardless of how long the queue is.
+
+    It lives here rather than in the API process because the dispatcher lives
+    here: a worker that is down cannot dispatch anything, so a cache going
+    stale alongside it costs nothing, and running the loop in both processes
+    would double the polling to no benefit.
+
+    An empty cache is not "all hosts are down forever" - it is "nothing has
+    been polled yet", and one interval later it is full again. That is what
+    makes a Redis restart a few seconds of waiting rather than a stuck queue.
+    """
+    interval = settings.bot_heartbeat_interval_seconds
+    while True:
+        try:
+            # Synchronous (httpx + a sync Redis client), so off the loop
+            # thread, the same treatment dispatch_queued_meeting gets.
+            beats = await asyncio.to_thread(bot_registry.poll_once)
+            logger.debug(
+                "[heartbeat] %s of %s recorder(s) answered",
+                len(beats), len(bot_registry.configured_hosts()),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Never let a bad cycle end the loop: the cache going permanently
+            # cold would stop every dispatch in the pool, and a transient
+            # Redis blip must not do that.
+            logger.exception("[heartbeat] poll cycle failed - will retry next interval")
+        await asyncio.sleep(interval)
+
+
 async def startup(ctx):
     """
     Re-assert the logging config once arq has applied its own.
@@ -190,10 +234,34 @@ async def startup(ctx):
         settings.environment,
     )
 
+    if settings.bot_heartbeat_enabled:
+        hosts = bot_registry.configured_hosts()
+        # Poll once before the loop so the first dispatch job does not have to
+        # wait out an interval against an empty cache - which is exactly what
+        # a cold start and a Redis restart both look like.
+        await asyncio.to_thread(bot_registry.poll_once, hosts)
+        ctx["heartbeat_task"] = asyncio.create_task(_heartbeat_loop())
+        logger.info(
+            "[worker] polling %s recorder(s) every %ss: %s",
+            len(hosts), settings.bot_heartbeat_interval_seconds,
+            ", ".join(f"{h.id} -> {h.url}" for h in hosts),
+        )
+
+
+async def shutdown(ctx):
+    """Stops the heartbeat loop with the worker, rather than on the way out."""
+    task = ctx.get("heartbeat_task")
+    if task is None:
+        return
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
 
 class WorkerSettings:
     functions = [transcribe_job, dispatch_bot_join_job]
     on_startup = startup
+    on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     # Matches the ThreadPoolExecutor's max_workers=4, so the cutover does not
     # change how much concurrent load reaches Gemini.

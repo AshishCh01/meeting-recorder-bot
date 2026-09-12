@@ -22,7 +22,7 @@ from sqlalchemy import update
 from app.config import settings
 from app.db.database import SessionLocal
 from app.db.models import Meeting, User
-from app.services import bot_service
+from app.services import bot_registry, bot_service
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,10 @@ class DispatchResult:
     """
     outcome: str          # "dispatched" | "dropped" | "waiting"
     reason: str = ""
+    # Which recorder took it, on a "dispatched" outcome (Phase C3). Carried
+    # back for the worker's log line and for tests to assert placement on;
+    # the durable record is meetings.bot_host_id, written in the claim.
+    host_id: str | None = None
 
     @property
     def should_retry(self) -> bool:
@@ -86,26 +90,26 @@ def dispatch_queued_meeting(meeting_id: str) -> DispatchResult:
         db_user = db.query(User).filter(User.id == meeting.user_id).first()
         bot_display_name = db_user.bot_display_name if db_user else None
 
-        # An unreachable bot is a reason to wait, not a reason to fail the
-        # meeting: the container may be restarting, and a recording that
-        # starts two minutes late is still a recording. If it never comes
-        # back, the attempt cap turns that into a failure naming this error.
+        # Phase C3: which recorder, out of however many are configured. The
+        # answer comes from the heartbeat cache bot_registry's poll loop keeps
+        # in Redis, not from calling every host live - see claim_host, which
+        # also takes a slot on the host it returns.
+        #
+        # No live host is a reason to wait, not a reason to fail the meeting:
+        # a container may be restarting, and a recording that starts two
+        # minutes late is still a recording. If none ever comes back, the
+        # attempt cap turns that into a failure naming this reason.
         try:
-            capacity = bot_service.get_bot_capacity()
+            choice = bot_registry.claim_host()
         except Exception as e:
-            logger.warning("[dispatch] could not read bot capacity for meeting %s: %s", meeting_id, e)
-            return DispatchResult("waiting", f"the recorder could not be reached ({e})")
+            logger.warning("[dispatch] could not read the recorder pool for meeting %s: %s", meeting_id, e)
+            return DispatchResult("waiting", f"the recorder pool could not be read ({e})")
 
-        available = capacity.get("available", 0)
-        if not available or available <= 0:
-            logger.info(
-                "[dispatch] meeting %s still waiting - recorder at %s/%s",
-                meeting_id, capacity.get("active"), capacity.get("max"),
-            )
-            return DispatchResult(
-                "waiting",
-                f"the recorder was busy ({capacity.get('active')}/{capacity.get('max')} in use)",
-            )
+        if choice.host is None:
+            logger.info("[dispatch] meeting %s still waiting - %s", meeting_id, choice.reason)
+            return DispatchResult("waiting", choice.reason)
+
+        host = choice.host
 
         # Claim before posting, not after. Two dispatch jobs can reach this
         # line for the same meeting (a duplicate enqueue, or two workers), and
@@ -117,32 +121,39 @@ def dispatch_queued_meeting(meeting_id: str) -> DispatchResult:
         # leaves the meeting in "joining" with no bot. That is bounded and
         # familiar: watchdog_joining_ttl_minutes sweeps it in 10 minutes,
         # which is exactly what a failed synchronous join did before C2.
+        #
+        # The chosen host goes in the *same* UPDATE as the status (Phase C3),
+        # so there is no window in which a meeting is "joining" with no
+        # recorder recorded against it - which is precisely the state
+        # stop_meeting and delete_meeting cannot act on.
         claimed = db.execute(
             update(Meeting)
             .where(Meeting.id == meeting_id, Meeting.status == QUEUED)
-            .values(status="joining", error_message=None)
+            .values(status="joining", bot_host_id=host.id, error_message=None)
         )
         db.commit()
         if claimed.rowcount != 1:
             logger.info("[dispatch] meeting %s was claimed by someone else - dropping job", meeting_id)
+            bot_registry.release_host(host.id)
             return DROPPED
 
         try:
-            bot_service.post_join(platform, meeting_url, meeting_id, user_id, bot_display_name)
+            bot_service.post_join(host, platform, meeting_url, meeting_id, user_id, bot_display_name)
         except Exception as e:
-            # The 409 case is the one that matters: /capacity said there was
+            # The 409 case is the one that matters: the cache said there was
             # room and the bot disagreed. It is not a lock, and the bot's
             # admission rule is the authority - so this is a re-queue, not a
             # failure. Anything else (a timeout, a 500) is treated the same
             # way, because the meeting has not started and waiting is still
             # strictly better than failing.
             _return_to_queue(db, meeting_id)
-            reason = _describe(e)
+            bot_registry.release_host(host.id)
+            reason = _describe(e, host.id)
             logger.warning("[dispatch] join for meeting %s did not take (%s) - re-queued", meeting_id, reason)
             return DispatchResult("waiting", reason)
 
-        logger.info("[dispatch] meeting %s dispatched to the recorder", meeting_id)
-        return DispatchResult("dispatched")
+        logger.info("[dispatch] meeting %s dispatched to recorder %s", meeting_id, host.id)
+        return DispatchResult("dispatched", host_id=host.id)
     finally:
         db.close()
 
@@ -220,22 +231,26 @@ def _return_to_queue(db, meeting_id: str) -> None:
     try again. Guarded on "joining" so a webhook that has already moved the
     meeting on (the bot did accept it, and said so before we saw the error)
     is not dragged backwards into the queue.
+
+    Clears bot_host_id with it (Phase C3): the next attempt re-picks from the
+    pool, and a queued meeting still carrying the host that just refused it
+    would be a lie in the one column stop/delete trust.
     """
     db.execute(
         update(Meeting)
         .where(Meeting.id == meeting_id, Meeting.status == "joining")
-        .values(status=QUEUED)
+        .values(status=QUEUED, bot_host_id=None)
     )
     db.commit()
 
 
-def _describe(exc: Exception) -> str:
-    """A reason string worth putting in front of a user."""
+def _describe(exc: Exception, host_id: str) -> str:
+    """A reason string worth putting in front of a user, naming the host."""
     if isinstance(exc, httpx.HTTPStatusError):
         if exc.response.status_code == 409:
-            return "the recorder was already full when the join was posted"
-        return f"the recorder rejected the join (HTTP {exc.response.status_code})"
-    return f"the recorder could not be reached ({exc})"
+            return f"recorder {host_id} was already full when the join was posted"
+        return f"recorder {host_id} rejected the join (HTTP {exc.response.status_code})"
+    return f"recorder {host_id} could not be reached ({exc})"
 
 
 def _wait_window_description() -> str:

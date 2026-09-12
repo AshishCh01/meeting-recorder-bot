@@ -8,6 +8,7 @@ from app.models.meeting import MeetingCreate
 from app.services.platform_detector import detect_platform
 from app.services.bot_service import initial_status, trigger_bot_join, stop_bot
 from app.services.bot_dispatch import cancel_queued_meeting
+from app.services import bot_registry
 import httpx
 from app.services.storage_service import get_signed_recording_url
 from app.services.transcription_service import submit_transcription
@@ -16,6 +17,29 @@ from app.config import settings
 from app.services.pdf_service import generate_meeting_pdf
 
 router = APIRouter(prefix="/meetings", tags=["meetings"])
+
+
+def _recorder_for(meeting: Meeting) -> bot_registry.BotHost:
+    """
+    Which recorder in the pool holds this meeting's session (Phase C3).
+
+    Every route that talks to a bot about an existing meeting goes through
+    here, because with more than one host "the bot" is no longer a thing:
+    asking the wrong one 404s on a session it never had while the real
+    recording carries on, and re-upload would look for a file that is on
+    another machine's disk.
+
+    A meeting with no recorded host is not automatically an error -
+    require_host resolves NULL to the sole configured host, which covers every
+    meeting from before C3 and every single-host install. It raises only where
+    the answer is genuinely unknowable, and that becomes a 409 naming the
+    reason rather than a 500 with a traceback. "queued" never reaches here at
+    all: it has no session, and stop_meeting cancels it before this point.
+    """
+    try:
+        return bot_registry.require_host(meeting.bot_host_id)
+    except bot_registry.UnknownBotHost as e:
+        raise HTTPException(409, f"Cannot reach the recorder for this meeting: {e}")
 
 def meeting_to_dict(m: Meeting):
     return {
@@ -177,7 +201,16 @@ def _reupload_from_bot(db: Session, meeting: Meeting):
 
     Lives here rather than in bot_service.py only to keep this fix to the
     files it had to touch.
+
+    Phase C3: a kept recording is on the disk of the host that recorded it and
+    nowhere else, so this asks that host - meeting.bot_host_id - rather than a
+    single configured URL. On a pool of one that resolves to the same bot it
+    always did.
     """
+    # Before the claim: if the host cannot be resolved there is nothing to ask
+    # and no reason to move the meeting out of "transcribing" first.
+    host = _recorder_for(meeting)
+
     result = db.execute(
         update(Meeting)
         .where(Meeting.id == meeting.id, Meeting.status == "transcribing")
@@ -202,7 +235,7 @@ def _reupload_from_bot(db: Session, meeting: Meeting):
 
     try:
         response = httpx.post(
-            f"{settings.meeting_bot_url}/reupload",
+            f"{host.url}/reupload",
             json={"meetingId": str(meeting.id), "userId": str(meeting.user_id)},
             headers={"Authorization": f"Bearer {settings.meeting_bot_bearer_token}"},
             timeout=10,
@@ -252,8 +285,12 @@ def stop_meeting(
     if meeting.status not in ("joining", "waiting_for_admission", "recording"):
         raise HTTPException(409, "Meeting is not currently active - nothing to stop.")
 
+    # Resolved before the call, and from the meeting's own column - the old
+    # single MEETING_BOT_URL would now be a guess between hosts.
+    host = _recorder_for(meeting)
+
     try:
-        stop_bot(str(meeting_id))
+        stop_bot(host, str(meeting_id))
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
             raise HTTPException(409, "Bot has no active session for this meeting - it may have just finished on its own.")
@@ -279,7 +316,12 @@ def delete_meeting(
 
     if meeting.status in ("joining", "waiting_for_admission", "recording"):
         try:
-            stop_bot(str(meeting_id))
+            # Phase C3: the meeting's own recorder, not "the" recorder. An
+            # unresolvable host raises HTTPException from _recorder_for, which
+            # is caught here with everything else - a delete must not be
+            # blocked by not knowing which bot to tell, it just cannot stop
+            # what it cannot find.
+            stop_bot(_recorder_for(meeting), str(meeting_id))
         except Exception as e:
             # Not fatal - the bot may have already finished on its own between
             # the status check above and this call. Deletion proceeds either

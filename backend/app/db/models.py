@@ -45,6 +45,19 @@ class Meeting(Base):
     # created meetings. (user_id, calendar_event_id) is unique where
     # not null - see e9c2b6a4f1d8_add_calendar_fields_to_meetings.py.
     calendar_event_id = Column(String, nullable=True)
+    # Which recorder in the pool this meeting was dispatched to (Phase C3) -
+    # the id of a BOT_HOSTS entry, not a URL, so moving a host to a new
+    # address does not orphan its in-flight meetings. Written by
+    # bot_dispatch's queued -> joining claim, in the same UPDATE, and read by
+    # stop/delete/re-upload to reach the right bot.
+    #
+    # Nullable, and three different things make it null: every meeting from
+    # before C3, every meeting still "queued" (no recorder has been chosen
+    # yet), and every meeting joined on the synchronous
+    # BOT_DISPATCH_USE_QUEUE=false path. bot_registry.require_host resolves
+    # null to the sole configured host when there is exactly one, and refuses
+    # when there is a choice to get wrong.
+    bot_host_id = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     # Bumped automatically (including on Core-style bulk updates - see
     # webhooks.py/meetings.py) on every write. The watchdog sweep uses
