@@ -23,8 +23,8 @@ cap at all, and a single script on a public box could run up an unbounded bill
 against your API keys. Chat and meeting creation are now capped per user
 against A3's Redis, with an atomic counter and a deliberate **fail-open** on a
 Redis outage — see [B1](#b1--per-user-rate-limiting--done) for that decision
-and what it costs. B2–B5 (CI, broader coverage, structured logging, cost as a
-metric) remain deferred; none of them block a deploy.
+and what it costs. B2–B5 (CI, broader coverage, cost as a metric, structured
+logging) remain deferred; none of them block a deploy.
 
 Between A5 and C3, a batch of hardening landed that this plan treats as
 prerequisites rather than phases of their own — found by testing the phases
@@ -71,7 +71,7 @@ draft was numbered as steps 1–7; those numbers still appear in conversation, s
 | ~~**A4**~~ | ~~Sentry~~ — **done, `69e595a`** | None | Removing the DSN |
 | ~~**A5**~~ | ~~JWTs verified locally~~ — **done, `588ceb9`** | High | Fallback wrapper, then revert |
 | **B1** | Per-user rate limiting on chat and meeting creation — **done** | Low | `RATE_LIMIT_ENABLED=false` |
-| **B2–B5** | CI, broader tests, structured logging, cost as a metric | — | Deferred by decision |
+| **B2–B5** | CI, broader tests, cost as a metric, structured logging | — | Deferred by decision |
 | ~~**C**~~ | ~~Bot pool — the recording tier~~ — **done, C1–C5** | High | Per sub-step |
 
 **The rule for every phase:** independently deployable, independently revertable,
@@ -738,8 +738,9 @@ time**, because the retry `logger.warning` and the "gave up after N attempts"
 (The related symptom in local dev — `print()` output buffered away because
 `Dockerfile.dev` lacked `PYTHONUNBUFFERED` — was fixed in `1c00428`.)
 
-Deliberately *not* done here, both moved to Phase B (B4 and B5): converting the 45 `print()`
-calls in `backend/app` to `logger.*`, and turning `log_cost` into a real metric.
+Deliberately *not* done here, both moved to Phase B: turning `log_cost` into a
+real metric (B4), and converting the 45 `print()` calls in `backend/app` to
+`logger.*` (B5).
 The `print()` calls already emit and are already visible in `docker compose
 logs` — a bulk rewrite touching every service file is a large diff that de-risks
 nothing about A5, which is the only reason this phase exists. `configure_logging`
@@ -1292,8 +1293,8 @@ one item that blocked the deploy was done on its own.
 | **B1** | Per-user rate limiting on chat and meeting creation | **done** — below |
 | **B2** | CI: run both suites automatically | Deferred. The highest-value item left. |
 | **B3** | Broaden test coverage — the status machine, webhook idempotency, the AI fallback ladders | Deferred |
-| **B4** | The remaining 45 `print()` calls → `logger.*` with structured fields | Deferred |
-| **B5** | `log_cost` → a real metric rather than a debug line | Deferred |
+| **B4** | `log_cost` → a real metric rather than a debug line | Deferred |
+| **B5** | The remaining `print()` calls → `logger.*` with structured fields | Deferred |
 
 ---
 
@@ -1663,9 +1664,24 @@ in `os.environ`.
     `SUPABASE_URL`, and crashed at import without it. They now set the same
     placeholders the upload tests already did.
 
-## B4 — `print()` → `logger.*`
+## B4 — `log_cost` as a real metric
 
-Convert the 45 `print()` calls in `backend/app` to `logger.*`, with
+Per-user AI spend is a business number, not a debug line. B1 gives this a
+second reason to exist: the rate limit defaults above were sized from an
+*estimated* per-turn cost, and nothing currently measures the real one. A
+metric would let the caps be set from data rather than from arithmetic.
+
+**Why this comes before B5, not after.** `cost_tracker.log_cost` ends in a
+`print()` ([cost_tracker.py:28](../backend/app/services/cost_tracker.py#L28)),
+so it is *one of the 45 calls B5 sweeps*. Running the sweep first would convert
+that line to `logger.*` and then immediately rewrite the same function into a
+metric — one file touched twice, the first pass discarded. Doing B4 first
+retires that `print()` as part of the work that replaces it, and B5 inherits a
+smaller sweep.
+
+## B5 — `print()` → `logger.*`
+
+Convert the remaining `print()` calls in `backend/app` to `logger.*`, with
 `meeting_id` and `user_id` as structured fields rather than interpolated into
 the message. This was originally listed under A4 and moved here on the A4
 deploy: the calls already emit (`PYTHONUNBUFFERED` is set in both Dockerfiles)
@@ -1675,12 +1691,10 @@ and are already visible in `docker compose logs`, so the rewrite buys log
 de-risking the A5 deploy wanted to ship. A4 left root logging on stdout so the
 two styles interleave in order in the meantime.
 
-## B5 — `log_cost` as a real metric
-
-Per-user AI spend is a business number, not a debug line. B1 gives this a
-second reason to exist: the rate limit defaults above were sized from an
-*estimated* per-turn cost, and nothing currently measures the real one. A
-metric would let the caps be set from data rather than from arithmetic.
+**Last in Phase B deliberately.** It is the widest and most mechanical diff in
+the plan and the one that reduces risk least, so it lands when the safety net is
+strongest: B3's broadened coverage, run automatically by B2's CI. The count is
+"the remaining" rather than 45 because B4 retires `cost_tracker`'s.
 
 ## What deferring the rest costs you
 
