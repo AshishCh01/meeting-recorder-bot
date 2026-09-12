@@ -7,9 +7,25 @@ blocked on infrastructure, not on code. A5 was the highest-risk phase in this
 document and was verified against a real token, real forged tokens, and a
 real host-side benchmark. **Phase C is underway: C1 (`GET /capacity`) and C2
 (dispatch behind a queue) have shipped, so a meeting requested while the
-recorder is busy now waits instead of being lost. C3-C5 are the multi-host
-step and should wait until concurrent recordings are demonstrably the binding
-constraint** (Phase B stays deferred by decision). One thing A5's own benchmark surfaced and left open: a Supabase
+recorder is busy now waits instead of being lost.**
+
+Between A5 and C3, a batch of hardening landed that this plan treats as
+prerequisites rather than phases of their own — found by testing the phases
+above, not planned in advance: the connection-pool budget (`101a114`), chat
+no longer holding a connection during the model's answer (`79551d0`), the
+same fix applied to `search_transcript`/`_ensure_user_row`/`get_meeting`
+(`0460fac`, `c5f2c84`, `d505d46`), both test suites made independent of the
+developer's real `.env` (`a2a80f9`, `d424ea9`), and two dead npm dependencies
+removed (`c9c3718`). Each is written up in place, next to the phase whose
+testing found it.
+
+**Decision (2026-09-12): proceed straight to C3, C4 and C5** rather than wait
+for concurrent recordings to demonstrably bottleneck, which is what this plan
+originally recommended (see "C1 and C2 are worth shipping on their own",
+below) — the user wants every phase implemented before the first full-stack
+deploy and end-to-end test pass, not before this specific limit is hit in
+production. HTTPS, CI, and the low-traffic audit routes are deliberately
+deferred until after C5, for the same reason. One thing A5's own benchmark surfaced and left open: a Supabase
 connection-pool limit that isn't sized for concurrent load - see the end of
 the A5 section.
 Deployment target: single AWS EC2 instance — see `docs/aws-ec2-deploy.md`.
@@ -1533,6 +1549,18 @@ enqueues a join request instead of posting synchronously; a dispatcher assigns
 queued meetings to bots with free capacity. This turns "meeting lost" into
 "meeting waits."~~ **done** — see below.
 
+> **Resolved (2026-09-12): Option A, a credential pool** — a separate
+> Google/Zoom account provisioned per bot host, each with its own
+> `auth.json`/`zoom-auth.json`, permanently assigned. No shared login state
+> and no locking to build; `AuthKeepAlive` already keeps one identity alive
+> per bot, so this is more of the same per host rather than a new mechanism.
+> Chosen over shared storage with locking because it isolates failures — one
+> host's login trouble can't affect another's — and it's the option this
+> plan can actually verify without multiple accounts to test locking against.
+> Cost accepted: N accounts to create and keep session-alive instead of one.
+> This is what C3's registry now has to model — one identity per host, not a
+> pool shared across hosts.
+
 **C3. Bot registry.** Bots register themselves (host, capacity, heartbeat) in
 Postgres or Redis on boot; the dispatcher picks a host with free capacity and
 records the assignment. `stop_bot` looks up the assigned host rather than
@@ -1545,9 +1573,9 @@ Each bot host needs its own Google/Zoom identity — a shared `auth.json` across
 hosts means concurrent sessions fighting over one credential, and
 `BrowserManager`'s `storageStateWriteQueues`
 ([BrowserManager.js:73-80](../meeting-bot/src/core/BrowserManager.js#L73-L80))
-only serialises writes *within* a process. Options: a credential per host from a
-pool, or moving auth state into shared storage with proper locking. **Decide this
-before C3** — it constrains how hosts are provisioned.
+only serialises writes *within* a process. **Decided: a credential per host
+from a pool** (not shared storage with locking) — see the resolved note above
+C3's Design.
 
 **C5. Remove the single-session fallback.** `/stop` without a `meetingId`
 resolves to "the only active meeting"
@@ -1685,6 +1713,14 @@ busy" becomes "meeting waits" — **on your existing single host, with no
 multi-host work.** C3–C5 are the actual horizontal step and should wait until
 concurrent recordings are demonstrably the binding constraint.
 
+**Overridden by the 2026-09-12 decision above:** shipped anyway, ahead of that
+signal, because the plan is being finished end-to-end before the first
+deploy rather than triggered by production load. The risk this recommendation
+was guarding against doesn't disappear — C3-C5 add real complexity (a
+registry, per-host credentials) that a single-host deployment doesn't
+exercise, so it will be tested against a bot pool of size one until real
+multi-host traffic arrives.
+
 ## Gate
 
 - A meeting requested while the bot is full is queued and joins when capacity
@@ -1740,8 +1776,8 @@ A3 is the hinge: it introduces the broker that Phase B and C2 both build on.
 1. **Which Supabase JWT signing scheme is this project on?** Determines A5's
    implementation entirely. Worth answering now even though A5 is last.
 2. ~~`arq` or Celery for A3?~~ **Settled: `arq`.** See Phase A3's Design.
-3. **Per-host bot auth (C4):** credential pool, or shared state with locking?
-   Constrains provisioning, so decide before C3.
+3. ~~Per-host bot auth (C4): credential pool, or shared state with locking?~~
+   **Settled: credential pool.** See the resolved note above C3's Design.
 4. **Is session revocation latency acceptable in A5?** Local verification means a
    signed-out token stays valid until expiry.
 
