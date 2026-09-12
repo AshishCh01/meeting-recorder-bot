@@ -31,7 +31,6 @@ test('available is floored at 0 when active exceeds max', () => {
 });
 
 test('a bot configured to take nothing is never available', () => {
-  assert.equal(1, 2); // TEMP gate 3: deliberately wrong
   assert.equal(computeCapacity(0, 0).available, 0);
 });
 
