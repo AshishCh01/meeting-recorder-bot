@@ -1,10 +1,18 @@
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from typing import TYPE_CHECKING
 
 import httpx
 
 from app.config import settings
+
+if TYPE_CHECKING:
+    # Type-only. bot_registry imports this module (its poll loop calls
+    # get_bot_capacity), so a real import here would be a cycle - and there is
+    # nothing to import at runtime anyway: every function below needs only a
+    # host's `.url`.
+    from app.services.bot_registry import BotHost
 
 logger = logging.getLogger(__name__)
 
@@ -73,15 +81,40 @@ def trigger_bot_join(platform: str, meeting_url: str, meeting_id: str, user_id: 
         logger.info("[dispatch] meeting %s queued for a recorder as job %s", meeting_id, job_id)
         return {"status": "queued", "meetingId": meeting_id, "jobId": job_id}
 
-    return post_join(platform, meeting_url, meeting_id, user_id, bot_display_name)
+    # Phase C3: the synchronous path has no dispatcher to pick a host for it
+    # and no session to record one with, so it takes the first configured
+    # host. On a single-host install - which is every install that still has
+    # this flag off - that is the same bot MEETING_BOT_URL always named, and
+    # require_host(None) resolves stop/delete back to it. Running the queue
+    # off *and* more than one host configured is a misconfiguration: only the
+    # first host would ever be used, and the warning below says so.
+    from app.services import bot_registry
+
+    hosts = bot_registry.configured_hosts()
+    if len(hosts) > 1:
+        logger.warning(
+            "[dispatch] %s recorders are configured but BOT_DISPATCH_USE_QUEUE is off - "
+            "only %s will be used. Turn the queue on to use the pool.",
+            len(hosts), hosts[0].id,
+        )
+    return post_join(hosts[0], platform, meeting_url, meeting_id, user_id, bot_display_name)
 
 
-def post_join(platform: str, meeting_url: str, meeting_id: str, user_id: str, bot_display_name: str) -> dict:
+def post_join(
+    host: "BotHost", platform: str, meeting_url: str, meeting_id: str,
+    user_id: str, bot_display_name: str,
+) -> dict:
     """
-    The actual HTTP call to meeting-bot, unchanged from the pre-C2
-    trigger_bot_join. Both sides of the cutover end here - the synchronous
-    path calls it inline, the queued path calls it from the worker once
-    capacity exists - so there is exactly one definition of "join a meeting".
+    The actual HTTP call to meeting-bot. Both sides of the cutover end here -
+    the synchronous path calls it inline, the queued path calls it from the
+    worker once capacity exists - so there is exactly one definition of
+    "join a meeting".
+
+    Phase C3 made `host` the first argument rather than reading
+    settings.meeting_bot_url: which recorder to ask is now a decision made by
+    the caller (the dispatcher, against the heartbeat cache), and burying a
+    default here would let a caller that forgot to make that decision silently
+    send every meeting to one host.
 
     Raises httpx.HTTPStatusError on a non-2xx; a 409 specifically means the
     bot is at capacity or already has this meeting.
@@ -91,7 +124,7 @@ def post_join(platform: str, meeting_url: str, meeting_id: str, user_id: str, bo
         raise ValueError(f"No meeting-bot endpoint for platform: {platform!r}")
 
     response = httpx.post(
-        f"{settings.meeting_bot_url}{endpoint}",
+        f"{host.url}{endpoint}",
         json={
             "url": meeting_url,
             "meetingId": meeting_id,
@@ -107,22 +140,28 @@ def post_join(platform: str, meeting_url: str, meeting_id: str, user_id: str, bo
     return response.json()
 
 
-def get_bot_capacity() -> dict:
+def get_bot_capacity(host: "BotHost") -> dict:
     """
-    Asks the bot how loaded it is - GET /capacity, shipped in Phase C1.
+    Asks one bot how loaded it is - GET /capacity, shipped in Phase C1.
 
     Returns the bot's payload: {"active", "max", "available", "meetingIds"}.
-    Raises on transport failure or a non-2xx, which the dispatcher treats as
-    "no capacity right now" rather than as a failure of the meeting.
+    Raises on transport failure or a non-2xx.
 
-    This is an optimisation, never a lock. The check and the join are not
-    atomic, so two dispatch jobs can both read available: 1 and both post -
-    the bot's own 409 is the authority, and the dispatcher is written to
-    expect it. C1 made /capacity and the bot's admission rule share one
-    expression, so the number here is honest; it is just not exclusive.
+    Phase C3 moved the only caller: the dispatcher no longer calls this at
+    all. bot_registry's poll loop does, once per host per
+    bot_heartbeat_interval_seconds, and the dispatcher reads the cache that
+    fills. With N hosts and a queue of meetings each retrying every 30
+    seconds, calling this on every dispatch attempt is O(queued x hosts)
+    requests; polling is O(hosts).
+
+    This is an optimisation, never a lock. The reading and the join are not
+    atomic, so two dispatch jobs can both see room on the same host - the
+    bot's own 409 is the authority, and the dispatcher is written to expect
+    it. C1 made /capacity and the bot's admission rule share one expression,
+    so the number here is honest; it is just not exclusive.
     """
     response = httpx.get(
-        f"{settings.meeting_bot_url}/capacity",
+        f"{host.url}/capacity",
         headers={
             "Authorization": f"Bearer {settings.meeting_bot_bearer_token}"
         },
@@ -132,19 +171,25 @@ def get_bot_capacity() -> dict:
     return response.json()
 
 
-def stop_bot(meeting_id: str) -> dict:
+def stop_bot(host: "BotHost", meeting_id: str) -> dict:
     """
-    Asks meeting-bot to abandon whatever it's currently doing for
-    meeting_id (waiting for admission, or mid-recording) and shut down
-    cleanly. meeting-bot reports the resulting "failed" status back via
-    its usual webhook, same as any other in-flight failure.
+    Asks one recorder to abandon whatever it's currently doing for meeting_id
+    (waiting for admission, or mid-recording) and shut down cleanly. It
+    reports the resulting "failed" status back via its usual webhook, same as
+    any other in-flight failure.
+
+    Phase C3: `host` comes from the meeting's own bot_host_id, resolved
+    through bot_registry.require_host - asking the wrong host would 404 on a
+    session it never had while the real recording carried on. Callers resolve
+    rather than guess, and an unresolvable host is a 4xx, not a call to some
+    other bot.
 
     Never called for a "queued" meeting: it has no bot session to stop,
     because no join was ever posted. POST /meetings/{id}/stop cancels those
     with bot_dispatch.cancel_queued_meeting instead.
     """
     response = httpx.post(
-        f"{settings.meeting_bot_url}/stop",
+        f"{host.url}/stop",
         json={"meetingId": meeting_id},
         headers={
             "Authorization": f"Bearer {settings.meeting_bot_bearer_token}"

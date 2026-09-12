@@ -5,9 +5,10 @@ Status: **A1** (`8dc0844`), **A3** (`d3b424d`), **A4** (`69e595a`) and **A5**
 (`588ceb9`) shipped - Phase A is functionally complete except A2, which is
 blocked on infrastructure, not on code. A5 was the highest-risk phase in this
 document and was verified against a real token, real forged tokens, and a
-real host-side benchmark. **Phase C is underway: C1 (`GET /capacity`) and C2
-(dispatch behind a queue) have shipped, so a meeting requested while the
-recorder is busy now waits instead of being lost.**
+real host-side benchmark. **Phase C is underway: C1 (`GET /capacity`), C2
+(dispatch behind a queue) and C3 (the bot registry) have shipped, so a meeting
+requested while the recorder is busy now waits instead of being lost — and
+there can now be more than one recorder for it to wait on.**
 
 Between A5 and C3, a batch of hardening landed that this plan treats as
 prerequisites rather than phases of their own — found by testing the phases
@@ -54,7 +55,7 @@ draft was numbered as steps 1–7; those numbers still appear in conversation, s
 | ~~**A4**~~ | ~~Sentry~~ — **done, `69e595a`** | None | Removing the DSN |
 | ~~**A5**~~ | ~~JWTs verified locally~~ — **done, `588ceb9`** | High | Fallback wrapper, then revert |
 | **B** | Tests, structured logging, rate limiting | — | Deferred by decision |
-| **C** | Bot pool — the recording tier — **C1, C2 done** | High | Per sub-step |
+| **C** | Bot pool — the recording tier — **C1, C2, C3 done** | High | Per sub-step |
 
 **The rule for every phase:** independently deployable, independently revertable,
 and it leaves the system in a coherent state. Never half-migrated.
@@ -75,7 +76,7 @@ UI — and may not surface for days, long enough to blame the wrong change.
 |---|---|---|
 | **frontend** | **Yes, today.** nginx serving a static bundle. | None. |
 | **backend** | Code is ready; deployment is not. | A1 done. A2 needs somewhere to put a second replica — the current target is one EC2 instance running docker-compose. |
-| **meeting-bot** | **No.** Vertical only. | In-memory registry, shared auth files, single `MEETING_BOT_URL`. Phase C. |
+| **meeting-bot** | **Horizontally, as of C3** — one identity, though. | The in-memory registry and single `MEETING_BOT_URL` are gone (C3). What is left is C4: `auth.json` is still one shared file, so two hosts recording at once share one Google/Zoom login. |
 
 Two things narrow the work, and both are worth knowing before starting:
 
@@ -1561,12 +1562,14 @@ queued meetings to bots with free capacity. This turns "meeting lost" into
 > This is what C3's registry now has to model — one identity per host, not a
 > pool shared across hosts.
 
-**C3. Bot registry.** Bots register themselves (host, capacity, heartbeat) in
+**C3. Bot registry.** ~~Bots register themselves (host, capacity, heartbeat) in
 Postgres or Redis on boot; the dispatcher picks a host with free capacity and
 records the assignment. `stop_bot` looks up the assigned host rather than
 assuming one URL. A missed heartbeat means the host is dead and its in-flight
 meetings get swept — the existing watchdog TTLs already handle the meeting-side
-cleanup.
+cleanup.~~ **done** — see below. Shipped *pull*-based rather than
+self-registering, which is the one thing the text above got wrong; the rest of
+it, including the claim about the watchdog, is what shipped.
 
 **C4. Per-host auth identity.** The hard part, and the reason this is a redesign.
 Each bot host needs its own Google/Zoom identity — a shared `auth.json` across
@@ -1706,6 +1709,164 @@ fallback. The code already anticipates this.
 > stops the bot instead of overwriting the claim, and meetings with nothing to
 > stop still 409.
 
+## C3 — The bot registry ✅ done
+
+> **Shipped** in `backend/` plus a second `meeting-bot` service in
+> `docker-compose.yml`. **`meeting-bot/src/` is untouched** — see the first
+> decision below. **Risk:** high; this is the redesign the phase was budgeted
+> as. **Revert:** unset `BOT_HOSTS` and recreate. The pool becomes a pool of
+> one built from `MEETING_BOT_URL`, `require_host` resolves every meeting's
+> `bot_host_id` (including `null`) back to it, and the behaviour is C2's
+> exactly. No rebuild, no code change, and the new column can stay — it is
+> nullable and nothing requires it to be set.
+>
+> **Two decisions departed from the design text above, both deliberate.**
+>
+> - **Hosts are an operator-maintained list; bots do not self-register.** The
+>   text said they would. C4 already commits to creating a Google/Zoom account
+>   and provisioning a machine by hand for every host — that is deliberate
+>   human work, not autoscaling, so the host list is *already* human-maintained
+>   and `BOT_HOSTS` just writes it down. The payoff is that **`meeting-bot`
+>   needed no new code, no `REDIS_URL` and no new outbound credential** to join
+>   a pool: the backend pulls `GET /capacity`, which C1 already shipped. A
+>   push-based registry would have meant a second service writing to the
+>   broker, a credential for it, and a boot-order dependency, to learn the same
+>   number.
+> - **Two lifetimes, two stores.** "Which hosts are alive and how loaded" is
+>   ephemeral and refreshes every few seconds, so it is **Redis** — a poll loop
+>   in the existing arq worker writes `{host_id, active, max, available,
+>   last_seen}` per host, and a host not refreshed inside
+>   `BOT_HEARTBEAT_TTL_SECONDS` is treated as dead. "Which host this meeting
+>   went to" has to outlive that cache and survive a Redis restart, because
+>   stop/delete need it for as long as the row exists, so it is **a column**:
+>   `meetings.bot_host_id`, nullable, migration `f4a7c2e9b1d6`.
+>
+> Seven things worth knowing:
+>
+> - **The dispatcher reads the cache; it does not call the hosts.** With N
+>   hosts and a queue of meetings each retrying every 30 seconds, live-calling
+>   every host on every attempt is O(queued × hosts) requests to answer a
+>   question whose answer changes about as often as a meeting starts. Polling
+>   is O(hosts) per interval regardless of queue depth. Visible in the dead-host
+>   run below: one "did not answer" line per 5-second poll, not one per
+>   dispatch attempt.
+> - **The host is written in the same UPDATE as the `queued → joining`
+>   claim.** One statement, so there is no window in which a meeting is
+>   `joining` with no host recorded — which is precisely the state stop and
+>   delete cannot act on. A test peeks at the row from another connection at
+>   the moment the join is posted to pin it.
+> - **A reservation, not a lock.** C2's caveat stands: the cache and the bot's
+>   admission rule are not read atomically, and the bot's 409 is still the
+>   authority. What C3 adds is an atomic `INCR` per host so two dispatches
+>   arriving together do not both pile onto host A while B sits idle — without
+>   it the loser waits a full 30-second retry for a recorder that was free the
+>   whole time. Reservations expire rather than being released on success: a
+>   bot registers a session before it answers 202, so one poll later the real
+>   `available` already reflects the join.
+> - **A failed poll writes nothing at all.** It does not refresh `last_seen`
+>   with an `available: 0` entry, because that would make a dead host
+>   indistinguishable from a live idle one at a glance. A dead host's timestamp
+>   simply freezes, which is what makes "last heard from bot-b 94s ago" a
+>   diagnosis. Entries are retained several TTLs past death so that stays
+>   readable, rather than expiring into a missing key.
+> - **`null` fails *open* on one host and *closed* on several.** Three things
+>   legitimately have no host: every meeting from before this migration, every
+>   meeting still `queued`, and every meeting joined on the synchronous
+>   `BOT_DISPATCH_USE_QUEUE=false` path. With one host configured there is
+>   nothing to get wrong, so `require_host(None)` resolves to it and a
+>   single-host install is untouched by this phase. With two, the question is
+>   genuinely unanswerable and it raises `UnknownBotHost`, which the routes turn
+>   into a **409 naming the reason** — not a coin flip between hosts, and not a
+>   500. Delete is the exception: not knowing which bot to tell is a reason to
+>   skip the stop, not to refuse to delete the user's meeting.
+> - **`POST /reupload` routes by host too**, though it is not in the gate. A
+>   recording kept after a failed upload is on the disk of the host that made
+>   it and nowhere else, so with a pool, asking "the" bot means asking a
+>   machine that has no such file. The second compose service therefore gets
+>   its own `recordings-2/` — unlike the auth files, which are deliberately
+>   shared until C4.
+> - **The watchdog needed no new code, and that was checked rather than
+>   assumed.** See below.
+>
+> ### The watchdog claim, verified
+>
+> The design text asserts that a missed heartbeat needs no meeting-side cleanup
+> because the existing watchdog TTLs already handle it. That is checkable, so
+> it was checked instead of trusted. `watchdog._ttl_minutes_for` sweeps purely
+> on `(status, updated_at)` and has no notion of a host; a dead host stops
+> sending status webhooks, so the meeting's `updated_at` stops advancing and
+> the per-status TTL fails it exactly as it would any other stuck meeting. The
+> claim holds, so **C3 adds no sweep code** — the proof is
+> `test_the_existing_watchdog_sweeps_a_meeting_whose_host_disappeared`
+> (a meeting recorded against an absent host, `updated_at` frozen past the
+> `recording` TTL, swept to `failed`), plus a test asserting the watchdog
+> module mentions neither `bot_host` nor `bot_registry`, so a redundant second
+> cleanup path cannot be added here by accident.
+>
+> ### Gate — results
+>
+> Run against the compose stack with two `meeting-bot` containers, both at
+> `MAX_CONCURRENT_MEETINGS=1`, using four throwaway meeting rows that were
+> deleted afterwards.
+>
+> 1. **Two bots, two meetings, one each.** Two meetings queued and dispatched
+>    together landed 28ms apart on *different* hosts — read off the column, not
+>    a log line:
+>
+>    ```
+>    10085c18-…  status=joining  bot_host_id=bot-a
+>    ca305627-…  status=joining  bot_host_id=bot-b
+>    ```
+>
+>    This is the phase. Before it, the second meeting would have waited 30
+>    seconds for the first recorder while the second sat idle, because there
+>    was no way to address it.
+> 2. **Dead host excluded.** `docker compose stop meeting-bot-2`. `bot-b`'s
+>    `last_seen` froze at `1789199881.8` while `bot-a`'s kept advancing
+>    (`…891.9 → …917.4`); once past the 20s TTL, `live_hosts()` returned
+>    `['bot-a']` alone. The next meeting went to `bot-a` **on its first
+>    attempt** — no retry against the dead host.
+> 3. **The watchdog claim, proven by test** — above. No new sweep code.
+> 4. **Stop routes to the right host.** A meeting recording on `bot-b`:
+>    `stop_meeting` → `{'status': 'stopping'}`, and
+>    `[server] Stop requested for meeting ca305627-…` appears in
+>    **meeting-bot-2's** log and nowhere in meeting-bot's. The unit test asserts
+>    the same thing at the URL (`http://meeting-bot-2:3000/stop`), because a
+>    stub of `stop_bot` would happily "route" to a host whose URL was never used.
+> 5. **A `queued` meeting is unaffected.** With one recorder busy and the other
+>    stopped, a new meeting sat at `status=queued bot_host_id=None` and
+>    `cancel_queued_meeting` cancelled it to `failed` without either recorder
+>    ever seeing its id. The cancel path never resolves a host — a test makes
+>    `require_host` raise to prove it is not called, since resolving would 409
+>    on a two-host pool and break the Cancel button.
+> 6. **Empty cache after a Redis restart.** `FLUSHALL` + restart: the cache read
+>    back empty and `claim_host` returned *"no recorder is reporting in (none of
+>    the 2 configured have answered /capacity — is the worker's heartbeat loop
+>    running?)"* — a reason that names its own cause — and repopulated both
+>    hosts within one 5-second interval once the poller ran. Never "all hosts
+>    down forever".
+> 7. **Suites.** Backend **166 passed** (135 on `main` before this phase, +31
+>    in the new `tests/test_bot_pool.py`); meeting-bot **22 passed**, unchanged,
+>    since `meeting-bot/src/` was not touched.
+>
+> **Found while running gate 6, and not fixed here:** `docker-compose.yml`
+> (dev) sets no `restart:` policy on *any* service, so when Redis restarted the
+> arq worker died inside its own shutdown path
+> (`redis.exceptions.ConnectionError` from `arq/worker.py:869`) and stayed
+> down — and with it the heartbeat loop. Pre-existing, and A3/C2 have the same
+> exposure; C3 only raises the stakes, because the poller lives there too.
+> **`docker-compose.prod.yml` already sets `restart: unless-stopped` on every
+> service**, so production recovers on its own and this is a dev-only gap.
+> Mirroring the prod policies into the dev file is a change to all five
+> services, not one, so it is left as a decision rather than made in passing.
+>
+> **Deliberately not built:** per-host credentials (C4 — the two containers
+> share one `auth.json`/`zoom-auth.json` on purpose, which is the expected
+> state until then, and two *simultaneous real* recordings will fight over that
+> one identity); removing `/stop`'s no-`meetingId` fallback (C5). No change to
+> `docker-compose.prod.yml`: with `BOT_HOSTS` unset it is a pool of one built
+> from `MEETING_BOT_URL`, which is what a single-host deployment should be.
+
 ## C1 and C2 are worth shipping on their own
 
 They fix the worst user-visible failure — "meeting rejected because the bot was
@@ -1723,12 +1884,18 @@ multi-host traffic arrives.
 
 ## Gate
 
-- A meeting requested while the bot is full is queued and joins when capacity
-  frees, rather than failing.
-- With two bot hosts, two simultaneous meetings land one on each.
-- Killing a bot host mid-recording marks its meetings failed within the watchdog
-  TTL and does not strand capacity in the registry.
+- ~~A meeting requested while the bot is full is queued and joins when capacity
+  frees, rather than failing.~~ **met — C2.**
+- ~~With two bot hosts, two simultaneous meetings land one on each.~~ **met —
+  C3, gate 1 above.**
+- ~~Killing a bot host mid-recording marks its meetings failed within the
+  watchdog TTL and does not strand capacity in the registry.~~ **met — C3,
+  gates 2 and 3 above.** Capacity is not stranded because the registry holds no
+  per-meeting state to strand: a dead host's cache entry goes stale and its
+  slots stop being offered, and the reservation counter expires on its own.
 - Two hosts recording simultaneously do not corrupt each other's auth state.
+  **Open — this is C4.** The two compose recorders deliberately share one
+  `auth.json`.
 
 ---
 
@@ -1769,7 +1936,10 @@ A3 is the hinge: it introduces the broker that Phase B and C2 both build on.
 | `TEST_DATABASE_URL` | A1 | Already in use — `backend/tests/conftest.py` refuses to run without it. Test-only, never set in production. |
 | `SUPABASE_JWKS_URL` / `SUPABASE_JWT_SECRET` | A5 | Which one depends on your project's signing scheme. |
 | `SUPABASE_JWT_AUDIENCE`, `SUPABASE_JWT_ISSUER` | A5 | Must be verified, not just decoded. |
-| `BOT_HOST_ID`, `BOT_REGISTRY_URL` | C | Per-host identity for the registry. |
+| ~~`BOT_HOST_ID`, `BOT_REGISTRY_URL`~~ | ~~C~~ | **Not built.** Both assumed bots register themselves. They do not — see C3's first decision. |
+| `BOT_HOSTS` | C3 | The pool, as `id=url` pairs (or bare URLs). Empty = a pool of one from `MEETING_BOT_URL`, which is the C3 revert. Read by the backend (to route stop/delete/re-upload) and the worker (to poll and dispatch), so both compose services set it. |
+| `BOT_HEARTBEAT_ENABLED`, `BOT_HEARTBEAT_INTERVAL_SECONDS`, `BOT_HEARTBEAT_TTL_SECONDS` | C3 | 5s polls, dead after 20s. The gap is the tolerance: a host misses three consecutive polls before it stops receiving meetings, so one slow answer or a container restart does not take it out of the pool. |
+| `BOT_HOST_RESERVATION_SECONDS` | C3 | 20. How long a dispatcher's slot reservation on a host survives. Never a lock — the bot's 409 is still the authority. |
 
 ## Open questions to settle before starting
 
