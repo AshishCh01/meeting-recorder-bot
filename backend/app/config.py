@@ -240,6 +240,52 @@ class Settings(BaseSettings):
     # its own. Never a lock: see bot_registry.claim_host.
     bot_host_reservation_seconds: float = 20.0
 
+    # Per-user rate limiting (Phase B1). Backed by A3's Redis, keyed on the
+    # user id get_current_user resolves - never on IP, which for this app is
+    # a shared NAT or a corporate egress as often as it is a person.
+    #
+    # The master switch. False makes the dependency a no-op that never opens a
+    # connection, which is both the revert and what the tests that are not
+    # about rate limiting rely on.
+    rate_limit_enabled: bool = True
+
+    # Chat: POST /meetings/{id}/chat and /chat/stream share this one budget.
+    # They are the same operation with different transports, and two counters
+    # would just mean a caller alternating between them gets double.
+    #
+    # 30 per 5 minutes is one question every 10 seconds, sustained. A chat
+    # turn is a retrieval pass plus a streamed answer - chat_timeout_seconds
+    # is 30 on its own - so a person cannot read 30 answers in 5 minutes, let
+    # alone ask 30 considered questions. The cap is per user across every
+    # meeting they own, because the bill is per user, not per meeting.
+    #
+    # The cost this bounds: a chat turn is roughly 10k input + 500 output
+    # tokens against gemini_input/output_cost_per_mtok (0.30 / 2.50), about
+    # $0.004. 30 per 5 minutes is a ceiling near $2/hour for one user running
+    # flat out - a number you would notice on a bill but not one that empties
+    # an account overnight. Unlimited is the only genuinely dangerous value.
+    chat_rate_limit_requests: int = 30
+    chat_rate_limit_window_seconds: int = 300
+
+    # Meeting creation: cheaper per call than chat, but each one dispatches a
+    # recorder - a headful Chrome plus ffmpeg at roughly 2GB - so the resource
+    # it protects is the bot pool, not an API bill.
+    #
+    # 10 per 5 minutes covers pasting several links in a row and every retry a
+    # frustrated user makes. It is not the path calendar sync uses: scheduled
+    # meetings are dispatched by the scheduler sweep, which never comes
+    # through this route and so is never limited by it.
+    meeting_create_rate_limit_requests: int = 10
+    meeting_create_rate_limit_window_seconds: int = 300
+
+    # How long the limiter waits on Redis before giving up on it and letting
+    # the request through (see rate_limit.py on failing open). Short on
+    # purpose: this runs on the hot path of every chat, and a limiter that
+    # adds seconds of latency to protect against a cost that is already
+    # bounded by the cap itself has made the wrong trade. Both halves are set
+    # - a refused connection is instant, a black-holed one is not.
+    rate_limit_redis_timeout_seconds: float = 0.5
+
     # Local JWT verification (Phase A5). This project signs access tokens
     # asymmetrically with ES256; the public keys live at the JWKS URL below
     # and nothing secret is stored here.

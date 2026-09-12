@@ -8,6 +8,7 @@ from app.db.models import ChatMessage, Meeting
 from app.api.auth import get_current_user
 from app.models.meeting import ChatHistoryResponse, ChatMessageOut, ChatRequest, ChatResponse
 from app.rag.chat_service import ask_question, ask_question_stream
+from app.services import rate_limit
 
 router = APIRouter(prefix="/meetings", tags=["chat"])
 
@@ -97,7 +98,14 @@ async def chat_with_meeting(
     meeting_id: UUID,
     payload: ChatRequest,
     db: Session = Depends(get_db),
-    user_id: str = Depends(get_current_user)
+    # Rate limited (Phase B1). The limiter replaces Depends(get_current_user)
+    # rather than sitting next to it, so auth resolves first (it depends on
+    # it) and the check runs before this body - which is both the cheap
+    # ordering and the safe one: nothing here has taken a pooled connection
+    # yet. Do not move it below _assert_chattable; that check leaves a
+    # transaction open, and the limiter would then hold its connection across
+    # a Redis round-trip. See rate_limit.
+    user_id: str = Depends(rate_limit.limited(rate_limit.CHAT))
 ):
     _assert_chattable(db, meeting_id, user_id)
     _release_request_session(db)
@@ -110,7 +118,10 @@ async def chat_with_meeting_stream(
     meeting_id: UUID,
     payload: ChatRequest,
     db: Session = Depends(get_db),
-    user_id: str = Depends(get_current_user)
+    # Shares one budget with POST /chat above - rate_limit.CHAT is a single
+    # scope, so alternating between the two transports does not buy a second
+    # allowance. See rate_limit.CHAT.
+    user_id: str = Depends(rate_limit.limited(rate_limit.CHAT))
 ):
     """
     Server-sent-events variant of the chat endpoint. Emits the same answer as

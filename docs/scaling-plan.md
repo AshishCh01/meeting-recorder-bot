@@ -16,6 +16,16 @@ C closing does **not** close are listed under "What Phase C leaves open"
 below — neither is a code gap, and neither should be discovered later by
 someone assuming a finished phase means a finished problem.
 
+**B1 (per-user rate limiting) has shipped**, pulled out of Phase B on its own
+because it was the only item in that bucket blocking a deploy: until it landed,
+`POST /{id}/chat` and `/chat/stream` proxied to a paid model with no per-user
+cap at all, and a single script on a public box could run up an unbounded bill
+against your API keys. Chat and meeting creation are now capped per user
+against A3's Redis, with an atomic counter and a deliberate **fail-open** on a
+Redis outage — see [B1](#b1--per-user-rate-limiting--done) for that decision
+and what it costs. B2–B5 (CI, broader coverage, structured logging, cost as a
+metric) remain deferred; none of them block a deploy.
+
 Between A5 and C3, a batch of hardening landed that this plan treats as
 prerequisites rather than phases of their own — found by testing the phases
 above, not planned in advance: the connection-pool budget (`101a114`), chat
@@ -60,7 +70,8 @@ draft was numbered as steps 1–7; those numbers still appear in conversation, s
 | ~~**A3**~~ | ~~Transcription moves to a queue + worker~~ — **done, `d3b424d`** | Medium | Env flag back to the executor |
 | ~~**A4**~~ | ~~Sentry~~ — **done, `69e595a`** | None | Removing the DSN |
 | ~~**A5**~~ | ~~JWTs verified locally~~ — **done, `588ceb9`** | High | Fallback wrapper, then revert |
-| **B** | Tests, structured logging, rate limiting | — | Deferred by decision |
+| **B1** | Per-user rate limiting on chat and meeting creation — **done** | Low | `RATE_LIMIT_ENABLED=false` |
+| **B2–B5** | CI, broader tests, structured logging, cost as a metric | — | Deferred by decision |
 | ~~**C**~~ | ~~Bot pool — the recording tier~~ — **done, C1–C5** | High | Per sub-step |
 
 **The rule for every phase:** independently deployable, independently revertable,
@@ -214,7 +225,7 @@ Do not gate on "the diff looks right." Prove the race is closed:
    easy to break when reordering claim vs. revalidate.
 
 Write these as real test files even though there is no suite yet
-(see [Phase B](#phase-b--tests-logging-rate-limiting-deferred)). They are the
+(see [Phase B](#phase-b--rate-limiting-tests-logging)). They are the
 proof the change works, not extra credit.
 
 **All three landed**, and the suite was additionally verified by reverting
@@ -378,8 +389,9 @@ exactly the contract a real queue gives you for free, with durability added.
 The job payload is already tiny and serializable — `(meeting_id, storage_path)` —
 so this is a clean extraction, not a refactor.
 
-**Broker.** Redis. You need it for Phase B rate limiting and Phase C dispatch
-anyway, so it earns its keep three times.
+**Broker.** Redis. You need it for B1 rate limiting and Phase C dispatch
+anyway, so it earns its keep three times. (Both have since shipped, and B1 is
+the one that put it on the *request* path — see the note at the end of B1.)
 
 **Library: `arq`. Decided — not an open question.** It is asyncio-native like
 FastAPI and far smaller than Celery, and the sync task body is handled the way
@@ -726,7 +738,7 @@ time**, because the retry `logger.warning` and the "gave up after N attempts"
 (The related symptom in local dev — `print()` output buffered away because
 `Dockerfile.dev` lacked `PYTHONUNBUFFERED` — was fixed in `1c00428`.)
 
-Deliberately *not* done here, both moved to Phase B: converting the 45 `print()`
+Deliberately *not* done here, both moved to Phase B (B4 and B5): converting the 45 `print()`
 calls in `backend/app` to `logger.*`, and turning `log_cost` into a real metric.
 The `print()` calls already emit and are already visible in `docker compose
 logs` — a bulk rewrite touching every service file is a large diff that de-risks
@@ -1262,28 +1274,337 @@ Do not declare Phase A done on "the code is merged." Prove all four:
 ---
 
 <a id="phase-b--tests-logging-rate-limiting-deferred"></a>
-# Phase B — Tests, logging, rate limiting (deferred by decision)
+<a id="phase-b--rate-limiting-tests-logging"></a>
+# Phase B — Rate limiting, tests, logging
 
-## Tests
+> **B1 (rate limiting) has shipped.** The rest of this phase is still deferred
+> by decision — it does not block a deploy, and B1 did.
 
-**A suite now exists** — 40 tests in `backend/tests/`, built as the gates of the
-phases that needed them rather than as a phase of its own:
+Phase B was written as one undifferentiated bucket and deferred wholesale. That
+was defensible while every item in it was a *quality* item. It stopped being
+defensible once the bucket was examined: one of the four things in it was the
+only thing in this entire document standing between a public EC2 box and an
+unbounded bill against a paid API key. So the phase is now numbered, and the
+one item that blocked the deploy was done on its own.
+
+| Step | What | Status |
+|---|---|---|
+| **B1** | Per-user rate limiting on chat and meeting creation | **done** — below |
+| **B2** | CI: run both suites automatically | Deferred. The highest-value item left. |
+| **B3** | Broaden test coverage — the status machine, webhook idempotency, the AI fallback ladders | Deferred |
+| **B4** | The remaining 45 `print()` calls → `logger.*` with structured fields | Deferred |
+| **B5** | `log_cost` → a real metric rather than a debug line | Deferred |
+
+---
+
+<a id="b1--per-user-rate-limiting--done"></a>
+## B1 — Per-user rate limiting ✅ done
+
+> **Risk:** low. **Revert:** `RATE_LIMIT_ENABLED=false`, no rebuild.
+>
+> Landed as `backend/app/services/rate_limit.py`, four settings groups in
+> `config.py`, a dependency on three routes, and 35 tests in
+> `tests/test_rate_limit.py` (suite: **182 → 217**).
+
+### The problem it closes
+
+There was no rate limiting anywhere. `POST /meetings/{id}/chat` and
+`/chat/stream` proxy straight to Gemini (with a Groq fallback) with no per-user
+cap. `question` is capped at 4000 characters
+([meeting.py:26](../backend/app/models/meeting.py#L26)) and nothing at all
+stopped a loop. On a public box, one script runs up an unbounded bill against
+your API keys — and unlike every other item in Phase B, that is not a quality
+problem you can carry into production and fix later.
+
+### What is limited, and what deliberately is not
+
+| Route | Limited | Scope |
+|---|---|---|
+| `POST /meetings/{id}/chat` | yes | `chat` |
+| `POST /meetings/{id}/chat/stream` | yes | `chat` — **the same counter** |
+| `POST /meetings` | yes | `meeting-create` |
+| `POST /webhooks/*` | **no, deliberately** | — |
+
+**The two chat routes share one budget, and that is the point.** They are the
+same operation with different transports. Two counters would mean a caller
+alternating between them gets exactly double the allowance, which is the first
+thing anyone trying would find. One scope, one key.
+
+**Webhooks are not limited and must not be** — there is a comment at the top of
+`webhooks.py` saying so, because this is exactly the kind of omission a later
+reader would "fix". The caller is meeting-bot, holding the shared bearer token,
+and its rate is a function of how many recordings are running — the thing
+scaling up is supposed to increase. Throttling it saves nothing (no paid model
+is on that request path) and breaks recordings already in progress: a dropped
+`completed` report means a finished recording whose file is never fetched, and
+the user loses a meeting that was successfully recorded. There is also nowhere
+to key it — the only identity is one token shared by the whole pool.
+
+**`retry` / `reupload` were left out, and probably should stay out.** `retry`
+is gated to `failed` meetings and flips status before doing anything, so it is
+self-limiting in a way chat is not; `reupload` talks to a bot, not a model.
+Both are worth a second look if the audit routes ever land, but neither is a
+cost surface and neither justified widening this change.
+
+### Design
+
+**Redis, not a library.** `slowapi` is the obvious reach and is the wrong shape
+twice: it keys on IP — which for this app is a shared NAT or a corporate egress
+as often as it is a person — and it installs as middleware, which runs before
+`get_current_user` has resolved the only key that means anything. A3 already
+put Redis in `requirements.txt` and C3 already keeps a cache in it. No new
+dependency was added.
+
+**A dependency, not middleware.** The key is the `user_id` from
+`get_current_user`, so this has to run *after* auth, and the limits differ per
+route. As a `Depends(...)` that itself depends on `get_current_user`, ordering
+is guaranteed by construction rather than by convention — the limiter
+*replaces* `Depends(get_current_user)` in the route signature rather than
+sitting beside it, and FastAPI's dependency cache means auth still runs exactly
+once.
+
+**Async client — the opposite of `bot_registry`, on purpose.**
+`bot_registry` uses a synchronous client and documents why: everything calling
+it runs in a thread. That reasoning does not transfer here.
+`chat_with_meeting_stream` is `async def` and runs on the event loop, so a
+blocking `redis-py` call inside it would stall *every* request in flight — a
+500ms Redis hiccup becoming 500ms added to every concurrent request in the
+process, not just its own. So: `redis.asyncio` and an `async def` dependency.
+That is also correct for `create_meeting`, which is a plain `def` route that
+runs in the threadpool: FastAPI solves dependencies on the event loop
+regardless of how the body will be run, so one async dependency covers both
+flavours and there is no second code path to keep in step.
+
+The client is cached **per event loop** (a `WeakKeyDictionary`), because a
+`redis.asyncio` pool's connections belong to the loop that opened them. In
+production that is a singleton opened on the first limited request; it is the
+tests, which drive async code with `asyncio.run(...)` per test, that would
+otherwise be handed connections bound to a closed loop.
+
+**No pooled DB connection is held across the Redis call.** This codebase has
+been bitten by that three times (`101a114`, `79551d0`, `0460fac`) and the pool
+is 8 against Supabase's 15. `get_db` takes its connection lazily on the first
+query and `_ensure_user_row` ends its transaction on every path, so a
+dependency that runs before the route body holds nothing. Gate 8 measures this
+rather than assuming it, and the falsification below shows what moving the
+check into the body would cost.
+
+**The counter is atomic.** `INCR` then `EXPIRE` as two calls is the classic
+bug: a process dying between them leaves a key with no TTL, which limits that
+user *forever* and is invisible. This is a fixed window incremented and expired
+in one Lua script, so the two cannot be separated — plus a `ttl < 0` repair
+branch for a key left behind by an older build or a hand edit.
+
+Fixed window rather than sliding: the worst case is 2N across a boundary, and
+with defaults sized so a person never approaches N, that burst is tolerance
+rather than a leak. A sliding-window ZSET would store N members per user to buy
+back a factor of two on a *cost cap* — the wrong trade for the extra moving
+part. A refused request still increments but never extends the TTL, so a client
+retrying in a loop delays nothing.
+
+### The decision: Redis is down → **fail open**
+
+**If Redis is unreachable, the request is served.** Both choices were
+defensible; this is why this one was taken, recorded here and in a block
+comment in `rate_limit.py` so it is a decision rather than an accident:
+
+- **This is a cost cap, not an authorisation check.** Nothing behind it is
+  unsafe to serve, only expensive to serve a lot of. Failing closed treats an
+  infrastructure blip as a permissions decision.
+- **Chat is the feature that still works when Redis does not.** Transcription
+  (A3) and dispatch (C2) are queued through Redis and are already degraded
+  during an outage — but answering a question about an existing transcript
+  needs only Postgres and Gemini. Failing closed would take the one still-
+  working feature offline to protect a budget: a self-inflicted second symptom,
+  during an incident, on the most visible surface in the product.
+- **The exposure is bounded and attended.** Abuse still needs a valid Supabase
+  JWT, the question is still capped at 4000 characters, and the user is still
+  bounded by how fast a model answers. The first failure in each interval
+  raises a Sentry event (A4) saying in as many words that the cap is off, with
+  a running total, so the window is "until someone looks", not "indefinitely
+  and silently".
+
+What was never on the table is letting an unhandled exception decide it: an
+uncaught `ConnectionError` here is fail-*closed* with a worse error message and
+a Sentry traceback per request.
+
+**The cost, measured:** during the live outage below, each request paid
+`rate_limit_redis_timeout_seconds` (0.5s) waiting on a black-holed host before
+being served. That is the price of fail-open on a hung Redis, and it is why the
+timeout is set short and set on both `socket_connect_timeout` and
+`socket_timeout` — "Redis is down" has two shapes and only the refused-socket
+one is fast on its own.
+
+**If this turns out to be wrong** — if a real bill arrives — the change is the
+`return` in that `except` block becoming a `raise`, plus accepting that a Redis
+outage is then a chat outage.
+
+### The 429
+
+`{"detail": "..."}` plus `Retry-After`, mirroring `_db_busy`
+([main.py:129-137](../backend/app/main.py#L129-L137)). `Retry-After` is the
+counter's real remaining TTL, not the window length.
+
+> You've sent a lot of questions in a short time. Please try again in about a
+> minute.
+
+It says what to do and does not name the mechanism — "rate limit", "429",
+"quota", "window" are our words for our problem, and a test asserts none of
+them reach a chat bubble.
+
+**No frontend change was needed, and this was confirmed rather than assumed.**
+`useMeetingChat.js`'s `!response.ok` branch does
+`throw new Error(detail?.detail || ...)` and the `catch` renders
+`` `*${err.message}*` `` into the thread, so the sentence above is what the user
+reads verbatim. The test that pins it also asserts the refusal is a real status
+code with a JSON content-type and no `data:` frames — a 429 delivered *inside*
+a 200 stream would surface as the generic "Something went wrong" instead.
+
+### The defaults, and what they are based on
+
+All in `config.py` in the existing style, all overridable by env var.
+
+| Setting | Default | Basis |
+|---|---|---|
+| `RATE_LIMIT_ENABLED` | `true` | The revert. False is a genuine no-op — it never opens a connection. |
+| `CHAT_RATE_LIMIT_REQUESTS` | `30` | per user, across every meeting they own |
+| `CHAT_RATE_LIMIT_WINDOW_SECONDS` | `300` | |
+| `MEETING_CREATE_RATE_LIMIT_REQUESTS` | `10` | |
+| `MEETING_CREATE_RATE_LIMIT_WINDOW_SECONDS` | `300` | |
+| `RATE_LIMIT_REDIS_TIMEOUT_SECONDS` | `0.5` | connect *and* read |
+
+**Chat: 30 per 5 minutes** is one question every 10 seconds, sustained. A chat
+turn is a retrieval pass plus a streamed answer — `chat_timeout_seconds` is 30
+on its own — so a person cannot *read* 30 answers in 5 minutes, let alone ask
+30 considered ones. Per user rather than per meeting, because the bill is per
+user. On cost: a turn is roughly 10k input + 500 output tokens against
+`gemini_input/output_cost_per_mtok` (0.30 / 2.50), about $0.004, so 30 per 5
+minutes ceilings one user running flat out near $2/hour — a number you would
+notice on a bill but not one that empties an account overnight. Unlimited is
+the only genuinely dangerous value here; the exact number is not load-bearing.
+
+**Meeting creation: 10 per 5 minutes.** Cheaper per call, but each one
+dispatches a recorder — a headful Chrome plus ffmpeg at roughly 2GB — so what
+it protects is the bot pool, not a model bill. Ten covers pasting several links
+in a row plus every retry a frustrated user makes. It is *not* the path
+calendar sync uses: scheduled meetings are dispatched by the scheduler sweep,
+which never comes through this route.
+
+A limit configured as `0` requests (or a `0` window) is treated as **off**,
+with a warning, rather than as "refuse everyone". A limit that refuses everyone
+is not a limit, it is an outage caused by a typo in an env var.
+
+### Gates — what ran, and against what
+
+35 tests. **Against a real Redis** (`TEST_REDIS_URL`, the throwaway container
+in `tests/README.md`) — 21 of them; the other 14 are the fail-open ones, which
+need a Redis that is deliberately *not* there.
+
+| # | Gate | Verified |
+|---|---|---|
+| 1 | The N+1th chat request is a 429 with `Retry-After` and a readable `detail` | real Redis, over HTTP |
+| 2 | `/chat` and `/chat/stream` share one budget | real Redis, over HTTP |
+| 3 | Per user — A exhausting their limit does not touch B | real Redis, over HTTP |
+| 4 | The window rolls; retries do not push it out | real Redis, wall clock |
+| 5 | **N+5 simultaneous, exactly N pass** | real Redis, twice |
+| 6 | Redis unreachable behaves as documented | real socket + **a really stopped container** |
+| 7 | `POST /meetings` limited; a webhook is not, at 50 in a row | real Redis, over HTTP |
+| 8 | No pooled DB connection held during the Redis call | real Redis, `engine.pool.checkedout()` |
+| 9 | Full suites | backend **217** (was 182), meeting-bot **44** (unchanged) |
+
+**Gate 5 was run two ways**, because it is the gate that matters and a
+non-atomic counter passes every other test in the file: N+5 coroutines racing
+`check()` on one loop (which is what catches a read-modify-write interleaving
+at its awaits), and N+5 threads each with its own `TestClient`, its own event
+loop and its own Redis connection — real concurrency at the socket. Plus a TTL
+assertion on the surviving key, which is what catches INCR-then-EXPIRE
+specifically: that variant lets exactly N through and leaves a counter that
+never expires.
+
+**Gate 6 was proven by actually stopping Redis, not by mocking a client.** Two
+levels: the committed tests point `redis_url` at a port with nothing listening,
+which is a genuine `ConnectionError` off a genuine refused socket; and
+`docker stop` on the throwaway container was run by hand, which produced both
+real shapes in sequence — `ConnectionError: Connection closed by server` for
+the in-flight connection, then `TimeoutError: Timeout connecting to server` at
+exactly the 0.5s budget once the port was gone. Every request was served, each
+logged at ERROR, one Sentry event carried the running total, and the cap came
+back on its own when the container returned — no restart.
+
+**Each gate was falsified**, the way A1 and A3's were:
+
+| Broken deliberately | What failed |
+|---|---|
+| Lua script → read-modify-write in Python | gate 5 coroutines: **8 of 8 passed, expected 3**; gate 5 HTTP: `[429,429,200,429,200,200,200,429]` — 4 passed, out of order; and the TTL assertion caught the orphaned key (`ttl == -1`) |
+| `chat/stream` given its own scope | gate 2: alternating gave `[200]*6` — exactly double the allowance |
+| Limiter moved into the route body, after `_assert_chattable` | gate 8: `[1] connection(s) checked out while the limiter was talking to Redis`, on all four route/cache variants |
+
+### Consequences worth knowing
+
+- **The suite runs with rate limiting off.** `conftest.py` sets
+  `RATE_LIMIT_ENABLED=false`, because the limiter is a dependency on three
+  routes and every unrelated test posting to one of them would otherwise open
+  a connection to the *code default* `redis://localhost:6379` — passing (it
+  fails open) but carrying a connection attempt and an error log for a
+  subsystem it is not about, and quietly depending on whether the machine has
+  a Redis on 6379. Set as an env var in `conftest.py` rather than
+  monkeypatched, so `test_env_isolation.py` accounts for it the same way it
+  accounts for the other deliberate stubs. Verified: the suite gives identical
+  outcomes with the flag inverted from the shell.
+- **`REDIS_URL` is now on the request path.** It was a broker (A3) and a cache
+  (C3), both of which are worker-side and tolerate a blip invisibly. A
+  misconfigured `REDIS_URL` now costs 0.5s per limited request. It does not
+  cost correctness, which is the whole point of failing open.
+
+---
+
+## B2 — CI
+
+Still the highest-value item left in this phase. Nothing runs either suite
+automatically, so 217 backend tests and 44 meeting-bot tests only protect you
+when someone remembers. A workflow needs a `pgvector/pgvector:pg18` service
+(SQLite will not do — pgvector, `ARRAY`, RLS) and now a `redis:7-alpine` one as
+well, or 51 of the 217 skip.
+
+Both suites are already isolated from any developer's `.env`, which was the
+prerequisite — see "Isolation fixed" under B3.
+
+## B3 — Broaden test coverage
+
+**A suite exists.** It was built as the gates of the phases that needed it
+rather than as a phase of its own:
 
 | File | Tests | Landed with |
 |---|---|---|
+| `test_rate_limit.py` | 35 | **B1** |
+| `test_bot_dispatch_queue.py` | 32 | C2 |
+| `test_bot_pool.py` | 31 | C3 |
+| `test_jwt_auth.py` | 26 | A5 |
 | `test_scheduler_claim.py` | 16 | A1 |
+| `test_bot_auth_health.py` | 16 | C4 |
 | `test_transcription_queue.py` | 15 | A3 |
 | `test_observability.py` | 9 | A4 |
+| `test_chat_connection_release.py` | 8 | `79551d0` |
+| `test_search_transcript_session.py` | 7 | `0460fac` |
+| `test_db_pool_errors.py` | 6 | `101a114` |
+| `test_retry_reupload.py` | 5 | C3 |
+| `test_auth_user_row_session.py` | 5 | `c5f2c84` |
+| `test_get_meeting_session.py` | 4 | `d505d46` |
+| `test_env_isolation.py` | 2 | `a2a80f9` |
+| **total** | **217** | |
 
-That was the deliberate consequence of deferring this phase: A1 and A3 carry
-their own tests because a concurrency fix is unobservable without one, and A3
-could silently leave a `completed` meeting with nothing to search. Each was
-*falsified* — the fix reverted, the test shown failing with the real symptom.
+*(An earlier version of this table said "40 tests across A1/A3/A4". That was
+true when Phase B was written and has been stale since A5.)*
+
+The meeting-bot suite is 44, unchanged by B1 — nothing in that phase touches
+it, which is the point of limiting on the backend side of the webhook.
+
+Every one of those was *falsified* — the fix reverted, the test shown failing
+with the real symptom.
 
 What remains is **broadening coverage**, not creating a suite. For a system
 whose correctness lives in retry ladders, provider fallbacks and a multi-status
 state machine, the untested parts are still the largest production risk.
-
 Highest-value targets, in order:
 
 1. **The meeting status machine** — every transition, and that no path leaves a
@@ -1298,15 +1619,9 @@ Highest-value targets, in order:
    j_retried=0` to date, so `record_terminal_failure`'s branch on transcript
    and the `IndexingFailed` re-raise have only ever run against stubs.
 
-(A1's scheduler race is already pinned by `test_scheduler_claim.py` and is no
-longer on this list.)
-
-`pytest` is in `requirements-dev.txt`. `pytest-asyncio` is **not** needed - the
+`pytest` is in `requirements-dev.txt`. `pytest-asyncio` is **not** needed — the
 async paths are driven with `asyncio.run(...)` directly, which keeps the async
-boundary explicit in each test. **CI is the real gap**: nothing runs these
-automatically, so they only protect you when someone remembers. A workflow with
-a `pgvector/pgvector:pg18` service (SQLite will not do - pgvector, `ARRAY`, RLS)
-is the highest-value item in this phase.
+boundary explicit in each test.
 
 **Isolation fixed, a prerequisite for CI.** The backend suite used to read the
 developer's `backend/.env` in two independent ways: `load_dotenv()` in
@@ -1325,15 +1640,16 @@ in `os.environ`.
   names, and never values. A scan for every real `.env` value found 0 of 17 in
   the output.
 - **Real `.env` in place:** the suite now passes with both queue flags `true`
-  there and nothing pinned on the command line, 135 tests. A `git worktree`
-  with no `.env` anywhere above it gives the same 135.
+  there and nothing pinned on the command line. A `git worktree` with no `.env`
+  anywhere above it gives the same result.
 - **Real runs are unchanged:** the backend container still reads
   `bot_dispatch_use_queue=True`, and host `alembic current` still resolves.
-- **Flag dependencies:** running the suite with each of the 6 boolean settings
-  inverted by env var exposed two in `test_scheduler_claim.py`.
+- **Flag dependencies:** running the suite with each boolean setting inverted by
+  env var exposed two in `test_scheduler_claim.py`.
   `calendar_scheduler_enabled=false` failed 12 tests, and
   `bot_dispatch_use_queue=true` failed the original 4. Both are now pinned in
-  that file, and all six inversions give identical per-test outcomes.
+  that file, and every inversion gives identical per-test outcomes —
+  `rate_limit_enabled` included, checked when B1 added it.
 
 - **The meeting-bot suite is isolated too.** `SupabaseUploader.js` called
   `dotenv.config()` at import, so every test importing `server.js` loaded
@@ -1346,42 +1662,35 @@ in `os.environ`.
   - Three capacity test files turned out to have been relying on `.env` for
     `SUPABASE_URL`, and crashed at import without it. They now set the same
     placeholders the upload tests already did.
-  - 22 tests pass, and the rebuilt bot still answers `GET /capacity` with the
-    real token.
 
-## Remaining observability
+## B4 — `print()` → `logger.*`
 
-A4 shipped Sentry, root logging config for both entrypoints, and `meeting_id` /
-`user_id` on transcription events. Two pieces were deliberately left here:
+Convert the 45 `print()` calls in `backend/app` to `logger.*`, with
+`meeting_id` and `user_id` as structured fields rather than interpolated into
+the message. This was originally listed under A4 and moved here on the A4
+deploy: the calls already emit (`PYTHONUNBUFFERED` is set in both Dockerfiles)
+and are already visible in `docker compose logs`, so the rewrite buys log
+*structure*, not log *visibility* — and it is a diff across every file in
+`app/services/`, which is the opposite of what a phase whose whole purpose was
+de-risking the A5 deploy wanted to ship. A4 left root logging on stdout so the
+two styles interleave in order in the meantime.
 
-1. **Convert the 45 `print()` calls in `backend/app` to `logger.*`**, with
-   `meeting_id` and `user_id` as structured fields rather than interpolated
-   into the message. This was originally listed under A4 and moved here on the
-   A4 deploy: the calls already emit (`PYTHONUNBUFFERED` is set in both
-   Dockerfiles) and are already visible in `docker compose logs`, so the
-   rewrite buys log *structure*, not log *visibility* — and it is a diff across
-   every file in `app/services/`, which is the opposite of what a phase whose
-   whole purpose is de-risking the A5 deploy wants to ship. A4 left root
-   logging on stdout so the two styles interleave in order in the meantime.
-2. **Turn `log_cost` into a real metric.** Per-user AI spend is a business
-   number, not a debug line.
+## B5 — `log_cost` as a real metric
 
-## Rate limiting
+Per-user AI spend is a business number, not a debug line. B1 gives this a
+second reason to exist: the rate limit defaults above were sized from an
+*estimated* per-turn cost, and nothing currently measures the real one. A
+metric would let the caps be set from data rather than from arithmetic.
 
-There is none anywhere. `/chat/stream` proxies to paid LLMs with no per-user cap;
-`question` is capped at 4000 characters
-([meeting.py:26](../backend/app/models/meeting.py#L26)) but nothing stops a loop.
-Per-user limits on chat and meeting creation, backed by A3's Redis.
+## What deferring the rest costs you
 
-## What deferring this costs you
-
-Deferring is defensible — Phase A unblocks scaling and this does not. But the
-consequence is explicit and already priced into the plan above: **A1 and A3 carry
-their own tests as part of the phase.** Those are the two gates you cannot skip,
-because A1 is a concurrency fix that is unobservable without one, and A3 can
-silently leave a `completed` meeting with nothing to search.
-
-That is why Sentry was pulled forward into A4 rather than left here.
+Deferring B2–B5 is defensible — Phase A unblocks scaling and none of them do.
+The consequence is explicit and already priced into the plan above: **A1, A3
+and every phase since carry their own tests as part of the phase.** Those are
+the gates you cannot skip, because A1 is a concurrency fix that is unobservable
+without one, and A3 can silently leave a `completed` meeting with nothing to
+search. That is why Sentry was pulled forward into A4 rather than left here —
+and why B1 was pulled out of here entirely.
 
 ---
 
@@ -2256,7 +2565,7 @@ A1 (scheduler claim) ──── independent, do first
 A2 (config)  ──────────── no code
 
 A3 (queue + worker) ───┬── introduces Redis
-                       ├──> Phase B rate limiting reuses it
+                       ├──> B1 rate limiting reuses it (shipped)
                        └──> C2 dispatch queue reuses it
 
 A4 (Sentry) ───────────── independent
@@ -2267,17 +2576,21 @@ A5 (local JWT) ────────── independent of A1–A3; wants A4 f
 C  ────────────────────── needs A3's broker for C2
 ```
 
-A3 is the hinge: it introduces the broker that Phase B and C2 both build on.
+A3 is the hinge: it introduces the broker that B1 and C2 both build on.
 
 ## New configuration this plan introduces
 
 | Var | Phase | Notes |
 |---|---|---|
 | `WATCHDOG_ENABLED`, `CALENDAR_SCHEDULER_ENABLED` | A2 | Already exist — used as a deployment invariant. |
-| `REDIS_URL` | A3 | Broker. Reused by Phase B and C2. |
+| `REDIS_URL` | A3 | Broker. Reused by C2/C3 and, since B1, by rate limiting on the request path. |
 | `TRANSCRIPTION_WORKER_CONCURRENCY` | A3 | Replaces the hardcoded `max_workers=4`. |
 | `TRANSCRIPTION_USE_QUEUE` | A3 | The two-deploy cutover flag. |
 | `SENTRY_DSN` | A4 | |
+| `RATE_LIMIT_ENABLED` | B1 | The revert. False is a true no-op - no connection is opened at all. |
+| `CHAT_RATE_LIMIT_REQUESTS`, `CHAT_RATE_LIMIT_WINDOW_SECONDS` | B1 | 30 per 5 min, per user, **shared by `/chat` and `/chat/stream`**. Sized so a person reading the answers cannot reach it; ceilings one user near $2/hour of Gemini. |
+| `MEETING_CREATE_RATE_LIMIT_REQUESTS`, `MEETING_CREATE_RATE_LIMIT_WINDOW_SECONDS` | B1 | 10 per 5 min. Protects the bot pool, not a model bill. Calendar-scheduled meetings bypass this route entirely. |
+| `RATE_LIMIT_REDIS_TIMEOUT_SECONDS` | B1 | 0.5, connect *and* read. Because the limiter fails open, this is the latency added per request during a Redis outage. |
 | `BOT_DISPATCH_USE_QUEUE` | C2 | The cutover flag. Reuses A3's `REDIS_URL` and worker. |
 | `BOT_DISPATCH_MAX_ATTEMPTS`, `BOT_DISPATCH_RETRY_DELAY_SECONDS` | C2 | How long a meeting may wait (40 x 30s = 20 min) before it is failed with a specific message. |
 | `WATCHDOG_QUEUED_TTL_MINUTES` | C2 | 30. Must stay above the product of the two above. |
@@ -2315,6 +2628,6 @@ come up in conversation:
 | 2 — transcription queue | **A3** | not a scaling blocker; deferred behind the milestone |
 | 3 — sweep loops | **A2** | config-only, so it pairs with A1 to reach the milestone fastest |
 | 4 — local JWT | **A5** | highest risk, so it ships last and alone |
-| 5 — tests | **B** | deferred, minus the A1/A3 gate tests |
-| 6 — observability + rate limiting | **A4** (Sentry) + **B** (rest) | Sentry pulled forward to de-risk A5 |
+| 5 — tests | **B2/B3** | deferred, minus the per-phase gate tests every phase since A1 has carried |
+| 6 — observability + rate limiting | **A4** (Sentry) + **B1** (rate limiting, done) + **B4/B5** (rest) | Sentry pulled forward to de-risk A5; rate limiting pulled out of B because it was the only item in that bucket blocking a deploy |
 | 7 — bot pool | **C** | unchanged |

@@ -10,6 +10,28 @@ from app.services.transcription_service import submit_transcription
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
+# **Nothing in this file is rate limited, and nothing in it should be**
+# (docs/scaling-plan.md, Phase B1).
+#
+# These are not user-facing endpoints. The caller is meeting-bot, holding the
+# shared bearer token verify_webhook_token checks, and it calls in on a
+# schedule this backend does not control: a "waiting_for_admission" ping, a
+# "recording" ping, then the final completed/failed report, per meeting, for
+# every meeting in flight across every recorder in the pool. The rate is a
+# function of how many recordings are running - which is exactly the thing
+# scaling up is supposed to increase.
+#
+# Throttling that does not save money, because no paid model is called from
+# here on the request path. What it does is break recordings that are already
+# in progress: a dropped "completed" webhook means a finished recording whose
+# file is never fetched, and the meeting sits until the watchdog fails it -
+# the user loses a meeting that was successfully recorded. There is also
+# nowhere sensible to key it, since the only identity here is one token shared
+# by the whole pool.
+#
+# The real bound on this endpoint is the bearer token and the bot pool's own
+# size, not a counter.
+
 @router.post("/recording-complete", dependencies=[Depends(verify_webhook_token)])
 def recording_complete(
     payload: RecordingCompleteWebhook, 

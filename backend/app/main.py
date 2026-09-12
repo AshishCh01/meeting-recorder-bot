@@ -12,6 +12,7 @@ from app.api import calendar, chat, meetings, users, webhooks
 from app.db.database import SessionLocal
 from app.services.watchdog import sweep_stale_meetings
 from app.services.scheduler import trigger_due_meetings
+from app.services import rate_limit
 from app.observability import configure_logging, init_sentry
 
 # Phase A4. Before anything else in the process does any work: configure_logging
@@ -94,6 +95,10 @@ async def lifespan(app: FastAPI):
     for task in tasks:
         with suppress(asyncio.CancelledError):
             await task
+    # The rate limiter opens its Redis client lazily on the first limited
+    # request and keeps it for the life of the loop; close it rather than
+    # leaving the pool for the OS to tear down on every deploy.
+    await rate_limit.aclose()
 
 
 app = FastAPI(title="Meeting Recorder API", lifespan=lifespan)
