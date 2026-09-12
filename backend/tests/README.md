@@ -40,9 +40,23 @@ this and fails with setting names only, never values.
 
 `TEST_REDIS_URL` is optional: without it, `test_transcription_queue.py` skips
 entirely, the three Redis-backed tests in `test_bot_dispatch_queue.py` skip
-(the other 29 in that file run against Postgres alone), and the seven tests in
+(the other 29 in that file run against Postgres alone), the seven tests in
 `test_bot_pool.py` that exercise the real heartbeat cache skip (the other 24
-run against Postgres alone), while the scheduler tests still run.
+run against Postgres alone), and 21 of the 35 in `test_rate_limit.py` skip
+(the other 14 run without it - they are the fail-open ones, which need a Redis
+that is *not* there). The scheduler tests still run. Full suite: 217 with
+Redis, 166 passed / 51 skipped without.
+
+**Rate limiting is off unless a test turns it on.** `conftest.py` sets
+`RATE_LIMIT_ENABLED=false`, because Phase B1's limiter is an `async def`
+dependency on `POST /meetings` and both chat routes - so every test that posts
+to one of those would otherwise open a connection to `settings.redis_url`,
+which in this suite is the *code default* (`redis://localhost:6379`), not
+`TEST_REDIS_URL`. Those tests would still pass (the limiter fails open), but
+each would carry a real connection attempt and an error log for a subsystem it
+is not about, and the result would quietly depend on whether the machine
+happens to be running a Redis on 6379. `test_rate_limit.py` turns it back on
+with `monkeypatch`, which is the same rule as every other flag.
 
 `tests/fake_bot_pool.py` is a helper, not a test module: it holds the `FakeBot`
 and `FakeBotPool` stand-ins the three bot-pool files use. It deliberately

@@ -59,11 +59,26 @@ os.environ.setdefault(
 )
 os.environ.setdefault("MEETING_BOT_BEARER_TOKEN", "stub-token")
 os.environ.setdefault("GEMINI_API_KEY", "stub-key")
+# Phase B1's limiter is off unless a test turns it on. It is an `async def`
+# dependency on POST /meetings and both chat routes, so every existing test
+# that posts to one of those would otherwise open a connection to
+# settings.redis_url - which here is the code default (redis://localhost:6379),
+# not TEST_REDIS_URL. It would fail open and those tests would still pass, but
+# each would carry a real connection attempt and an error log for a subsystem
+# it is not about, and the outcome would quietly depend on whether the machine
+# running the suite happens to have a Redis on 6379.
+#
+# Set here rather than monkeypatched per test for the same reason the stubs
+# above are: it is a deliberate choice by the runner, which is exactly what
+# test_env_isolation.py's conftest_env_keys means. tests/test_rate_limit.py
+# turns it back on with monkeypatch, the way tests/README.md asks.
+os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 # The variables above, set deliberately. Anything else in the environment
 # must have come from RUNNER_ENV_KEYS.
 CONFTEST_ENV_KEYS = frozenset({
     "DATABASE_URL", "IGNORE_DOTENV",
     "SUPABASE_URL", "SUPABASE_KEY", "MEETING_BOT_BEARER_TOKEN", "GEMINI_API_KEY",
+    "RATE_LIMIT_ENABLED",
 })
 
 from app.db import database  # noqa: E402
@@ -134,6 +149,26 @@ def clean_tables():
     with database.engine.begin() as conn:
         from sqlalchemy import text
         conn.execute(text("TRUNCATE meeting_chunks, meetings, users RESTART IDENTITY CASCADE"))
+
+
+@pytest.fixture(autouse=True)
+def rate_limit_state():
+    """
+    Phase B1's limiter keeps process-global state - a Redis client cached per
+    event loop, and the fail-open counter that decides when to raise a Sentry
+    event. Clear both around every test so one test's cached client (pointed
+    at whatever redis_url it monkeypatched) and one test's failure count can
+    never be inherited by the next.
+
+    Whether the limiter is *on* is set in os.environ above, not here.
+    """
+    from app.services import rate_limit
+
+    rate_limit.reset_clients()
+    rate_limit.reset_failure_stats()
+    yield
+    rate_limit.reset_clients()
+    rate_limit.reset_failure_stats()
 
 
 @pytest.fixture

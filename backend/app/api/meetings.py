@@ -8,7 +8,7 @@ from app.models.meeting import MeetingCreate
 from app.services.platform_detector import detect_platform
 from app.services.bot_service import initial_status, trigger_bot_join, stop_bot
 from app.services.bot_dispatch import cancel_queued_meeting
-from app.services import bot_registry
+from app.services import bot_registry, rate_limit
 import httpx
 from app.services.storage_service import get_signed_recording_url
 from app.services.transcription_service import submit_transcription
@@ -61,7 +61,13 @@ def meeting_to_dict(m: Meeting):
 def create_meeting(
     payload: MeetingCreate,
     db: Session = Depends(get_db),
-    user_id: str = Depends(get_current_user)
+    # Rate limited (Phase B1). Cheaper per call than chat, but each one
+    # dispatches a recorder - a headful Chrome plus ffmpeg at roughly 2GB -
+    # so what it protects is the bot pool rather than a model bill. The
+    # limiter is an async dependency and this route is a plain `def` that
+    # runs in the threadpool; FastAPI solves dependencies on the event loop
+    # either way, so there is one code path, not two. See rate_limit.
+    user_id: str = Depends(rate_limit.limited(rate_limit.MEETING_CREATE))
 ):
     meeting_url = str(payload.meeting_url)
 
