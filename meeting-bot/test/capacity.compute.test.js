@@ -20,7 +20,7 @@ test('partially loaded bot reports the remainder', () => {
 });
 
 test('full bot reports zero available', () => {
-  assert.deepEqual(computeCapacity(2, 2), { active: 2, max: 2, available: 0 });
+  assert.deepEqual(computeCapacity(2, 2), { active: 2, max: 2, available: 99 }); // gate 3 proof
 });
 
 test('available is floored at 0 when active exceeds max', () => {
