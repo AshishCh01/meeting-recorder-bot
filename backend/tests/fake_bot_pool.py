@@ -24,13 +24,15 @@ either, which is why FakeBot still answers 409 on its own terms.
 """
 import httpx
 
-from app.services.bot_registry import BotHost, HostChoice
+from app.services import bot_registry
+from app.services.bot_registry import AUTH_EXPIRED, AUTH_OK, BotHost, Heartbeat, HostChoice
 
 
 class FakeBot:
     """One recorder. `host` is how the pool and the dispatcher address it."""
 
-    def __init__(self, host_id="bot-a", url=None, max_concurrent=1, active=0, unreachable=False):
+    def __init__(self, host_id="bot-a", url=None, max_concurrent=1, active=0,
+                 unreachable=False, auth=None):
         self.host = BotHost(host_id, url or f"http://{host_id}:3000")
         self.max = max_concurrent
         self.active = active
@@ -38,6 +40,12 @@ class FakeBot:
         self.joins = []
         self.stops = []
         self.capacity_calls = 0
+        # Phase C4. Defaults to both platforms signed in, because that is the
+        # state every pre-C4 test was implicitly written against. Tests that
+        # care set it: FakeBot(auth={"google": AUTH_EXPIRED}).
+        self.auth = {"google": AUTH_OK, "zoom": AUTH_OK}
+        if auth:
+            self.auth.update(auth)
 
     def capacity(self):
         """GET /capacity, raising the way an unreachable container does."""
@@ -49,7 +57,23 @@ class FakeBot:
             "max": self.max,
             "available": max(0, self.max - self.active),
             "meetingIds": [f"meeting-{i}" for i in range(self.active)],
+            # The real endpoint sends {status, detail, checkedAt} per platform;
+            # the shape is mirrored here rather than flattened so a test that
+            # passes against this fake is passing against the payload
+            # bot_registry actually parses.
+            "auth": {
+                platform: {"status": status, "detail": None, "checkedAt": 1}
+                for platform, status in self.auth.items()
+            },
         }
+
+    def expire(self, platform):
+        """That platform's stored session has gone stale on this host."""
+        self.auth[platform] = AUTH_EXPIRED
+
+    def restore(self, platform):
+        """A regenerated credential, or a keepalive cycle that found it alive."""
+        self.auth[platform] = AUTH_OK
 
     def read_capacity(self):
         """What a heartbeat poll got, or None if the host did not answer."""
@@ -99,7 +123,7 @@ class FakeBotPool:
 
     # -- the bot_registry surface the dispatcher uses -----------------------
 
-    def claim_host(self):
+    def claim_host(self, platform=None):
         live = []
         for bot in self.bots:
             capacity = bot.read_capacity()
@@ -113,21 +137,54 @@ class FakeBotPool:
                 "have answered /capacity)",
             )
 
+        # Phase C4: the same per-platform filter the real claim_host applies.
+        # Reusing Heartbeat.usable_for rather than reimplementing the rule
+        # means "unknown counts as usable" cannot drift between the fake and
+        # the thing it stands in for.
+        usable, blocked = [], []
+        for bot, cap in live:
+            (usable if self._beat(bot, cap).usable_for(platform) else blocked).append((bot, cap))
+
+        if not usable:
+            # Delegated, not reworded. The exhaustion message is what the user
+            # whose meeting was not recorded ends up reading, so a fake that
+            # phrased it its own way would let the real wording regress with
+            # every test still green - which it promptly did the first time
+            # this was written by hand.
+            return HostChoice(None, bot_registry._auth_blocked_reason(platform, self._beats(blocked)))
+
         ranked = sorted(
-            ((bot, cap, cap["available"] - self.reserved.get(bot.host.id, 0)) for bot, cap in live),
+            ((bot, cap, cap["available"] - self.reserved.get(bot.host.id, 0)) for bot, cap in usable),
             key=lambda c: c[2],
             reverse=True,
         )
         bot, _, headroom = ranked[0]
         if headroom <= 0:
             busy = ", ".join(f"{b.host.id} {c['active']}/{c['max']}" for b, c, _ in ranked)
-            return HostChoice(None, f"every recorder was busy ({busy})")
+            reason = f"every recorder was busy ({busy})"
+            if blocked:
+                reason += (
+                    f"; {bot_registry._describe_blocked(self._beats(blocked))} also had no usable "
+                    f"{bot_registry._platform_label(platform)} session"
+                )
+            return HostChoice(None, reason)
 
         self.reserved[bot.host.id] = self.reserved.get(bot.host.id, 0) + 1
         return HostChoice(bot.host)
 
     def release_host(self, host_id):
         self.reserved[host_id] = max(0, self.reserved.get(host_id, 0) - 1)
+
+    @staticmethod
+    def _beat(bot, capacity):
+        """The Heartbeat a real poll of this FakeBot would have written."""
+        return Heartbeat(
+            bot.host.id, bot.host.url, capacity["active"], capacity["max"],
+            capacity["available"], 0.0, capacity.get("auth") or {},
+        )
+
+    def _beats(self, pairs):
+        return [(bot.host, self._beat(bot, cap)) for bot, cap in pairs]
 
     # -- the bot_service surface -------------------------------------------
 

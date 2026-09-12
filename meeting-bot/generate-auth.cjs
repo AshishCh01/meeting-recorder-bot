@@ -1,8 +1,30 @@
 // generate-auth.cjs
 const { chromium } = require('playwright');
 const fs = require('fs');
+const path = require('path');
+
+// Phase C4: write to the path the *runtime* will read, not a hardcoded
+// filename in the current directory. Before this, generating bot-b's
+// credentials meant running this script and then remembering to move
+// auth.json into meeting-bot/auth/bot-b/ by hand - a step with no error
+// message when you skipped it, which silently left bot-b on bot-a's
+// identity. Imported from BrowserManager rather than reimplemented so the
+// generator and the bot can never disagree about where the file lives; a
+// dynamic import is how a .cjs reaches an ES module.
+//
+//   AUTH_STATE_PATH=auth/bot-b/auth.json node generate-auth.cjs
+//
+// With nothing set it resolves to meeting-bot/auth.json exactly as before.
+async function resolveOutputPath(platform) {
+  const { resolveAuthStatePath } = await import('./src/core/BrowserManager.js');
+  return resolveAuthStatePath(platform);
+}
 
 (async () => {
+  const outputPath = await resolveOutputPath('google');
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  console.log('[0] Will write the captured session to:', outputPath);
+
   const userDataDir = 'C:\\chrome-bot-profile'; // copied from default Chrome dir — Chrome refuses CDP debugging on the real default profile path
   const profileDir = 'Profile 1'; // bot account: bmeeting53@gmail.com
 
@@ -65,17 +87,17 @@ const fs = require('fs');
 
   await new Promise((resolve) => process.stdin.once('data', resolve));
 
-  await context.storageState({ path: 'auth.json' });
+  await context.storageState({ path: outputPath });
 
   // Verify what we actually captured
-  const saved = JSON.parse(fs.readFileSync('auth.json', 'utf8'));
+  const saved = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
   const names = saved.cookies.map((c) => c.name);
   const critical = ['SID', 'HSID', 'SSID', 'SAPISID', '__Secure-1PSID', '__Secure-3PSID'];
   const found = critical.filter((n) => names.includes(n));
   const missing = critical.filter((n) => !names.includes(n));
 
   console.log('');
-  console.log(`[5] Saved auth.json — ${saved.cookies.length} cookies total`);
+  console.log(`[5] Saved ${outputPath} — ${saved.cookies.length} cookies total`);
   console.log('    Found:  ', found.join(', ') || '(none)');
   console.log('    Missing:', missing.join(', ') || '(none)');
   console.log('');

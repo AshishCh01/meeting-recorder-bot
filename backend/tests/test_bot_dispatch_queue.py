@@ -457,7 +457,7 @@ def test_exhausted_waiting_fails_the_meeting_with_the_real_cause(db, user, bot, 
 
     row = reread(meeting.id)
     assert row.status == "failed"
-    assert "free recorder" in row.error_message
+    assert "could take this meeting" in row.error_message
     assert "busy" in row.error_message
     assert "No recording was made" in row.error_message
     assert len(requeued) == 2, "the final attempt re-enqueued itself as well as failing the meeting"

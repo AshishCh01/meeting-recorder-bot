@@ -95,6 +95,14 @@ services:
       # Pinned rather than left to .env so the pair below is symmetrical and
       # the Phase C3 gate means the same thing on every machine.
       MAX_CONCURRENT_MEETINGS: "1"
+      # This host's own identity (Phase C4). The container-side path, which is
+      # where the per-host directory below is mounted - BrowserManager,
+      # AuthKeepAlive and both generator scripts all resolve through these two
+      # variables, so setting them is all it takes to move a host onto its own
+      # credentials. Unset them and everything falls back to
+      # meeting-bot/auth.json, which is what a single-host install still does.
+      AUTH_STATE_PATH: /app/auth/auth.json
+      ZOOM_AUTH_STATE_PATH: /app/auth/zoom-auth.json
     dns:
       # Same fix as backend above: Docker Desktop's embedded DNS resolver
       # intermittently fails to resolve external hosts (e.g. Supabase Storage)
@@ -106,10 +114,12 @@ services:
     volumes:
       # Ensures audio files are saved safely to the host machine
       - ./meeting-bot/recordings:/app/recordings
-      # CRITICAL: Live link for your Google auth file to bypass the anonymous block
-      - ./meeting-bot/auth.json:/app/auth.json
-      # Same idea for Zoom - generate via generate-zoom-auth.cjs
-      - ./meeting-bot/zoom-auth.json:/app/zoom-auth.json
+      # This recorder's own Google and Zoom sessions (Phase C4). A directory,
+      # not two file mounts: AuthKeepAlive rewrites these files every 15
+      # minutes with freshly rotated cookies, and a directory mount keeps that
+      # write on the host where the next container start can still read it.
+      # See meeting-bot/auth/README.md for how to generate them.
+      - ./meeting-bot/auth/bot-a:/app/auth
     # CRITICAL: Gives Chromium enough shared memory to process video/audio streams.
     # 2gb was sized for one headed Chromium instance (MAX_CONCURRENT_MEETINGS=1).
     # Phase 2 (per-session PulseAudio sinks) makes MAX_CONCURRENT_MEETINGS>1 safe
@@ -127,13 +137,12 @@ services:
     # The second recorder (docs/scaling-plan.md Phase C3). Same image, same
     # code - "a second bot" is a second container, not a second build.
     #
-    # It shares auth.json and zoom-auth.json with meeting-bot on purpose. C4
-    # is what gives each host its own Google/Zoom identity; until then two
-    # bots on one login is the expected state, not a bug to design around, and
-    # building credential separation here would be building C4 early. Two
-    # simultaneous real recordings will fight over that one identity - that is
-    # the limitation C4 exists to remove, and C3 is testable without it
-    # because dispatch, placement and stop routing do not touch auth.
+    # As of C4 it also has its own identity: auth/bot-b instead of auth/bot-a,
+    # selected purely by the two env vars below. That is what makes this a
+    # second *recorder* rather than a second process contending for one login
+    # - two hosts sharing a credential means two concurrent sessions rotating
+    # the same short-lived cookies against each other, and Google's rotation
+    # cookies expire within roughly 10-60 minutes of being issued.
     build:
       context: ./meeting-bot
       dockerfile: Dockerfile
@@ -147,18 +156,23 @@ services:
       # dispatched at once *must* land on different hosts, because neither
       # host can take both.
       MAX_CONCURRENT_MEETINGS: "1"
+      # Identical paths to meeting-bot's, pointing at a different host
+      # directory (Phase C4). The container never knows which host it is; the
+      # mount below decides.
+      AUTH_STATE_PATH: /app/auth/auth.json
+      ZOOM_AUTH_STATE_PATH: /app/auth/zoom-auth.json
     dns:
       - 8.8.8.8
       - 1.1.1.1
     volumes:
-      # Its own recordings directory, unlike the auth files. A recording kept
-      # after a failed upload lives on the host that made it, and POST
-      # /reupload finds it by id on local disk - sharing one directory would
-      # let the wrong host answer for a file, which is exactly the confusion
-      # bot_host_id exists to remove.
+      # Its own recordings directory. A recording kept after a failed upload
+      # lives on the host that made it, and POST /reupload finds it by id on
+      # local disk - sharing one directory would let the wrong host answer for
+      # a file, which is exactly the confusion bot_host_id exists to remove.
       - ./meeting-bot/recordings-2:/app/recordings
-      - ./meeting-bot/auth.json:/app/auth.json
-      - ./meeting-bot/zoom-auth.json:/app/zoom-auth.json
+      # bot-b's credentials, not bot-a's. This one line is the whole of C4's
+      # per-host identity at the compose level.
+      - ./meeting-bot/auth/bot-b:/app/auth
     shm_size: '4gb'
     depends_on:
       - backend

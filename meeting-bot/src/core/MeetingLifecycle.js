@@ -4,6 +4,7 @@ import { ZoomBot } from '../platforms/zoom/ZoomBot.js';
 import { Recorder } from '../recording/Recorder.js';
 import { RecordingFile } from '../recording/RecordingFile.js';
 import { AudioSink } from '../recording/AudioSink.js';
+import { recordJoinFailure } from './AuthHealth.js';
 import { MeetingSession } from './MeetingSession.js';
 import { SupabaseUploader } from '../storage/SupabaseUploader.js';
 import fs from 'fs';
@@ -59,6 +60,12 @@ export async function runMeetingLifecycle(session) {
 
   } catch (err) {
     console.log('[Lifecycle] Process interrupted or errored:', err.message);
+    // Phase C4: an AUTH_EXPIRED thrown by a real join is the strongest and
+    // fastest evidence this host's credential for this platform is dead -
+    // the keepalive would not notice for up to its 15-minute interval, and
+    // every meeting dispatched here in the meantime would be shredded the
+    // same way. recordJoinFailure ignores every other kind of failure.
+    recordJoinFailure(session.platform, err.message);
     session.markFailed(err.message);
   } finally {
     console.log('[Lifecycle] 1. Closing Chromium...');

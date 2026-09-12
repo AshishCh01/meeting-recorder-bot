@@ -45,7 +45,12 @@ entirely, the three Redis-backed tests in `test_bot_dispatch_queue.py` skip
 run against Postgres alone), while the scheduler tests still run.
 
 `tests/fake_bot_pool.py` is a helper, not a test module: it holds the `FakeBot`
-and `FakeBotPool` stand-ins both bot-queue files use. The split it enforces is
+and `FakeBotPool` stand-ins the three bot-pool files use. It deliberately
+delegates its refusal *messages* to `bot_registry`'s own helpers rather than
+rewording them — the exhaustion reason is what the user whose meeting was not
+recorded ends up reading, and a fake that phrased it its own way let the real
+wording drift with every test still green, which it promptly did the first time
+those strings were written by hand. The split it enforces is
 deliberate — the *dispatcher's* tests fake the registry so they need only
 Postgres, while anything that says "cache" uses the real Redis one, because a
 fake of a cache proves nothing about the cache. The Redis database is **flushed** around
@@ -93,6 +98,7 @@ Tear down with `docker stop meetiq-test-pg meetiq-test-redis`.
 | `test_observability.py` | A4 | Sentry is disabled and harmless with no `SENTRY_DSN`; a request that raises inside a route produces an event with no Supabase JWT anywhere in it - header, frame locals or exception message; `meeting_id`/`user_id` ride along on transcription events. |
 | `test_bot_dispatch_queue.py` | C2 | A meeting requested while the recorder is full reaches `queued` and joins when capacity frees; a queued meeting survives the sweep that would have killed it in `joining`, and is still swept at its own TTL; a deleted or stopped meeting is dropped rather than joined; a 409 re-queues instead of failing; exhausted waiting writes a terminal failure naming the cause; stopping a queued meeting cancels it without calling the bot, and a stop that loses the race to the dispatcher stops the bot rather than overwriting the claim; the flag off still posts synchronously, raises on a busy bot, and enqueues nothing. |
 | `test_bot_pool.py` | C3 | Two meetings dispatched at once against two single-slot recorders land one on each, read off `bot_host_id`; a recorder that stops answering freezes its cached `last_seen` rather than refreshing it with a failure, and drops out once past the TTL, while the survivor takes the next meeting on its first attempt; **the existing watchdog already sweeps a meeting whose host died** — no new sweep code, and the module mentions no host at all; stop, delete and re-upload reach the URL of the host the meeting actually landed on; an unresolvable host is a 409, never a 500, and never a call to some other recorder; a `queued` meeting cancels without the host column being resolved at all; and an empty cache after a Redis restart repopulates in one poll cycle instead of reading as "all hosts down". |
+| `test_bot_auth_health.py` | C4 | A host whose Google session has expired stops receiving Google meetings while still receiving Zoom ones — per platform, never per host, because the two identities expire independently; `unknown` (booted, first keepalive cycle not finished) and a bot that reports no health at all both count as usable, so a restart is not an outage and the backend can ship ahead of the bots; a pool with every Google session dead fails the meeting with a message naming the credential and the command that fixes it, worded distinctly from the busy case and from a mixed one; and restoring the credential brings the host back on the next heartbeat with nothing restarted. |
 | `test_jwt_auth.py` | A5 | Every rejection path 401s - expired, wrong signature, wrong `aud`, wrong `iss`, `alg: none`, HS256-signed-with-the-public-key; 50 unknown-`kid` requests cost exactly one JWKS refetch; the fallback wrapper keeps an unverifiable token logged in and counts itself; the user-row lookup happens once, not per request. |
 
 `test_observability.py` needs neither Postgres nor Redis of its own, but it

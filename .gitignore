@@ -78,6 +78,17 @@ zoom-auth.json
 meeting-bot/auth.json
 meeting-bot/zoom-auth.json
 
+# Per-host bot credentials (docs/scaling-plan.md Phase C4). The whole tree,
+# not the two known filenames: with N hosts there are 2N live session files
+# plus whatever backups someone makes while rotating one, and an `auth.json`
+# has leaked into this repo's history once already (docs/aws-ec2-deploy.md).
+# An ignore listing only the names that existed when it was written would not
+# have covered `bot-c/`, `auth.json.bak`, or a stray screenshot of a cookie.
+# The README is the one tracked file - git can re-include it because
+# `auth/` itself is not excluded, only its contents.
+meeting-bot/auth/*
+!meeting-bot/auth/README.md
+
 # Audit reports that may quote real secret values found in scans
 docs/secrets-audit.md
 

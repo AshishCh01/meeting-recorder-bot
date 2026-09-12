@@ -5,10 +5,13 @@ Status: **A1** (`8dc0844`), **A3** (`d3b424d`), **A4** (`69e595a`) and **A5**
 (`588ceb9`) shipped - Phase A is functionally complete except A2, which is
 blocked on infrastructure, not on code. A5 was the highest-risk phase in this
 document and was verified against a real token, real forged tokens, and a
-real host-side benchmark. **Phase C is underway: C1 (`GET /capacity`), C2
-(dispatch behind a queue) and C3 (the bot registry) have shipped, so a meeting
-requested while the recorder is busy now waits instead of being lost — and
-there can now be more than one recorder for it to wait on.**
+real host-side benchmark. **Phase C is all but complete: C1 (`GET /capacity`),
+C2 (dispatch behind a queue), C3 (the bot registry) and C4 (per-host auth
+identity) have shipped. A meeting requested while the recorder is busy waits
+instead of being lost; there can be more than one recorder for it to wait on;
+each recorder signs in as its own account; and a recorder whose credential has
+died stops being given meetings it could only shred. C5 — making `meetingId`
+required on `/stop` — is all that is left.**
 
 Between A5 and C3, a batch of hardening landed that this plan treats as
 prerequisites rather than phases of their own — found by testing the phases
@@ -55,7 +58,7 @@ draft was numbered as steps 1–7; those numbers still appear in conversation, s
 | ~~**A4**~~ | ~~Sentry~~ — **done, `69e595a`** | None | Removing the DSN |
 | ~~**A5**~~ | ~~JWTs verified locally~~ — **done, `588ceb9`** | High | Fallback wrapper, then revert |
 | **B** | Tests, structured logging, rate limiting | — | Deferred by decision |
-| **C** | Bot pool — the recording tier — **C1, C2, C3 done** | High | Per sub-step |
+| **C** | Bot pool — the recording tier — **C1–C4 done, C5 left** | High | Per sub-step |
 
 **The rule for every phase:** independently deployable, independently revertable,
 and it leaves the system in a coherent state. Never half-migrated.
@@ -76,7 +79,7 @@ UI — and may not surface for days, long enough to blame the wrong change.
 |---|---|---|
 | **frontend** | **Yes, today.** nginx serving a static bundle. | None. |
 | **backend** | Code is ready; deployment is not. | A1 done. A2 needs somewhere to put a second replica — the current target is one EC2 instance running docker-compose. |
-| **meeting-bot** | **Horizontally, as of C3** — one identity, though. | The in-memory registry and single `MEETING_BOT_URL` are gone (C3). What is left is C4: `auth.json` is still one shared file, so two hosts recording at once share one Google/Zoom login. |
+| **meeting-bot** | **Yes, as of C3 + C4.** | The in-memory registry and single `MEETING_BOT_URL` are gone (C3); each host now signs in as its own account and is taken out of rotation per platform when that account's session dies (C4). The remaining caveat is not a blocker: `MAX_CONCURRENT_MEETINGS > 1` still shares one identity *within* a host, which is what that setting has always meant. |
 
 Two things narrow the work, and both are worth knowing before starting:
 
@@ -1571,10 +1574,14 @@ cleanup.~~ **done** — see below. Shipped *pull*-based rather than
 self-registering, which is the one thing the text above got wrong; the rest of
 it, including the claim about the watchdog, is what shipped.
 
-**C4. Per-host auth identity.** The hard part, and the reason this is a redesign.
-Each bot host needs its own Google/Zoom identity — a shared `auth.json` across
-hosts means concurrent sessions fighting over one credential, and
-`BrowserManager`'s `storageStateWriteQueues`
+**C4. Per-host auth identity.** ~~The hard part, and the reason this is a
+redesign.~~ **done** — and that framing was wrong, which is worth recording
+rather than quietly deleting. See C4's section below: the path-resolution
+mechanism already existed, so the credential half was config. The work that
+actually needed building was something this design text never mentioned —
+auth health gating dispatch. Each bot host has its own Google/Zoom identity; a
+shared `auth.json` across hosts would mean concurrent sessions fighting over
+one credential, and `BrowserManager`'s `storageStateWriteQueues`
 ([BrowserManager.js:73-80](../meeting-bot/src/core/BrowserManager.js#L73-L80))
 only serialises writes *within* a process. **Decided: a credential per host
 from a pool** (not shared storage with locking) — see the resolved note above
@@ -1654,8 +1661,7 @@ fallback. The code already anticipates this.
 >   own 30-minute TTL, and `queued` added to `_NON_TERMINAL_STATUSES`.
 > - **The dispatcher's cap and the watchdog's TTL are ordered on purpose.**
 >   40 attempts x 30s = 20 minutes of waiting, then the *dispatcher* writes the
->   failure — "Waited 20 minutes for a free recorder and never got one - the
->   recorder was busy (1/1 in use)". The watchdog's 30-minute `queued` TTL
+>   failure — "Waited 20 minutes for a recorder that could take this meeting and never got one - the recorder was busy (1/1 in use)". The watchdog's 30-minute `queued` TTL
 >   never fires first, so the user gets that message rather than "Timed out
 >   while 'queued' - swept by watchdog". A test asserts the inequality on the
 >   shipped defaults, because it is a config relationship, not a code path.
@@ -1867,6 +1873,229 @@ fallback. The code already anticipates this.
 > `docker-compose.prod.yml`: with `BOT_HOSTS` unset it is a pool of one built
 > from `MEETING_BOT_URL`, which is what a single-host deployment should be.
 
+## C4 — Per-host auth identity ✅ done
+
+> **Shipped** in `meeting-bot/` (a new `AuthHealth.js`, plus wiring in
+> `AuthKeepAlive.js`, `MeetingLifecycle.js`, `server.js`, `index.js` and both
+> generator scripts), `backend/app/services/bot_registry.py` and
+> `bot_dispatch.py`, and `docker-compose.yml`. **No migration, no new config on
+> the backend.** **Risk:** low — far lower than this plan predicted, for the
+> reason below. **Revert:** unset `AUTH_STATE_PATH`/`ZOOM_AUTH_STATE_PATH` and
+> recreate; both hosts fall back to the repo-root files and the pool behaves as
+> it did under C3. The health gating reverts with it, because a bot reporting
+> nothing is treated as healthy by design.
+>
+> ### The "this is a redesign" framing was wrong
+>
+> This plan called C4 "the hard part, and the reason this is a redesign", and
+> budgeted for building credential distribution. Checked against the code, most
+> of the mechanism was already there and had been for some time:
+>
+> - `BrowserManager.resolveAuthStatePath(platform)` already honoured
+>   `AUTH_STATE_PATH` / `ZOOM_AUTH_STATE_PATH`, falling back to the repo-root
+>   files. It was written that way for Render Secret Files, not for a pool, and
+>   it turned out to be exactly what a pool needs.
+> - `AuthKeepAlive` already resolved through that same function, so it followed
+>   per-host files with **no change at all**.
+> - `persistStorageState`'s write queue is per-path. Once each host has its own
+>   file, cross-host write contention does not need solving — it stops
+>   existing. The lock this plan worried about was **deleted, not built**.
+>
+> So the credential half of C4 was config: a directory per host, two env vars,
+> and two bind mounts. What genuinely needed building was something the design
+> text above never mentions, and it is the whole reason this section is long.
+>
+> ### The real work: auth health has to gate dispatch
+>
+> `AuthKeepAlive` has always *detected* an expired session correctly — it loads
+> an authenticated page, checks the landing URL against an allowlist, and logs
+> a loud ALERT. Until now that was all it did, and on one host that was
+> tolerable: a dead session meant "the bot is broken", which was obvious
+> because nothing recorded.
+>
+> **C3 made that worse, not better.** A host with a dead Google session still
+> answers `GET /capacity` with free slots. The registry keeps picking it, every
+> join fails `AUTH_EXPIRED`, and the healthy host sits idle — a dead credential
+> silently becomes a meeting-shredder that looks like a working recorder, and
+> the pool hides the symptom that used to make it obvious. So:
+>
+> - The bot tracks health **per platform** (`AuthHealth.js`) and reports it on
+>   `GET /capacity` as `auth: {google: {status, detail, checkedAt}, zoom: …}`.
+> - `bot_registry.claim_host(platform)` skips a host whose credential for *that
+>   platform* is expired. `bot_dispatch` passes `meeting.platform`, which it
+>   already had in hand.
+>
+> **Per platform, never per host.** Google and Zoom are separate identities
+> that expire independently, and collapsing them into one "unhealthy" flag
+> would take a working recorder offline over a credential it was not going to
+> use. Proven live below: one host was simultaneously refused Google meetings
+> and given Zoom ones.
+>
+> Four things worth knowing:
+>
+> - **"unknown" counts as usable, and that is a decision, not an oversight.**
+>   Between boot and the first keepalive cycle (a 10-second delay plus a headed
+>   Chrome page load) nothing has observed the credential. Treating that as
+>   expired would make every bot restart a brief pool-wide outage and make a
+>   fresh install refuse meetings for its first half-minute — a guaranteed cost,
+>   paid every time. Treating it as usable risks one meeting failing with a
+>   clear `AUTH_EXPIRED`, which immediately corrects the state (below). A
+>   bounded, self-correcting wrong guess beats a certain outage. The same rule
+>   makes a bot running pre-C4 code, which sends no `auth` key at all, read as
+>   "no opinion, carry on" — so the backend can be deployed ahead of the bots.
+> - **A real `AUTH_EXPIRED` join failure marks the platform dead immediately.**
+>   The keepalive interval is 15 minutes, so without this a credential that
+>   dies one minute after a cycle keeps attracting meetings for the next
+>   fourteen and shredding every one. One hook in `MeetingLifecycle`'s existing
+>   `catch`. Every *other* join failure — a cancel, a bad URL, an admission
+>   timeout, a network error — is deliberately ignored: none of them say
+>   anything about the credential, and acting on one would take a working
+>   recorder out of the pool for 15 minutes.
+> - **A failed *check* is not a verdict.** A page load that threw says nothing
+>   about the session, so it leaves the previous status standing and only
+>   updates the note. Without that, one network blip during a cycle would
+>   downgrade a healthy host and empty the pool.
+> - **An unreadable credential file *is* a verdict** — found by running this
+>   phase's own gate. A deliberately broken `auth.json` surfaced as
+>   `Error reading storage state`, which the rule above correctly treats as
+>   inconclusive, leaving the host advertised as usable and still collecting
+>   meetings it could never record. A missing or unparseable storage-state file
+>   fails every join identically and forever, so the keepalive now checks the
+>   file before launching a browser and records that as expired.
+>
+> ### Two smaller gaps closed
+>
+> - **The generator scripts ignored the env vars everything else reads.**
+>   `generate-auth.cjs` and `generate-zoom-auth.cjs` hardcoded `'auth.json'` /
+>   `'zoom-auth.json'` in the working directory, so generating bot-b's
+>   credentials meant generating and then remembering to move a file — a step
+>   with no error message when you skipped it, which silently left bot-b on
+>   bot-a's identity. Both now resolve through `resolveAuthStatePath` (imported,
+>   not reimplemented, so they cannot disagree with the runtime) and print the
+>   absolute path they wrote.
+> - **`.gitignore` covers `meeting-bot/auth/` as a tree**, not two filenames,
+>   with `meeting-bot/auth/README.md` as the one tracked file. An `auth.json`
+>   has leaked into this repo's history once already (see
+>   `docs/aws-ec2-deploy.md`); with N hosts there are 2N live session files plus
+>   whatever backups someone makes while rotating one, and a rule listing only
+>   the names that existed when it was written would not have covered `bot-c/`
+>   or `auth.json.bak`.
+>
+> ### Gate — results
+>
+> **Which ran live, and which did not.** Gates 1–5 ran against the compose
+> stack. **This repo has no second Google account and its *existing* Google
+> session is expired** — confirmed by the keepalive on both hosts, not assumed
+> — so two live simultaneous recordings on two real accounts were **not
+> tested and remain unproven**. What was tested instead is better suited to the
+> failure that matters: a deliberately invalidated credential, contrasted
+> against a genuinely live one (Zoom's, which is current).
+>
+> 1. **Two hosts, two distinct auth files** — live, from the logs. Both
+>    containers resolve the *same* container path, by design, so the startup
+>    line now carries a size and a short digest (never any content — these are
+>    live session cookies):
+>
+>    ```
+>    meeting-bot-1   [startup] auth state google: /app/auth/auth.json (19759 bytes, sha256:b5d3ce9f8648)
+>    meeting-bot-1   [startup] auth state zoom:   /app/auth/zoom-auth.json (680655 bytes, sha256:0c8128d9d7a6)
+>    meeting-bot-2-1 [startup] auth state google: /app/auth/auth.json (19759 bytes, sha256:b5d3ce9f8648)
+>    meeting-bot-2-1 [startup] auth state zoom:   /app/auth/zoom-auth.json (27 bytes,     sha256:dcbfcdab9989)
+>    ```
+>
+>    That line is new and earns its place: "are these two recorders actually on
+>    different accounts?" is the question a pool makes people ask, and nothing
+>    else would have answered it until two bots started fighting over one login.
+>    An earlier run of the same check showed the two hosts' *Zoom* digests
+>    diverging on their own after a keepalive cycle — each host rotating its own
+>    cookies, independently, which is C4 working.
+> 2. **A dead credential takes the host out for that platform only** — live.
+>    With bot-b's Zoom session deliberately invalidated and bot-a's genuinely
+>    alive, both hosts reporting `available=1`:
+>
+>    ```
+>    bot-a: google=expired  usable=False | zoom=ok       usable=True
+>    bot-b: google=expired  usable=False | zoom=expired  usable=False
+>    claim_host('zoom')   -> bot-a
+>    ```
+>
+>    A real queued Zoom meeting dispatched through `dispatch_queued_meeting`
+>    landed on `bot-a` and was never offered to `bot-b`. bot-a being *unusable
+>    for Google and usable for Zoom at the same moment* is the per-platform
+>    property, on one host, live. The mirror case — a healthy host still
+>    receiving Google while an unhealthy one does not — is **unit-level only**
+>    (`test_a_dead_google_session_stops_google_meetings_but_not_zoom`), because
+>    no live Google credential exists here to be the healthy side.
+> 3. **Every host's Google session dead names the credential** — live, and with
+>    genuinely expired real credentials rather than a simulation:
+>
+>    ```
+>    no recorder has a working Google session - bot-a (expired), bot-b (expired).
+>    The recorders are running and have capacity; their Google sign-in has expired,
+>    so regenerate it with `node generate-auth.cjs`
+>    ```
+>
+>    The meeting stayed `queued` with no host recorded, and on exhaustion the
+>    message reached `error_message` intact. The operator fix here is nothing
+>    like "add a host", which is why it must not read as a capacity problem.
+> 4. **Recovery, no restart** — live. `docker inspect -f '{{.State.StartedAt}}'`
+>    was byte-identical before and after: `2026-09-12T09:03:25.580575951Z`.
+>    Replacing bot-b's `zoom-auth.json` took it from `expired`/unusable to
+>    `ok`/usable within one keepalive interval, with nothing restarted and
+>    nothing to clear — the registry holds no per-host state of its own, only
+>    what the last poll said. (The interval was shortened to 1 minute for the
+>    run via a throwaway compose override, *before* the credential was broken,
+>    so the recreate was setup rather than recovery.)
+> 5. **A single-host install is untouched** — live, at the resolution layer:
+>
+>    ```
+>    with AUTH_STATE_PATH set:  google -> /app/auth/auth.json
+>    with it unset:             google -> /app/auth.json
+>    ```
+>
+>    Plus `test_a_single_host_reporting_nothing_behaves_exactly_as_before`,
+>    which dispatches every platform against a bot that reports no health at all.
+> 6. **Suites.** Backend **182 passed** (166 before this phase, +16 in the new
+>    `tests/test_bot_auth_health.py`); meeting-bot **37 passed** (22 before,
+>    +11 in `test/auth.health.test.js` and +4 in `test/auth.path.test.js`).
+>
+> ### Still open after C4
+>
+> - **Two hosts recording simultaneously on two real accounts is unproven.**
+>   The mechanism is in place and each host demonstrably loads and rotates its
+>   own files; what has not happened is two concurrent real recordings on two
+>   separate Google accounts, because the second account does not exist yet and
+>   the first one's session is expired. Creating the accounts is the operator
+>   work C4's design always assumed.
+> - **`meeting-bot/auth/bot-b/` is currently seeded from bot-a's files.** That
+>   is a bootstrap convenience for local testing, not the intended end state,
+>   and it is exactly the shared-identity problem C4 exists to remove. It is
+>   documented in `meeting-bot/auth/README.md`, which says in as many words to
+>   sign into a *different* account per host.
+> - **Within a host, `MAX_CONCURRENT_MEETINGS > 1` still shares one identity.**
+>   Unchanged by C4 and not a blocker — that is what the setting has always
+>   meant, and `persistStorageState`'s per-path queue already serialises those
+>   writes correctly inside one process.
+
+## C5 — Remove the single-session fallback (not started)
+
+`/stop` without a `meetingId` still resolves to "the only active meeting"
+([server.js:119-132](../meeting-bot/src/api/server.js#L119-L132)). Everything
+it was waiting for now exists: C3 made the backend record `bot_host_id` and
+route stop/delete to the right host, and it has always sent `meetingId`
+explicitly. What C5 needs is small and entirely inside `meeting-bot`:
+
+- Make `meetingId` required on `POST /stop`, returning 400 without it.
+- Delete the `activeMeetings.size === 1` fallback and the comment anticipating
+  this change.
+- A test that a `meetingId`-less stop is refused rather than guessing, which is
+  the actual hazard: with `MAX_CONCURRENT_MEETINGS > 1` on a pooled host, the
+  fallback stops *an arbitrary* meeting — someone else's recording.
+
+No backend change is expected. Confirm that before relying on it: `stop_bot`
+already sends `{"meetingId": ...}` unconditionally, so the fallback should have
+no remaining caller.
+
 ## C1 and C2 are worth shipping on their own
 
 They fix the worst user-visible failure — "meeting rejected because the bot was
@@ -1893,9 +2122,15 @@ multi-host traffic arrives.
   gates 2 and 3 above.** Capacity is not stranded because the registry holds no
   per-meeting state to strand: a dead host's cache entry goes stale and its
   slots stop being offered, and the reservation counter expires on its own.
-- Two hosts recording simultaneously do not corrupt each other's auth state.
-  **Open — this is C4.** The two compose recorders deliberately share one
-  `auth.json`.
+- ~~Two hosts recording simultaneously do not corrupt each other's auth state.~~
+  **Met by construction — C4.** Each host reads and writes its own
+  `auth.json`/`zoom-auth.json`, so there is no shared file left to corrupt:
+  `persistStorageState`'s write queue is per path, and per-host files put the
+  two hosts on different paths. The contention this line was written to guard
+  against was removed rather than managed. Observed live — the two hosts' Zoom
+  files diverged on their own as each rotated its own cookies. **Not** proven
+  with two simultaneous *real* recordings on two real accounts; see "Still
+  open after C4".
 
 ---
 
@@ -1940,6 +2175,8 @@ A3 is the hinge: it introduces the broker that Phase B and C2 both build on.
 | `BOT_HOSTS` | C3 | The pool, as `id=url` pairs (or bare URLs). Empty = a pool of one from `MEETING_BOT_URL`, which is the C3 revert. Read by the backend (to route stop/delete/re-upload) and the worker (to poll and dispatch), so both compose services set it. |
 | `BOT_HEARTBEAT_ENABLED`, `BOT_HEARTBEAT_INTERVAL_SECONDS`, `BOT_HEARTBEAT_TTL_SECONDS` | C3 | 5s polls, dead after 20s. The gap is the tolerance: a host misses three consecutive polls before it stops receiving meetings, so one slow answer or a container restart does not take it out of the pool. |
 | `BOT_HOST_RESERVATION_SECONDS` | C3 | 20. How long a dispatcher's slot reservation on a host survives. Never a lock — the bot's 409 is still the authority. |
+| `AUTH_STATE_PATH`, `ZOOM_AUTH_STATE_PATH` | C4 | Per-host credential files, set on each `meeting-bot` container. **Not new** — they predate this plan (added for Render Secret Files); C4 is what finally points them at a directory per host. Unset = the repo-root files, which is the C4 revert and what every single-host install does. |
+| `AUTH_KEEPALIVE_INTERVAL_MINUTES` | C4 | Also pre-existing. 15 by default, and it now sets how long a dead credential can keep attracting meetings in the worst case — though a real `AUTH_EXPIRED` join failure corrects the state immediately, so the interval is the ceiling, not the typical latency. |
 
 ## Open questions to settle before starting
 
@@ -1947,7 +2184,9 @@ A3 is the hinge: it introduces the broker that Phase B and C2 both build on.
    implementation entirely. Worth answering now even though A5 is last.
 2. ~~`arq` or Celery for A3?~~ **Settled: `arq`.** See Phase A3's Design.
 3. ~~Per-host bot auth (C4): credential pool, or shared state with locking?~~
-   **Settled: credential pool.** See the resolved note above C3's Design.
+   **Settled: credential pool — and shipped.** See the resolved note above C3's
+   Design, and C4's own section for how much less this turned out to be than
+   the plan expected.
 4. **Is session revocation latency acceptable in A5?** Local verification means a
    signed-out token stays valid until expiry.
 
