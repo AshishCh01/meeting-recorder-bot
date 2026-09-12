@@ -23,7 +23,11 @@ cap at all, and a single script on a public box could run up an unbounded bill
 against your API keys. Chat and meeting creation are now capped per user
 against A3's Redis, with an atomic counter and a deliberate **fail-open** on a
 Redis outage — see [B1](#b1--per-user-rate-limiting--done) for that decision
-and what it costs. B2–B5 (CI, broader coverage, cost as a metric, structured
+and what it costs. **B2 has shipped too**: both suites now run on every push
+to `main` and every pull request, on the Python 3.12 that `backend/Dockerfile`
+deploys on and that had never run this code before — it passes. A skip guard
+makes a missing service container a red build rather than a green
+`166 passed, 51 skipped`. B3–B5 (broader coverage, cost as a metric, structured
 logging) remain deferred; none of them block a deploy.
 
 Between A5 and C3, a batch of hardening landed that this plan treats as
@@ -71,7 +75,8 @@ draft was numbered as steps 1–7; those numbers still appear in conversation, s
 | ~~**A4**~~ | ~~Sentry~~ — **done, `69e595a`** | None | Removing the DSN |
 | ~~**A5**~~ | ~~JWTs verified locally~~ — **done, `588ceb9`** | High | Fallback wrapper, then revert |
 | **B1** | Per-user rate limiting on chat and meeting creation — **done** | Low | `RATE_LIMIT_ENABLED=false` |
-| **B2–B5** | CI, broader tests, cost as a metric, structured logging | — | Deferred by decision |
+| **B2** | CI on every push and PR — **done** | None | Deleting the workflow |
+| **B3–B5** | Broader tests, cost as a metric, structured logging | — | Deferred by decision |
 | ~~**C**~~ | ~~Bot pool — the recording tier~~ — **done, C1–C5** | High | Per sub-step |
 
 **The rule for every phase:** independently deployable, independently revertable,
@@ -739,8 +744,8 @@ time**, because the retry `logger.warning` and the "gave up after N attempts"
 `Dockerfile.dev` lacked `PYTHONUNBUFFERED` — was fixed in `1c00428`.)
 
 Deliberately *not* done here, both moved to Phase B: turning `log_cost` into a
-real metric (B4), and converting the 45 `print()` calls in `backend/app` to
-`logger.*` (B5).
+real metric (B4), and converting the `print()` calls in `backend/app` to
+`logger.*` (B5). (This said "45" until B2 re-counted it: 44.)
 The `print()` calls already emit and are already visible in `docker compose
 logs` — a bulk rewrite touching every service file is a large diff that de-risks
 nothing about A5, which is the only reason this phase exists. `configure_logging`
@@ -1291,7 +1296,7 @@ one item that blocked the deploy was done on its own.
 | Step | What | Status |
 |---|---|---|
 | **B1** | Per-user rate limiting on chat and meeting creation | **done** — below |
-| **B2** | CI: run both suites automatically | Deferred. The highest-value item left. |
+| **B2** | CI: run both suites automatically | **done** — below |
 | **B3** | Broaden test coverage — the status machine, webhook idempotency, the AI fallback ladders | Deferred |
 | **B4** | `log_cost` → a real metric rather than a debug line | Deferred |
 | **B5** | The remaining `print()` calls → `logger.*` with structured fields | Deferred |
@@ -1559,18 +1564,237 @@ back on its own when the container returned — no restart.
 
 ---
 
-## B2 — CI
+<a id="b2--ci--done"></a>
+## B2 — CI ✅ done
 
-Still the highest-value item left in this phase. Nothing runs either suite
-automatically, so 217 backend tests and 44 meeting-bot tests only protect you
-when someone remembers. A workflow needs a `pgvector/pgvector:pg18` service
-(SQLite will not do — pgvector, `ARRAY`, RLS) and now a `redis:7-alpine` one as
-well, or 51 of the 217 skip.
+> **Risk:** none to the running system — this phase adds no application code.
+> **Revert:** delete `.github/workflows/ci.yml`.
+>
+> Landed as one workflow, two jobs, plus a skip guard in
+> `backend/tests/conftest.py`. No application code changed; no repository
+> secret exists or is needed.
 
-Both suites are already isolated from any developer's `.env`, which was the
-prerequisite — see "Isolation fixed" under B3.
+Until this, nothing ran either suite automatically. 217 backend tests and 44
+meeting-bot tests only protected you when someone remembered.
+
+### The trap it was built to avoid
+
+A green CI that silently tests less than you think is worse than no CI: it
+converts "nobody ran the tests" into "the tests passed."
+
+This repo had that failure mode loaded and ready. Five backend test files skip
+themselves when `TEST_REDIS_URL` is unset — `test_rate_limit.py`,
+`test_bot_pool.py`, `test_bot_dispatch_queue.py`, `test_bot_auth_health.py`,
+`test_transcription_queue.py`. Measured, not guessed: with Postgres and no
+Redis the suite reports **`166 passed, 51 skipped`** and exits **0**.
+
+Those 51 are B1's atomicity gate, C3's two-hosts-two-meetings gate, C4's
+per-platform auth gate and A3's queue-durability gate — the concurrency work
+these phases existed to do, and precisely the tests nobody re-runs by hand. A
+workflow that provisioned Postgres and forgot Redis would have been green and
+blind to all of it.
+
+### The skip guard
+
+**Mechanism: a `pytest_sessionfinish` hook at the bottom of `conftest.py`,
+armed by `PYTEST_REQUIRE_NO_SKIPS=1`.** It collects every skipped report, lists
+each nodeid with its reason, and sets `session.exitstatus` to a failure —
+`session.exitstatus` being what pytest actually returns to the shell after that
+hook, so printing alone would have left the run green.
+
+Chosen over the alternatives on purpose:
+
+- **Not a hard-coded test count.** It would need editing on every added test,
+  and a stale expected-count is itself a way to go quietly wrong.
+- **Not `--strict-markers`.** That polices marker *registration*, not skips.
+- **Not grepping pytest's output in the workflow.** Parsing a summary line in
+  YAML puts the check somewhere no local run ever exercises it.
+
+Two deliberate properties:
+
+- **Opt-in, not always-on.** Locally a partial run is genuinely useful: a
+  developer with no Redis gets the 166 tests that do not need one plus a note
+  about what they missed, rather than a red suite that teaches them to ignore
+  it. Only CI sets the variable.
+- **It refuses *any* skip, not just Redis ones.** There is no legitimately
+  conditional test here today (with both services: `217 passed`, zero skipped),
+  so a new skip is a question someone should have to answer in a pull request
+  rather than a category pre-approved in advance.
+
+### Why CI runs Python 3.12
+
+Three Pythons were in play and the one that mattered had never run:
+
+| Where | Version | Had ever run this code? |
+|---|---|---|
+| `backend/Dockerfile` — what deploys | **3.12** | **No** |
+| `backend/Dockerfile.dev` — local containers | 3.11 | Yes |
+| the developer's `backend/venv` | 3.13 | Yes |
+
+`backend/Dockerfile` has never been built — every local image comes from
+`docker compose up`, which uses `Dockerfile.dev`. The evidence was in the tree:
+`backend/app/services/__pycache__/` held `cpython-311` and `cpython-313`
+artifacts and no `cpython-312`. **The Python this project will deploy on had
+never executed a line of it**, and the 217-test runs everyone quotes happened
+on 3.13.
+
+So CI runs 3.12. GitHub provisions it on its own runners, so this costs no
+rebuild and changes nothing on anyone's machine — it just makes CI the first
+place the deploy-time runtime is exercised at all.
+
+**Result: 3.12 is clean.** All 217 pass on it, first try, in 16-18s. That was
+the phase's largest open risk and it is now closed — a finding of "no finding",
+which is worth recording precisely because it was not knowable beforehand.
+
+**`Dockerfile.dev` stays 3.11, and that is queued work, not an oversight.**
+Reconciling it needs a `backend` **and** `worker` rebuild (both images install
+from the same `requirements*.txt`, and the worker's compose service overrides
+its pool size, so both have to come back up together), which is a different
+kind of change from adding a workflow file and is deliberately sequenced after
+CI has shown 3.12 sound. It now has: the next person to do it starts from a
+green 3.12 signal rather than from a hope. Until then the spread is 3.11 local
+/ 3.12 CI + deploy / 3.13 developer venv, and CI is the one that matches
+production.
+
+### The finding this actually turned up
+
+Not Python. **The first CI run failed in the meeting-bot suite**, three tests in
+`stop.endpoint.test.js`, with `spawn pactl ENOENT`.
+
+Those tests stage a session that fails fast — they point `AUTH_STATE_PATH` at a
+file that does not exist, so `bot.join()` fails at its first step, and no
+Chromium is ever launched. The file's own comment says the registered lifetime
+was "measured at well over a second", and every case asserts the session is
+still active before relying on it, "so a shorter window would fail loudly
+rather than pass hollow." It did exactly that, which is the test design working.
+
+What the measurement had not accounted for is that it was taken on Windows.
+`AudioSink.provision()` is a documented no-op off Linux
+([AudioSink.js:24-27](../meeting-bot/src/recording/AudioSink.js#L24-L27)), so on
+the developer's machine the auth read really is the first thing that fails. On
+Linux it shells out to `pactl` — and it runs at
+[MeetingLifecycle.js:24](../meeting-bot/src/core/MeetingLifecycle.js#L24),
+*before* `bot.join()`. With no PulseAudio it throws in milliseconds, the
+session is deregistered before the assertion, and the precondition fails.
+
+**Those three tests had never run their intended path on the platform this bot
+deploys to.** The fix is to make CI that platform rather than to change the
+tests: `meeting-bot/Dockerfile` installs `pulseaudio` and
+`docker-entrypoint.sh` starts a daemon, so the workflow now does the same, with
+the same flags (`-D --exit-idle-time=-1 --disallow-exit
+--disallow-module-loading=no`) rather than relying on autospawn. 14-18s, and
+all 44 pass.
+
+**Two things this leaves open**, neither in scope here, both worth writing down
+while they are understood:
+
+1. `AudioSink.provision()` is called *outside* `runMeetingLifecycle`'s
+   `try`/`catch`, so a provision failure escapes before the block that would
+   have reported it. On a Linux host with a broken PulseAudio, a join answers
+   202 and the session then vanishes with no failure webhook — the backend sits
+   in `joining` until the watchdog sweeps it ten minutes later, instead of
+   getting a specific error. Worth a B3 test.
+2. Running `npm test` on a Linux dev machine without PulseAudio reproduces the
+   same three failures. Nothing says so; the tests read as environment-neutral.
+
+### No secrets, enforced
+
+CI needs no repository secret, and none is configured. `conftest.py` sets
+`IGNORE_DOTENV=1` and placeholder values, and `a2a80f9` / `d424ea9` made both
+suites independent of any `.env` precisely so a runner with none behaves
+identically to a developer's machine.
+
+This is enforced rather than trusted, by a step that fails if any of it stops
+being true: the workflow references no `secrets.` expression, no `.env` is
+present in the checkout, and none of `GROQ_API_KEY`, `JINA_API_KEY`,
+`SARVAM_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_CLIENT_SECRET`,
+`GOOGLE_TOKEN_ENCRYPTION_KEY`, `SUPABASE_KEY`, `SENTRY_DSN` or `DATABASE_URL`
+is set in the job. The hazard is concrete: real Groq, Jina, Sarvam and Google
+keys in a test process are one unstubbed fallback away from a billed call on
+every push. If a future change here seems to need a secret, the isolation has
+regressed and *that* is the bug.
+
+### Shape
+
+Two jobs, deliberately independent, so a Node failure never masks a Python one:
+
+| Job | Runtime | Services | Notes |
+|---|---|---|---|
+| `backend` | Python **3.12** | `pgvector/pgvector:pg18`, `redis:7-alpine` | `PYTEST_REQUIRE_NO_SKIPS=1` |
+| `meeting-bot` | Node **22** (matches `node:22-bookworm-slim`) | — | PulseAudio installed + started; `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` |
+
+Triggers: pushes to `main`, and all pull requests. `concurrency` with
+`cancel-in-progress` so a quick second commit does not leave two runs racing —
+the repo is private and Actions minutes are metered, which is also why the
+matrix is one Python and one Node rather than a grid.
+
+The service containers are published on the **same non-default host ports**
+`backend/tests/README.md` uses (55432, 56379), so the command in that file is
+the command that runs in CI, character for character. Nothing on a runner would
+collide at 5432/6379; the point is having one connection string to keep correct
+instead of two.
+
+`PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` on `npm ci`: `playwright` is a dependency
+but no test launches a browser, and only `src/core/BrowserManager.js` imports it
+(importing the module needs no binaries — only `.launch()` does). Without the
+variable, `npm ci` spends minutes and several hundred MB fetching three browsers
+nothing in the job opens. With it, `npm ci` is **1-2s**.
+
+### Speed
+
+**85 seconds wall clock** for a full green run, both jobs in parallel.
+
+| | |
+|---|---|
+| `backend` job | 84s — containers 33s, `pip install` 19s, **pytest 18s** |
+| `meeting-bot` job | 37s — PulseAudio 14s, `npm ci` 2s, **tests 14s** |
+
+Not slow enough for anyone to route around, which was the bar. The pip and npm
+caches are keyed on `requirements-dev.txt` and `package-lock.json`. The largest
+single cost is Postgres + Redis container startup (15-33s), which is not
+something to optimise away — it is the thing that makes the run mean anything.
+
+### Gates
+
+| # | Gate | Evidence |
+|---|---|---|
+| 1 | Both jobs pass on a real run against real service containers | run `34707285275` — green, 85s |
+| 2 | **With the Redis service removed, the workflow fails** | run `34707389734` — backend red; log reads `PYTEST_REQUIRE_NO_SKIPS=1 and 51 test(s) skipped`, then all 51 nodeids. Without the guard this run is `166 passed, 51 skipped` and green |
+| 3 | A real test failure fails the build | run `34706302175` — meeting-bot red on the three genuine `pactl` failures above; and run `34706516909` red on `main` for the same reason. CI gates, demonstrably |
+| 4 | No repository secret configured; no real key in the job | none configured; the "No credentials" step passes and would fail if that changed |
+| 5 | Local suites unchanged | backend **217**, meeting-bot **44** |
+
+Gate 2 is the one that mattered and it was demonstrated by actually deleting
+the service from the workflow and pushing, not by asserting it — the same
+standard B1's Redis-outage gate was held to.
+
+### Consequences
+
+- **B3 now lands with CI already protecting it.** Broadening coverage was
+  always the larger piece of work; it is much safer to do second, because every
+  test it adds is run automatically from the moment it is written, and the skip
+  guard means a new test that quietly does not run is a red build rather than a
+  line in a table.
+- **A `pull_request` run is the gate, and `main` is not protected.** Nothing
+  prevents merging a red PR; the workflow reports, it does not enforce. Turning
+  on a required status check is a repository setting, not a code change, and is
+  the natural next tightening.
 
 ## B3 — Broaden test coverage
+
+**This now lands with CI already under it**, which changes the phase's
+character rather than just its safety margin. Every test B3 writes runs
+automatically from the moment it is committed — on 3.12, against real Postgres
+and real Redis — instead of protecting the repo only when someone remembers to
+run it. And B2's skip guard means a new test that quietly *does not run* is a
+red build rather than a row in a table nobody re-derives. Writing coverage into
+a repo with no CI would have been the wrong order; that order is now fixed.
+
+B2 also produced B3's first concrete item, found by CI rather than by reading:
+`AudioSink.provision()` throws outside `runMeetingLifecycle`'s `try`/`catch`,
+so on a Linux host with a broken PulseAudio a join answers 202 and then
+disappears with no failure webhook — the backend waits in `joining` for the
+watchdog instead of getting a specific error. See the finding in B2.
 
 **A suite exists.** It was built as the gates of the phases that needed it
 rather than as a phase of its own:
@@ -1673,7 +1897,7 @@ metric would let the caps be set from data rather than from arithmetic.
 
 **Why this comes before B5, not after.** `cost_tracker.log_cost` ends in a
 `print()` ([cost_tracker.py:28](../backend/app/services/cost_tracker.py#L28)),
-so it is *one of the 45 calls B5 sweeps*. Running the sweep first would convert
+so it is *one of the 44 calls B5 sweeps*. Running the sweep first would convert
 that line to `logger.*` and then immediately rewrite the same function into a
 metric — one file touched twice, the first pass discarded. Doing B4 first
 retires that `print()` as part of the work that replaces it, and B5 inherits a
@@ -1693,12 +1917,41 @@ two styles interleave in order in the meantime.
 
 **Last in Phase B deliberately.** It is the widest and most mechanical diff in
 the plan and the one that reduces risk least, so it lands when the safety net is
-strongest: B3's broadened coverage, run automatically by B2's CI. The count is
-"the remaining" rather than 45 because B4 retires `cost_tracker`'s.
+strongest: B3's broadened coverage, run automatically by B2's CI — which now
+exists, so this sweep will be the first wide diff in the project's history that
+is checked by something other than the author.
+
+**The count, re-measured by B2: 44, not the 45 this plan carried from A4.** By
+AST, not by `grep print(` — which reports 46, two of them a docstring in
+`observability.py` and a shell one-liner in a `config.py` comment. B4 retires
+one more (`cost_tracker`), leaving **43**.
+
+Re-counting also corrected the *shape*, which matters more than the number.
+This is not "a diff across every file in `app/services/`": it is one file plus
+a scattering.
+
+| File | Calls |
+|---|---|
+| `services/transcription_service.py` | 26 |
+| `rag/chat_service.py` | 5 |
+| `api/meetings.py` | 3 |
+| `services/embedding_service.py` | 3 |
+| `services/transcription_fallback_sarvam.py` | 2 |
+| `api/chat.py`, `api/webhooks.py`, `rag/chat_fallback_groq.py`, `services/cost_tracker.py`, `services/embedding_fallback_jina.py` | 1 each |
+
+**26 of 44 are in `transcription_service.py`** — 59% of the work in one file,
+and the file where structured `meeting_id`/`user_id` fields are worth the most,
+since A4 already established that an unattributed transcription failure is the
+least useful kind. That makes this splittable in a way the plan previously
+assumed it was not: `transcription_service.py` alone is a coherent, reviewable
+change that delivers most of the value, and the remaining 18 across nine files
+can follow or wait indefinitely.
 
 ## What deferring the rest costs you
 
-Deferring B2–B5 is defensible — Phase A unblocks scaling and none of them do.
+Deferring B3–B5 is defensible — Phase A unblocks scaling and none of them do.
+(B2 is no longer among them: CI shipped, because "the tests only protect you
+when someone remembers" stopped being acceptable once there were 261 of them.)
 The consequence is explicit and already priced into the plan above: **A1, A3
 and every phase since carry their own tests as part of the phase.** Those are
 the gates you cannot skip, because A1 is a concurrency fix that is unobservable
