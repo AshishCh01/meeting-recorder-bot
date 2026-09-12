@@ -1742,12 +1742,13 @@ nothing in the job opens. With it, `npm ci` is **1-2s**.
 
 ### Speed
 
-**85 seconds wall clock** for a full green run, both jobs in parallel.
+**67–85 seconds wall clock** for a full green run, both jobs in parallel
+(measured across two: runs `34707285275` and `34708004003`).
 
 | | |
 |---|---|
-| `backend` job | 84s — containers 33s, `pip install` 19s, **pytest 18s** |
-| `meeting-bot` job | 37s — PulseAudio 14s, `npm ci` 2s, **tests 14s** |
+| `backend` job | 65–84s — containers 22–33s, `pip install` 18–19s, **pytest 15–18s** |
+| `meeting-bot` job | 37–38s — PulseAudio 14–15s, `npm ci` 1–2s, **tests 14–17s** |
 
 Not slow enough for anyone to route around, which was the bar. The pip and npm
 caches are keyed on `requirements-dev.txt` and `package-lock.json`. The largest
@@ -1758,15 +1759,24 @@ something to optimise away — it is the thing that makes the run mean anything.
 
 | # | Gate | Evidence |
 |---|---|---|
-| 1 | Both jobs pass on a real run against real service containers | run `34707285275` — green, 85s |
-| 2 | **With the Redis service removed, the workflow fails** | run `34707389734` — backend red; log reads `PYTEST_REQUIRE_NO_SKIPS=1 and 51 test(s) skipped`, then all 51 nodeids. Without the guard this run is `166 passed, 51 skipped` and green |
-| 3 | A real test failure fails the build | run `34706302175` — meeting-bot red on the three genuine `pactl` failures above; and run `34706516909` red on `main` for the same reason. CI gates, demonstrably |
+| 1 | Both jobs pass on a real run against real service containers | runs `34707285275` (85s) and `34708004003` (67s) — green |
+| 2 | **With the Redis service removed, the workflow fails** | run `34707389734` — backend red; the log reads `PYTEST_REQUIRE_NO_SKIPS=1 and 51 test(s) skipped`, then all 51 nodeids. Without the guard this exact run is `166 passed, 51 skipped` and **green** |
+| 3 | A deliberately broken test fails the build | run `34708134338` — one sabotaged assertion per suite, **both** jobs red. Independently, runs `34706302175` and `34706516909` went red on the three genuine `pactl` failures |
 | 4 | No repository secret configured; no real key in the job | none configured; the "No credentials" step passes and would fail if that changed |
 | 5 | Local suites unchanged | backend **217**, meeting-bot **44** |
 
 Gate 2 is the one that mattered and it was demonstrated by actually deleting
 the service from the workflow and pushing, not by asserting it — the same
-standard B1's Redis-outage gate was held to.
+standard B1's Redis-outage gate was held to. Gate 3's proof was run on a
+throwaway draft branch that was closed and deleted the moment it reported, so
+no deliberately-broken commit is reachable from `main`.
+
+**One process note, because it cost a red `main`.** The gate-2 commit was
+merged to `main` while the demonstration was still in progress, so `main`
+briefly carried a workflow with no Redis service. Restored in the same pull
+request that added this section. If red runs are going to be part of proving a
+CI change again, they belong on a branch nobody is watching for merge — which
+is what gate 3 then did.
 
 ### Consequences
 
