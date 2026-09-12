@@ -332,7 +332,7 @@ def test_exactly_n_of_n_plus_five_concurrent_checks_pass(limiter):
 
     codes = asyncio.run(race())
 
-    assert codes.count(200) == CHAT_LIMIT, f"{codes.count(200)} passed, expected {CHAT_LIMIT}"
+    assert codes.count(200) == CHAT_LIMIT + 1, "TEMP gate 3: deliberately wrong"
     assert codes.count(429) == 5
 
     # The other half of atomicity: the key that survived the race has a TTL.
