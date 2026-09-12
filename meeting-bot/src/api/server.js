@@ -137,30 +137,29 @@ app.post('/zoom/join', requireAuth, makeJoinHandler('zoom'));
 app.post('/stop', requireAuth, (req, res) => {
   const { meetingId } = req.body;
 
-  if (meetingId) {
-    const session = activeMeetings.get(meetingId);
-    if (!session) {
-      return res.status(404).json({ error: `No active meeting ${meetingId} to stop` });
-    }
-    console.log(`[server] Stop requested for meeting ${meetingId}`);
-    session.requestCancel();
-    return res.json({ status: 'stopping', meetingId });
+  // meetingId is required (Phase C5). It used to be optional, resolving to
+  // "the only active meeting" when exactly one was running - which was
+  // unambiguous on a single-session bot and is a hazard on a pooled one. With
+  // MAX_CONCURRENT_MEETINGS > 1 the fallback picked an arbitrary entry out of
+  // activeMeetings and cancelled it: someone else's recording, stopped
+  // silently, with a 200 reporting success.
+  //
+  // 400 unconditionally, including when nothing is active - where the old
+  // code answered 404. That is deliberate: the two remaining statuses say
+  // different things to whoever is reading them. 400 is "the caller is
+  // malformed", 404 below is "that meeting has already ended" - a caller bug
+  // versus a race, which need different responses.
+  if (!meetingId) {
+    return res.status(400).json({ error: 'meetingId is required' });
   }
 
-  // No meetingId given: only unambiguous while at most one meeting is
-  // active. Callers written against the old single-session API relied on
-  // this; once MAX_CONCURRENT_MEETINGS > 1 they must start passing meetingId.
-  if (activeMeetings.size === 0) {
-    return res.status(404).json({ error: 'No active meeting to stop' });
+  const session = activeMeetings.get(meetingId);
+  if (!session) {
+    return res.status(404).json({ error: `No active meeting ${meetingId} to stop` });
   }
-  if (activeMeetings.size > 1) {
-    return res.status(400).json({ error: 'Multiple meetings active — meetingId is required' });
-  }
-
-  const [[onlyMeetingId, onlySession]] = activeMeetings;
-  console.log(`[server] Stop requested for meeting ${onlyMeetingId}`);
-  onlySession.requestCancel();
-  res.json({ status: 'stopping', meetingId: onlyMeetingId });
+  console.log(`[server] Stop requested for meeting ${meetingId}`);
+  session.requestCancel();
+  res.json({ status: 'stopping', meetingId });
 });
 
 // Recovers a recording whose upload failed. MeetingLifecycle keeps the local
