@@ -5,13 +5,16 @@ Status: **A1** (`8dc0844`), **A3** (`d3b424d`), **A4** (`69e595a`) and **A5**
 (`588ceb9`) shipped - Phase A is functionally complete except A2, which is
 blocked on infrastructure, not on code. A5 was the highest-risk phase in this
 document and was verified against a real token, real forged tokens, and a
-real host-side benchmark. **Phase C is all but complete: C1 (`GET /capacity`),
-C2 (dispatch behind a queue), C3 (the bot registry) and C4 (per-host auth
-identity) have shipped. A meeting requested while the recorder is busy waits
-instead of being lost; there can be more than one recorder for it to wait on;
-each recorder signs in as its own account; and a recorder whose credential has
-died stops being given meetings it could only shred. C5 — making `meetingId`
-required on `/stop` — is all that is left.**
+real host-side benchmark. **Phase C is complete: C1 (`GET /capacity`), C2
+(dispatch behind a queue), C3 (the bot registry), C4 (per-host auth identity)
+and C5 (`meetingId` required on `/stop`) have all shipped. A meeting requested
+while the recorder is busy waits instead of being lost; there can be more than
+one recorder for it to wait on; each recorder signs in as its own account; a
+recorder whose credential has died stops being given meetings it could only
+shred; and no request can stop a recording it did not name.** Two things Phase
+C closing does **not** close are listed under "What Phase C leaves open"
+below — neither is a code gap, and neither should be discovered later by
+someone assuming a finished phase means a finished problem.
 
 Between A5 and C3, a batch of hardening landed that this plan treats as
 prerequisites rather than phases of their own — found by testing the phases
@@ -58,7 +61,7 @@ draft was numbered as steps 1–7; those numbers still appear in conversation, s
 | ~~**A4**~~ | ~~Sentry~~ — **done, `69e595a`** | None | Removing the DSN |
 | ~~**A5**~~ | ~~JWTs verified locally~~ — **done, `588ceb9`** | High | Fallback wrapper, then revert |
 | **B** | Tests, structured logging, rate limiting | — | Deferred by decision |
-| **C** | Bot pool — the recording tier — **C1–C4 done, C5 left** | High | Per sub-step |
+| ~~**C**~~ | ~~Bot pool — the recording tier~~ — **done, C1–C5** | High | Per sub-step |
 
 **The rule for every phase:** independently deployable, independently revertable,
 and it leaves the system in a coherent state. Never half-migrated.
@@ -1587,11 +1590,13 @@ only serialises writes *within* a process. **Decided: a credential per host
 from a pool** (not shared storage with locking) — see the resolved note above
 C3's Design.
 
-**C5. Remove the single-session fallback.** `/stop` without a `meetingId`
+**C5. Remove the single-session fallback.** ~~`/stop` without a `meetingId`
 resolves to "the only active meeting"
 ([server.js:119-132](../meeting-bot/src/api/server.js#L119-L132)). Once the
 backend always knows the assignment, make `meetingId` required and delete the
-fallback. The code already anticipates this.
+fallback. The code already anticipates this.~~ **done** — see below. It was
+what it looked like: a deletion, in `meeting-bot` only, with no backend
+change.
 
 ## C1 — `GET /capacity` ✅ done
 
@@ -2061,6 +2066,9 @@ fallback. The code already anticipates this.
 >
 > ### Still open after C4
 >
+> The first two are carried forward verbatim into [What Phase C leaves open](#what-phase-c-leaves-open) — they are the
+> same two items, not additional ones.
+>
 > - **Two hosts recording simultaneously on two real accounts is unproven.**
 >   The mechanism is in place and each host demonstrably loads and rotates its
 >   own files; what has not happened is two concurrent real recordings on two
@@ -2077,24 +2085,97 @@ fallback. The code already anticipates this.
 >   meant, and `persistStorageState`'s per-path queue already serialises those
 >   writes correctly inside one process.
 
-## C5 — Remove the single-session fallback (not started)
+## C5 — `meetingId` required on `/stop` ✅ done
 
-`/stop` without a `meetingId` still resolves to "the only active meeting"
-([server.js:119-132](../meeting-bot/src/api/server.js#L119-L132)). Everything
-it was waiting for now exists: C3 made the backend record `bot_host_id` and
-route stop/delete to the right host, and it has always sent `meetingId`
-explicitly. What C5 needs is small and entirely inside `meeting-bot`:
+> **Shipped** in `meeting-bot` only — `server.js` plus a new
+> `test/stop.endpoint.test.js`. **No backend change**, which was predicted and
+> then checked rather than assumed: `bot_service.stop_bot`
+> ([bot_service.py:192](../backend/app/services/bot_service.py#L192)) is the
+> only caller of the bot's `/stop` anywhere in the backend, and it has always
+> sent `{"meetingId": ...}` unconditionally. (`meetings.py`'s
+> `POST /meetings/{id}/stop` is the *backend's* own route, which the frontend
+> calls; it is a different endpoint and is untouched.) **Risk:** low — a
+> deletion, with no caller of the deleted path. **Revert:** restore the
+> fallback block; nothing else moved.
+>
+> **The handler's executable body went from 22 lines to 13** (28 lines to 27
+> including comments — the new version carries a 12-line comment explaining
+> what was removed and why the two surviving statuses stay distinct). No
+> deprecation window, no warning header, no compatibility flag — there is no
+> caller to be compatible with.
+>
+> ### The hazard was never the missing argument
+>
+> `meetingId` was optional, resolving to "the only active meeting" when
+> exactly one was running. On a single-session bot that was unambiguous. On a
+> pooled host with `MAX_CONCURRENT_MEETINGS > 1` — which is what C3 made
+> ordinary — it meant the handler pulled an arbitrary entry out of
+> `activeMeetings` and cancelled it: **someone else's recording, stopped
+> silently, with a `200` reporting success.** Nothing in the response, the
+> logs, or the stopped meeting's own failure would have pointed at the caller
+> that did it.
+>
+> ### Three outcomes became two, on purpose
+>
+> | request | before | after |
+> |---|---|---|
+> | no `meetingId`, nothing active | 404 "No active meeting to stop" | **400 "meetingId is required"** |
+> | no `meetingId`, exactly one active | **200 — cancels it** | **400 "meetingId is required"** |
+> | no `meetingId`, several active | 400 "Multiple meetings active" | 400 "meetingId is required" |
+> | `meetingId` not active | 404 | 404, unchanged |
+> | `meetingId` active | 200, stops it | 200, unchanged |
+>
+> The collapse is deliberate and so is what survives it. **400 and 404 are
+> kept distinct** because they are different operator problems: 400 is a
+> malformed caller, 404 is a meeting that has already ended. One status for
+> both would turn "your integration is broken" and "you lost a race" into the
+> same line in a log. An empty-string `meetingId` is 400 for the same reason —
+> falling through to the lookup would answer `No active meeting  to stop`,
+> which reads as a race that never happened.
+>
+> ### Gate — results
+>
+> Seven tests in `meeting-bot/test/stop.endpoint.test.js`. Staging a *real*
+> active session mattered here and took some care: `activeMeetings` is
+> module-private with no seam to fake, and only a real `POST /{platform}/join`
+> can register one. The join registers the session before answering 202 and
+> only then starts the lifecycle, so pointing `AUTH_STATE_PATH` at a path that
+> does not exist gives a genuinely-registered session whose lifecycle fails at
+> its first step — **no Chromium, and no dependence on whether the developer
+> has a valid `auth.json`**. Every case asserts the session is still active
+> before relying on it, so a shorter window than the ~1.3s measured would fail
+> loudly rather than pass hollow.
+>
+> 1. **A stop with no `meetingId`, while exactly one meeting is active, is
+>    refused** — and the meeting is still running afterwards. **Verified to
+>    fail against the pre-C5 code**, which is the point of the gate: with the
+>    old `server.js` stashed back in, it fails `200 !== 400` — the old handler
+>    cancelled the meeting and reported success. Two more of the seven fail
+>    against the old code (the idle 404→400 collapse, and the empty-string
+>    case); the other four pass on both, which is the evidence that the
+>    unchanged behaviour really is unchanged.
+> 2. **A `meetingId` that is not active is still 404** — passes against both
+>    old and new, deliberately.
+> 3. **A valid `meetingId` stops that meeting and no other** — a bystander
+>    session is still registered afterwards *and* still answers 200 to its own
+>    stop, which is what shows it was not consumed by the first call.
+> 4. **Suites.** meeting-bot **44 passed** (37 before, +7 here). Backend
+>    **182 passed**, unchanged — the number is the confirmation that no backend
+>    change was needed.
+>
+> Also checked live against the running compose stack, on the built image
+> rather than the source tree: `400 {"error":"meetingId is required"}` with
+> nothing active, and `404 {"error":"No active meeting <id> to stop"}` for an
+> unknown id.
+>
+> **One cost worth knowing about.** Each staged session runs its failure path
+> to the end, including `notifyBackend`'s three webhook attempts with a
+> hardcoded 3s + 6s backoff. The assertions finish in milliseconds; the process
+> then waits ~9s for those to unwind. They unwind in parallel, so it is ~9s for
+> the file however many meetings it stages — but it makes this the slowest file
+> in the suite, and that is why.
 
-- Make `meetingId` required on `POST /stop`, returning 400 without it.
-- Delete the `activeMeetings.size === 1` fallback and the comment anticipating
-  this change.
-- A test that a `meetingId`-less stop is refused rather than guessing, which is
-  the actual hazard: with `MAX_CONCURRENT_MEETINGS > 1` on a pooled host, the
-  fallback stops *an arbitrary* meeting — someone else's recording.
-
-No backend change is expected. Confirm that before relying on it: `stop_bot`
-already sends `{"meetingId": ...}` unconditionally, so the fallback should have
-no remaining caller.
+---
 
 ## C1 and C2 are worth shipping on their own
 
@@ -2122,15 +2203,47 @@ multi-host traffic arrives.
   gates 2 and 3 above.** Capacity is not stranded because the registry holds no
   per-meeting state to strand: a dead host's cache entry goes stale and its
   slots stop being offered, and the reservation counter expires on its own.
-- ~~Two hosts recording simultaneously do not corrupt each other's auth state.~~
-  **Met by construction — C4.** Each host reads and writes its own
-  `auth.json`/`zoom-auth.json`, so there is no shared file left to corrupt:
-  `persistStorageState`'s write queue is per path, and per-host files put the
-  two hosts on different paths. The contention this line was written to guard
-  against was removed rather than managed. Observed live — the two hosts' Zoom
-  files diverged on their own as each rotated its own cookies. **Not** proven
-  with two simultaneous *real* recordings on two real accounts; see "Still
-  open after C4".
+- Two hosts recording simultaneously do not corrupt each other's auth state.
+  **Met by construction, not yet proven by observation.** Each host reads and
+  writes its own `auth.json`/`zoom-auth.json`, so there is no shared file left
+  to corrupt: `persistStorageState`'s write queue is per path, and per-host
+  files put the two hosts on different paths — the contention this line was
+  written to guard against was removed rather than managed, and the two hosts'
+  Zoom files were observed diverging on their own as each rotated its own
+  cookies. **But two simultaneous real recordings on two real accounts have
+  not been run**, because the second account does not exist and
+  `meeting-bot/auth/bot-b/` is seeded from bot-a's files. This is the one
+  Phase C gate item that closes on the operator, not on the code — see
+  "What Phase C leaves open".
+
+---
+
+# What Phase C leaves open
+
+Phase C is done. These are not, and they are listed here rather than left to be
+rediscovered — a finished phase is not a finished problem.
+
+**1. "Two hosts recording simultaneously do not corrupt each other's auth
+state" is still unproven.** C4's mechanism is in place and each host
+demonstrably loads and rotates its own credential files — the two hosts' Zoom
+digests were observed diverging on their own. What has *not* happened is two
+concurrent real recordings on two separate Google accounts, because
+**`meeting-bot/auth/bot-b/` is currently seeded from bot-a's files and the
+second Google/Zoom account does not exist yet**. That is the operator work C4's
+design always assumed, and Phase C closing does not close it. Until those
+accounts exist, the pool is two hosts sharing one identity — which is exactly
+the state C4 was built to end.
+
+**2. The dev `docker-compose.yml` has no `restart:` policy on any service.**
+Found during C3's gate 6: restarting Redis killed the arq worker inside arq's
+own shutdown path, and it stayed down — taking the heartbeat loop with it, so
+the pool's health cache went cold and stayed cold. Pre-existing, and A3 and C2
+have the same exposure; C3 and C4 only raised the stakes by putting the poller
+there too. **`docker-compose.prod.yml` already sets `restart: unless-stopped`
+on every service**, so production self-heals and this is a dev-only gap.
+Mirroring the prod policies into the dev file is a change to all five services
+rather than one, which is why it was not done in passing. **Queued as the next
+thing to fix**, not unknown.
 
 ---
 
