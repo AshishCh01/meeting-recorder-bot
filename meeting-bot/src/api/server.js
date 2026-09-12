@@ -4,6 +4,7 @@ import fs from 'fs';
 import { MeetingSession } from '../core/MeetingSession.js';
 import { runMeetingLifecycle, runReupload } from '../core/MeetingLifecycle.js';
 import { RecordingFile } from '../recording/RecordingFile.js';
+import { snapshot as authHealthSnapshot } from '../core/AuthHealth.js';
 
 const app = express();
 app.use(express.json());
@@ -13,10 +14,14 @@ app.use(express.json());
 // Audio is now isolated per session on Linux (AudioSink.js provisions a
 // dedicated PulseAudio sink per meetingId, and BrowserManager/FFmpegManager
 // both point at it — see MeetingLifecycle.js), so MAX_CONCURRENT_MEETINGS
-// can be raised above 1 via env var. Note: Xvfb display (shared :99) and
-// auth identity (shared auth.json per platform) are still global, not
-// per-session — see the audit notes; raising this above 1 is safe for
-// audio specifically, not yet a full concurrency guarantee.
+// can be raised above 1 via env var. Two things are still global to this
+// process rather than per-session: the Xvfb display (shared :99), and the
+// auth identity — one credential per platform, shared by every session on
+// this host. Phase C4 gave each *host* its own credential files
+// (AUTH_STATE_PATH / ZOOM_AUTH_STATE_PATH), which is what makes a pool of
+// bots a pool of identities; it did not make them per-session, and nothing
+// needs it to be. Raising this above 1 is safe for audio specifically, not
+// yet a full concurrency guarantee.
 const MAX_CONCURRENT_MEETINGS = Number(process.env.MAX_CONCURRENT_MEETINGS || 1);
 const activeMeetings = new Map(); // meetingId -> MeetingSession
 // Re-uploads in progress (POST /reupload). Kept apart from activeMeetings on
@@ -209,6 +214,16 @@ app.get('/capacity', requireAuth, (req, res) => {
     // Costs nothing and turns "the bot says it's busy" into "busy with
     // which meeting" - the question you actually ask at 2am.
     meetingIds: [...activeMeetings.keys()],
+    // Phase C4. Free slots are not the only thing that decides whether this
+    // host can take a meeting: a host with a dead Google session has capacity
+    // and will fail every Google join it is given. The backend filters on
+    // this per platform, so a dead Zoom credential does not stop this host
+    // recording Google Meet calls.
+    //
+    // Always present and always carrying every platform, including ones never
+    // checked (status "unknown"), so a consumer never has to tell "no opinion"
+    // apart from "this bot predates C4".
+    auth: authHealthSnapshot(),
   });
 });
 

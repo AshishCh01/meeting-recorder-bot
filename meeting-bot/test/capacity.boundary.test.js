@@ -46,7 +46,12 @@ const validJoinBody = {
 test('MAX_CONCURRENT_MEETINGS=0 reports no capacity', async () => {
   const res = await fetch(`${baseUrl}/capacity`, { headers: authed });
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), {
+  // `auth` (Phase C4) is destructured out: this test is about the capacity
+  // arithmetic at its boundary, and auth health is a separate axis with its
+  // own file. Capacity 0 and a healthy credential are independent reasons a
+  // host cannot take a meeting, which is exactly why they are separate keys.
+  const { auth, ...capacity } = await res.json();
+  assert.deepEqual(capacity, {
     active: 0,
     max: 0,
     available: 0,

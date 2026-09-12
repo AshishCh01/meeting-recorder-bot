@@ -6,8 +6,30 @@
 // block page suggests signing in as the fix.
 const { chromium } = require('playwright');
 const fs = require('fs');
+const path = require('path');
+
+// Phase C4: write to the path the *runtime* will read, not a hardcoded
+// filename in the current directory. Before this, generating bot-b's
+// credentials meant running this script and then remembering to move
+// zoom-auth.json into meeting-bot/auth/bot-b/ by hand - a step with no error
+// message when you skipped it, which silently left bot-b on bot-a's
+// identity. Imported from BrowserManager rather than reimplemented so the
+// generator and the bot can never disagree about where the file lives; a
+// dynamic import is how a .cjs reaches an ES module.
+//
+//   ZOOM_AUTH_STATE_PATH=auth/bot-b/zoom-auth.json node generate-zoom-auth.cjs
+//
+// With nothing set it resolves to meeting-bot/zoom-auth.json exactly as before.
+async function resolveOutputPath(platform) {
+  const { resolveAuthStatePath } = await import('./src/core/BrowserManager.js');
+  return resolveAuthStatePath(platform);
+}
 
 (async () => {
+  const outputPath = await resolveOutputPath('zoom');
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  console.log('[0] Will write the captured session to:', outputPath);
+
   // Separate profile dir from generate-auth.cjs's chrome-bot-profile, so this
   // session's cookies stay Zoom-only and don't get mixed into auth.json (or
   // vice versa) if both scripts are ever run against the same profile.
@@ -65,18 +87,18 @@ const fs = require('fs');
 
   await new Promise((resolve) => process.stdin.once('data', resolve));
 
-  await context.storageState({ path: 'zoom-auth.json' });
+  await context.storageState({ path: outputPath });
 
-  const saved = JSON.parse(fs.readFileSync('zoom-auth.json', 'utf8'));
+  const saved = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
   const zoomCookies = saved.cookies.filter((c) => c.domain.includes('zoom.us'));
 
   console.log('');
-  console.log(`[4] Saved zoom-auth.json - ${saved.cookies.length} cookies total, ${zoomCookies.length} on zoom.us domains`);
+  console.log(`[4] Saved ${outputPath} - ${saved.cookies.length} cookies total, ${zoomCookies.length} on zoom.us domains`);
   if (zoomCookies.length === 0) {
     console.log('    WARNING: no zoom.us cookies captured - this likely will not authenticate.');
   } else {
-    console.log('    Looks like a Zoom session was captured. Copy zoom-auth.json into');
-    console.log('    meeting-bot/zoom-auth.json (or wherever ZOOM_AUTH_STATE_PATH points).');
+    console.log('    Looks like a Zoom session was captured, and it is already at the path');
+    console.log('    ZOOM_AUTH_STATE_PATH resolves to - no copying needed.');
   }
 
   await context.close();

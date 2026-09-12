@@ -35,7 +35,7 @@ import json
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 import redis
@@ -44,6 +44,12 @@ from app.config import settings
 from app.services import bot_service
 
 logger = logging.getLogger(__name__)
+
+# The auth-health states meeting-bot reports per platform (AuthHealth.js).
+# "unknown" is a real state, not a placeholder - see Heartbeat.usable_for.
+AUTH_OK = "ok"
+AUTH_EXPIRED = "expired"
+AUTH_UNKNOWN = "unknown"
 
 # One key per host rather than one hash for the pool: each host's entry gets
 # its own expiry, so a host removed from BOT_HOSTS disappears on its own
@@ -88,6 +94,18 @@ class Heartbeat:
     max: int
     available: int
     last_seen: float
+    # Phase C4: {platform: "ok" | "expired" | "unknown"} as the bot reported
+    # it. Free slots are not enough to decide whether a host can take a
+    # meeting - a host with a dead Google session has capacity and will fail
+    # every Google join it is handed, which with a pool means the dispatcher
+    # feeds meetings to a shredder while a healthy host sits idle.
+    #
+    # Defaulted rather than required, and every read goes through
+    # usable_for(): a bot running pre-C4 code sends no `auth` key at all, and
+    # that has to mean "no opinion, carry on" rather than an exception or an
+    # empty pool. Old cache entries written before this field existed
+    # deserialise the same way.
+    auth: dict = field(default_factory=dict)
 
     @property
     def age_seconds(self) -> float:
@@ -96,6 +114,40 @@ class Heartbeat:
     @property
     def is_fresh(self) -> bool:
         return self.age_seconds <= settings.bot_heartbeat_ttl_seconds
+
+    def auth_status(self, platform: str) -> str:
+        entry = (self.auth or {}).get(platform)
+        if isinstance(entry, dict):
+            return entry.get("status") or AUTH_UNKNOWN
+        return entry or AUTH_UNKNOWN
+
+    def usable_for(self, platform: str | None) -> bool:
+        """
+        Can this host be given a meeting on this platform?
+
+        Per platform, never per host. Google and Zoom are separate identities
+        that expire independently, so a dead Zoom session must not stop this
+        host recording Google Meet calls - one "unhealthy" flag would take a
+        working recorder offline over a credential it was not going to use.
+
+        **"unknown" counts as usable, deliberately.** It means the bot has
+        booted but its first keepalive cycle has not finished yet (a 10-second
+        initial delay plus a headed Chrome page load), or that the bot predates
+        C4 and reports no health at all. Treating that as unusable would make
+        every bot restart a brief pool-wide outage, and would make a fresh
+        single-host install refuse meetings for its first half-minute - a
+        guaranteed cost, paid every time. Treating it as usable risks
+        dispatching into a credential that turns out to be dead, which costs
+        one meeting that fails with a clear AUTH_EXPIRED message and, because
+        MeetingLifecycle reports that failure straight into the health map,
+        immediately takes the host out for the platform. A bounded,
+        self-correcting wrong guess beats a certain outage.
+
+        A platform of None (nothing to check against) is likewise usable.
+        """
+        if platform is None:
+            return True
+        return self.auth_status(platform) != AUTH_EXPIRED
 
 
 @dataclass(frozen=True)
@@ -269,6 +321,11 @@ def poll_once(hosts: list[BotHost] | None = None) -> list[Heartbeat]:
                 max=int(capacity.get("max", 0)),
                 available=int(capacity.get("available", 0)),
                 last_seen=time.time(),
+                # Passed through as the bot sent it rather than normalised
+                # here: the detail and checkedAt alongside each status are
+                # what turn "bot-b is out" into "bot-b's Google session died
+                # 40 minutes ago, here is the page it landed on".
+                auth=capacity.get("auth") or {},
             )
             client.set(
                 HEARTBEAT_PREFIX + host.id,
@@ -335,9 +392,15 @@ def live_hosts() -> list[tuple[BotHost, Heartbeat]]:
 # Choosing a host
 # ---------------------------------------------------------------------------
 
-def claim_host() -> HostChoice:
+def claim_host(platform: str | None = None) -> HostChoice:
     """
-    Picks a live host with room and takes a slot on it.
+    Picks a live host that can record `platform` and has room, and takes a
+    slot on it.
+
+    `platform` is the meeting's own ("google" / "zoom"), and filtering on it
+    is Phase C4's whole point - see Heartbeat.usable_for. It defaults to None
+    ("do not filter") so a caller with nothing to check against, and every
+    pre-C4 caller, behaves exactly as before.
 
     **This is not a lock, and nothing here pretends otherwise** - the same
     caveat C2 documents for the single-host case still applies. The bot's own
@@ -363,9 +426,20 @@ def claim_host() -> HostChoice:
     if not live:
         return HostChoice(None, _nothing_alive_reason())
 
-    reserved = _reservations([host.id for host, _ in live])
+    usable = [(host, beat) for host, beat in live if beat.usable_for(platform)]
+    blocked = [(host, beat) for host, beat in live if not beat.usable_for(platform)]
+
+    if not usable:
+        # Every live host has a dead credential for this platform. This has to
+        # be said in its own words: the operator fix is "regenerate bot-b's
+        # Google session", which is nothing like "add a host" or "wait for one
+        # to free up", and a message that said "busy" would send someone
+        # looking at capacity for a problem that is entirely about auth.
+        return HostChoice(None, _auth_blocked_reason(platform, blocked))
+
+    reserved = _reservations([host.id for host, _ in usable])
     ranked = sorted(
-        ((host, beat, beat.available - reserved.get(host.id, 0)) for host, beat in live),
+        ((host, beat, beat.available - reserved.get(host.id, 0)) for host, beat in usable),
         key=lambda c: c[2],
         reverse=True,
     )
@@ -375,12 +449,22 @@ def claim_host() -> HostChoice:
             continue
         if _reserve(host.id, beat.available):
             logger.info(
-                "[registry] picked recorder %s (%s/%s in use)", host.id, beat.active, beat.max,
+                "[registry] picked recorder %s for %s (%s/%s in use)",
+                host.id, platform or "any platform", beat.active, beat.max,
             )
             return HostChoice(host)
 
     busy = ", ".join(f"{host.id} {beat.active}/{beat.max}" for host, beat, _ in ranked)
-    return HostChoice(None, f"every recorder was busy ({busy})")
+    reason = f"every recorder was busy ({busy})"
+    if blocked:
+        # Mixed: some hosts full, others locked out by a dead credential. Both
+        # halves matter - the pool looks smaller than it is, and the reason it
+        # is smaller is fixable.
+        reason += (
+            f"; {_describe_blocked(blocked)} also had no usable "
+            f"{_platform_label(platform)} session"
+        )
+    return HostChoice(None, reason)
 
 
 def release_host(host_id: str) -> None:
@@ -429,6 +513,38 @@ def _reservations(host_ids: list[str]) -> dict[str, int]:
         for host_id, value in zip(host_ids, raw)
         if value is not None and str(value).lstrip("-").isdigit()
     }
+
+
+_PLATFORM_LABELS = {"google": "Google", "zoom": "Zoom"}
+_FIX_COMMANDS = {"google": "node generate-auth.cjs", "zoom": "node generate-zoom-auth.cjs"}
+
+
+def _platform_label(platform: str | None) -> str:
+    return _PLATFORM_LABELS.get(platform, platform or "")
+
+
+def _describe_blocked(blocked: list) -> str:
+    return ", ".join(host.id for host, _ in blocked)
+
+
+def _auth_blocked_reason(platform: str | None, blocked: list) -> str:
+    """
+    The message a user eventually reads when a meeting gives up, and the one
+    an operator acts on. It names the platform, every host that is out, and
+    the command that fixes it - because "no recorder was available" would send
+    someone to look at capacity for a problem that is entirely about a
+    credential.
+    """
+    label = _platform_label(platform)
+    fix = _FIX_COMMANDS.get(platform)
+    hosts = ", ".join(f"{host.id} ({beat.auth_status(platform)})" for host, beat in blocked)
+    message = (
+        f"no recorder has a working {label} session - {hosts}. "
+        f"The recorders are running and have capacity; their {label} sign-in has expired"
+    )
+    if fix:
+        message += f", so regenerate it with `{fix}`"
+    return message
 
 
 def _nothing_alive_reason() -> str:

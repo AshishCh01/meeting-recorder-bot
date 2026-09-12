@@ -95,12 +95,20 @@ def dispatch_queued_meeting(meeting_id: str) -> DispatchResult:
         # in Redis, not from calling every host live - see claim_host, which
         # also takes a slot on the host it returns.
         #
+        # Phase C4 added the platform. A host with a dead Google session still
+        # reports free slots and would still be picked, then fail the join
+        # with AUTH_EXPIRED - so with a pool, a dead credential quietly turns a
+        # recorder into a meeting-shredder while the healthy host idles.
+        # Filtering is per platform, never per host: a dead Zoom session must
+        # not stop a host recording Google Meet calls.
+        #
         # No live host is a reason to wait, not a reason to fail the meeting:
         # a container may be restarting, and a recording that starts two
         # minutes late is still a recording. If none ever comes back, the
-        # attempt cap turns that into a failure naming this reason.
+        # attempt cap turns that into a failure naming this reason - and for
+        # an auth outage that reason names the credential, not capacity.
         try:
-            choice = bot_registry.claim_host()
+            choice = bot_registry.claim_host(platform)
         except Exception as e:
             logger.warning("[dispatch] could not read the recorder pool for meeting %s: %s", meeting_id, e)
             return DispatchResult("waiting", f"the recorder pool could not be read ({e})")
@@ -175,12 +183,21 @@ def record_dispatch_exhausted(meeting_id: str, reason: str) -> None:
             .where(Meeting.id == meeting_id, Meeting.status == QUEUED)
             .values(
                 status="failed",
-                # Names the real cause, not a generic timeout: "waited for a
-                # free recorder" is actionable (raise MAX_CONCURRENT_MEETINGS,
-                # or add a host), "timed out" is not.
+                # Names the real cause, not a generic timeout - "timed out"
+                # tells the reader nothing they can act on, while every
+                # `reason` that reaches here names a specific fix.
+                #
+                # "a recorder that could take this meeting", not "a free
+                # recorder": since C4 the cause is not always capacity. A pool
+                # whose every Google session has expired has plenty of free
+                # recorders and still cannot record anything, and a prefix
+                # promising a capacity problem in front of a credential
+                # problem sends the reader to the wrong half of the system.
+                # This phrasing is true of all three reasons - busy,
+                # unreachable, and unusable credential.
                 error_message=(
-                    f"Waited {_wait_window_description()} for a free recorder and never got one - "
-                    f"{reason}. No recording was made."
+                    f"Waited {_wait_window_description()} for a recorder that could take this "
+                    f"meeting and never got one - {reason}. No recording was made."
                 ),
             )
         )

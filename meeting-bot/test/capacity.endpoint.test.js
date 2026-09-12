@@ -57,10 +57,24 @@ test('GET /health stays unauthenticated', async () => {
 test('authenticated idle bot reports its configured max as fully available', async () => {
   const res = await fetch(`${baseUrl}/capacity`, { headers: authed });
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), {
+  const body = await res.json();
+  const { auth, ...capacity } = body;
+  assert.deepEqual(capacity, {
     active: 0,
     max: 3,
     available: 3,
     meetingIds: [],
   });
+  // Phase C4 added `auth`. Destructured out above and asserted separately
+  // rather than inlined into the deepEqual, because checkedAt is a
+  // wall-clock timestamp - pinning the whole object would make this test
+  // depend on the clock.
+  assert.deepEqual(Object.keys(auth).sort(), ['google', 'zoom']);
+  // Nothing has run a keepalive cycle in this process, so both are "unknown"
+  // rather than absent. The distinction is load-bearing: the backend reads
+  // "unknown" as usable-for-now, and could not tell a never-checked platform
+  // from a missing key if the endpoint simply left it out.
+  assert.equal(auth.google.status, 'unknown');
+  assert.equal(auth.zoom.status, 'unknown');
+  assert.equal(auth.google.checkedAt, null);
 });
