@@ -33,10 +33,10 @@ chat reset/storage semantics and worker retry. It found and fixed five real
 bugs along the way. The worst was that transcription jobs were never retried
 at all. A few smaller ones are recorded as open. **B4 has shipped too**: every
 AI call now writes a queryable `ai_usage_events` row, with saved SQL for spend
-per user and cost per chat turn. **B5 (structured logging) is under way**: part
-1 converted `transcription_service.py`, the file with 26 of the 44 `print()`
-calls, and added `meeting_id`/`user_id` fields to its log lines; part 2 (the
-remaining 18) is still to come. It does not block a deploy.
+per user and cost per chat turn. **And B5 has shipped, which completes Phase
+B**: `backend/app` has no `print()` calls left, all 44 are `logger.*`, and log
+lines inside a transcription, a chat turn or a webhook carry `meeting_id` and
+`user_id` as fields. A test fails the build if a `print()` comes back.
 
 Between A5 and C3, a batch of hardening landed that this plan treats as
 prerequisites rather than phases of their own — found by testing the phases
@@ -86,7 +86,7 @@ draft was numbered as steps 1–7; those numbers still appear in conversation, s
 | **B2** | CI on every push and PR — **done** | None | Deleting the workflow |
 | **B3** | Broader tests — **done** | Low | Reverting the individual fix commits |
 | **B4** | AI spend recorded per call and per user — **done** | Low | Reverting the commit; the table can stay, nothing else reads it |
-| **B5** | Structured logging — **part 1 done** (`transcription_service.py`), part 2 to come | None | Reverting the commit |
+| **B5** | Structured logging — **done** | None | Reverting the two commits |
 | ~~**C**~~ | ~~Bot pool — the recording tier~~ — **done, C1–C5** | High | Per sub-step |
 
 **The rule for every phase:** independently deployable, independently revertable,
@@ -1293,9 +1293,8 @@ Do not declare Phase A done on "the code is merged." Prove all four:
 <a id="phase-b--rate-limiting-tests-logging"></a>
 # Phase B — Rate limiting, tests, logging
 
-> **B1 (rate limiting), B2 (CI), B3 (broader tests) and B4 (AI spend as data)
-> have shipped.** B5 is in progress: part 1 is done, part 2 is still to come.
-> It does not block a deploy.
+> **Phase B is complete.** B1 (rate limiting), B2 (CI), B3 (broader tests), B4
+> (AI spend as data) and B5 (structured logging) have all shipped.
 
 Phase B was written as one undifferentiated bucket and deferred wholesale. That
 was defensible while every item in it was a *quality* item. It stopped being
@@ -1310,7 +1309,7 @@ one item that blocked the deploy was done on its own.
 | **B2** | CI: run both suites automatically | **done** — below |
 | **B3** | Broaden test coverage — the status machine, webhook idempotency, the AI fallback ladders, chat resets, worker retry | **done** — below |
 | **B4** | `log_cost` → a real metric rather than a debug line | **done** — below |
-| **B5** | The remaining `print()` calls → `logger.*` with structured fields | **in progress** — part 1 done, below |
+| **B5** | The remaining `print()` calls → `logger.*` with structured fields | **done** — below |
 
 ---
 
@@ -1935,7 +1934,8 @@ rather than as a phase of its own:
 | `test_ai_usage_metrics.py` | 22 | **B4** |
 | **total after B4** | **412** | |
 | `test_structured_logging.py` | 16 | **B5, part 1** |
-| **total** | **428** | |
+| `test_structured_logging.py` | +10 | **B5, part 2** |
+| **total** | **438** | |
 
 *(An earlier version of this table said "40 tests across A1/A3/A4". That was
 true when Phase B was written and has been stale since A5.)*
@@ -2625,7 +2625,12 @@ or still `0`, replace `SUM(usd)` with the stored units times the correct rate.
   streamed.
 - **No dashboard and no rate-limit changes**, by decision.
 
-## B5 — `print()` → `logger.*`
+<a id="b5--print--logger"></a>
+## B5 — `print()` → `logger.*` ✅ done
+
+**Done in two parts.** `backend/app` went from 44 `print()` calls to **0**,
+counted by AST. Backend suite **412 → 438**, 0 skipped with both services and
+`PYTEST_REQUIRE_NO_SKIPS=1`. meeting-bot is unchanged at 47.
 
 Convert the remaining `print()` calls in `backend/app` to `logger.*`, with
 `meeting_id` and `user_id` as structured fields rather than interpolated into
@@ -2745,27 +2750,89 @@ One existing test changed: the transcription ladder fixture no longer patches
 - `record_terminal_failure` binding no fields;
 - a `print()` coming back.
 
-**Part 2, still to come:** the remaining **18** calls.
+### Part 2 — everything else ✅ done
 
-| File | Calls |
-|---|---|
-| `rag/chat_service.py` | 5 |
-| `api/meetings.py` | 3 |
-| `services/embedding_service.py` | 3 |
-| `api/webhooks.py` | 2 |
-| `services/transcription_fallback_sarvam.py` | 2 |
-| `api/chat.py`, `rag/chat_fallback_groq.py`, `services/embedding_fallback_jina.py` | 1 each |
+Backend suite **428 → 438**, 0 skipped. Postgres only: `375 passed, 63
+skipped`; all 10 new tests need only Postgres. `print()` calls in
+`backend/app`: **18 → 0**.
 
-It adds the same fields to the chat and webhook paths, and widens the AST
-guard to all of `backend/app`.
+| File | Calls converted | Fields come from |
+|---|---|---|
+| `rag/chat_service.py` | 5 | The chat turn |
+| `api/meetings.py` | 3 | `extra=`: the route's `meeting_id` and user |
+| `services/embedding_service.py` | 3 | The surrounding transcription or chat turn |
+| `api/webhooks.py` | 2 | `extra=`: the payload's `meeting_id`/`user_id`, checked against the meeting before these lines |
+| `services/transcription_fallback_sarvam.py` | 2 | The transcription |
+| `api/chat.py` | 1 | `extra=`: the route's `meeting_id` and user |
+| `rag/chat_fallback_groq.py` | 1 | The chat turn |
+| `services/embedding_fallback_jina.py` | 1 | The surrounding transcription or chat turn |
+
+**Chat turns.** `ask_question_stream` is now a thin wrapper around
+`_ask_question_stream` that binds the turn's `meeting_id`/`user_id` for as
+long as the turn runs. Every line underneath carries them:
+- in `chat_service` itself;
+- in the Groq fallback;
+- in the embedding call a search tool makes, because `asyncio.to_thread`
+  copies the context into that thread.
+
+The wrapper iterates the inner generator through `contextlib.aclosing`. When a
+caller stops early (a client disconnecting mid-answer), the inner generator,
+and the session lock it holds, is released as the stream is closed. Without
+that it is released only once garbage collection gets to the abandoned
+generator. The test for it checks the lock the instant `aclose()` returns;
+without `aclosing` the lock is still held at that point.
+
+**Routes.** The three routes log one line each on an error path, so they pass
+the fields with `extra=` instead of binding a context for the whole request.
+`LogContextFilter` honours an explicit `extra=` over any context.
+
+**Levels.**
+- Retries, fallbacks and non-fatal cleanup failures are `warning`.
+- Groq also failing, a webhook's failed hand-off, a PDF failure and a chat
+  stream failure are `error`, with the traceback.
+- A failure to load or store the chat thread is `warning` with the traceback:
+  the answer still arrives.
+- The Sarvam start/finish lines are `info`.
+
+**Tests: 10 more in `test_structured_logging.py`** (26 in the file).
+- *Chat.* Every line of a turn carries its meeting and user, including Groq
+  retries (a turn that is answered logs nothing above WARNING). A search
+  tool's embedding retry on another thread carries the turn's fields. Groq
+  also failing logs an ERROR with the traceback. Stopping a stream early
+  releases the session lock immediately, leaves no fields behind, and the next
+  question gets the session.
+- *Fallbacks.* The Sarvam and Jina fallback lines carry the transcription's
+  fields.
+- *Routes.* The webhook's signed-URL and hand-off lines, the delete and PDF
+  lines in `meetings.py`, and the chat route's stream failure all carry the
+  meeting and user; the failures keep their traceback.
+- *Guard.* **No `print()` anywhere in `backend/app`**, by AST, naming any
+  offender.
+
+**Falsified.** 8 breaks, all caught:
+- the chat turn binding no fields, or the meeting but not the user;
+- the wrapper without `aclosing`;
+- the Groq failure or the PDF failure logged without its traceback;
+- the webhook hand-off line or the chat route line without its fields;
+- a `print()` coming back in a file part 1 never touched.
+
+`aclosing` was the one that needed a sharper test: removing it did not fail
+the first version, because CPython collects the abandoned generator quickly
+enough for the next question to get the lock anyway. The test now checks the
+lock at the instant the stream is closed, which fails without it.
+
+**Not changed:**
+- The format stays plain text.
+- No JSON output.
+- uvicorn's and arq's own loggers are untouched.
+- No log line was added or removed beyond the conversion itself.
 
 ## What deferring the rest costs you
 
-Deferring B5 is defensible — Phase A unblocks scaling and B5 does not.
-(B2, B3 and B4 are no longer deferred: CI shipped, because "the tests only
-protect you when someone remembers" stopped being acceptable once there were
-261 of them; B3's broader coverage followed it; and B4 turned AI spend into
-data.)
+Nothing in Phase B is deferred any more. B2 through B5 all shipped: CI,
+because "the tests only protect you when someone remembers" stopped being
+acceptable once there were 261 of them; B3's broader coverage; B4's AI spend as
+data; and B5's structured logging.
 The consequence is explicit and already priced into the plan above: **A1, A3
 and every phase since carry their own tests as part of the phase.** Those are
 the gates you cannot skip, because A1 is a concurrency fix that is unobservable

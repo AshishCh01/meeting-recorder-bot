@@ -1,5 +1,8 @@
 """
-Phase B5, part 1 - structured log fields, and transcription_service off print().
+Phase B5 - structured log fields, and backend/app off print().
+
+Part 1 (sections 1-4) added the fields and converted transcription_service;
+part 2 (sections 5-7) converted everything else and widened the guard.
 
 What this proves:
 
@@ -18,8 +21,16 @@ What this proves:
      - both outside transcribe_recording - carry the fields too.
   4. No print() is left in transcription_service.py, counted by AST (a grep
      would also count docstrings and comments).
+  5. Chat. Every line logged during a turn - chat_service, the Groq fallback,
+     and the embedding call a search tool makes on another thread - carries
+     the turn's meeting and user, at the right level; a caller that stops the
+     stream early releases the session lock and leaves no fields behind.
+  6. The transcription fallbacks (Sarvam, Jina) log under the transcription's
+     fields, and each converted route line carries them explicitly.
+  7. No print() anywhere in backend/app.
 
-Providers are faked as in test_transcription_queue.py. Postgres only.
+Providers are faked as in test_transcription_queue.py and
+tests/fake_ai_providers.py. Postgres only.
 """
 import ast
 import asyncio
@@ -358,3 +369,235 @@ def print_calls(path: Path) -> list:
 
 def test_transcription_service_has_no_print_calls():
     assert print_calls(APP_DIR / "services" / "transcription_service.py") == []
+
+
+# ---------------------------------------------------------------------------
+# 5. Chat
+# ---------------------------------------------------------------------------
+
+from app.rag import chat_service  # noqa: E402
+from tests.fake_ai_providers import TRANSIENT, FakeGeminiEmbed, FakeJina, call, install_fast_sleeps  # noqa: E402
+from tests.test_chat_fallback_ladder import ask, chat  # noqa: E402,F401 - chat is a fixture
+from tests.test_chat_stream_unhandled_errors import logged_in  # noqa: E402,F401 - fixture
+
+CHAT_LOGGERS = ("app.rag.chat_service", "app.rag.chat_fallback_groq", "app.services.embedding_service")
+
+
+def records_from(captured, names):
+    return [r for r in captured.records if r.name in names]
+
+
+def test_every_line_of_a_chat_turn_carries_its_meeting_and_user(chat, captured, monkeypatch):
+    """
+    Gemini fails, Groq retries once and answers. Lines come from chat_service
+    and from chat_fallback_groq, and none of them was given an id directly.
+    """
+    chat.gemini.fail(TRANSIENT["503"], times=2)
+    chat.groq.status(503).answer("The launch is on the 14th.")
+
+    ask(chat, "When is the launch?")
+
+    records = records_from(captured, CHAT_LOGGERS)
+    assert {r.name for r in records} == {"app.rag.chat_service", "app.rag.chat_fallback_groq"}
+    assert all((r.meeting_id, r.user_id) == (chat.meeting_id, chat.user_id) for r in records)
+    assert all(r.levelno == logging.WARNING for r in records), "a turn that was answered logged above WARNING"
+    assert any(r.getMessage() == "[chat] Gemini 503 persisted after retries, falling back to Groq" for r in records)
+
+
+def test_a_search_tool_on_another_thread_logs_under_the_turns_fields(chat, captured, monkeypatch):
+    """asyncio.to_thread copies the context, so the embedding retry line is attributed too."""
+    FakeGeminiEmbed([]).fail(TRANSIENT["429"]).install(monkeypatch)
+    chat.gemini.reply(call("_search_transcript", query="launch date"))
+    chat.gemini.reply("The launch is on the 14th.")
+
+    ask(chat, "When is the launch?")
+
+    [retry] = records_from(captured, ("app.services.embedding_service",))
+    assert retry.getMessage().startswith("[embedding] Gemini 429, retrying in")
+    assert (retry.meeting_id, retry.user_id) == (chat.meeting_id, chat.user_id)
+
+
+def test_groq_failing_too_logs_an_error_with_the_traceback(chat, captured):
+    chat.gemini.fail(TRANSIENT["503"], times=2)
+    chat.groq.status(400)
+
+    ask(chat, "When is the launch?")
+
+    [error] = [r for r in records_from(captured, CHAT_LOGGERS) if r.levelno >= logging.ERROR]
+    assert error.getMessage().startswith("[chat] Groq fallback also failed")
+    assert error.exc_info is not None, "the traceback was dropped"
+    assert (error.meeting_id, error.user_id) == (chat.meeting_id, chat.user_id)
+
+
+def test_stopping_a_stream_early_releases_the_session_and_the_fields(chat):
+    """
+    A client disconnecting mid-answer closes the stream. The session lock the
+    turn holds must be released right then - the user's next question would
+    otherwise wait on it - and the log fields must not outlive the turn.
+    """
+    chat.gemini.reply("The launch ", "is on the 14th.")
+    chat.gemini.reply("It was moved from the 7th.")
+
+    async def run():
+        stream = chat_service.ask_question_stream(chat.meeting_id, "When is the launch?", None, chat.user_id)
+        first = await stream.__anext__()
+        assert current_log_context() == {"meeting_id": chat.meeting_id, "user_id": chat.user_id}
+        key = f"{chat.user_id}:{chat.meeting_id}:meeting-{chat.meeting_id}"
+        session_lock = chat_service._session_cache.cache[key][0]
+        assert session_lock.locked()
+        await stream.aclose()
+        # Checked before anything else gets to run on the loop. Left to
+        # garbage collection, the inner generator's cleanup would only be
+        # scheduled here, and the lock would still be held at this point.
+        released_by_close = not session_lock.locked()
+        after_close = current_log_context()
+
+        answered = []
+        async def next_question():
+            async for event in chat_service.ask_question_stream(chat.meeting_id, "Was it moved?", None, chat.user_id):
+                answered.append(event)
+
+        await asyncio.wait_for(next_question(), timeout=5)
+        return first, released_by_close, after_close, answered
+
+    first, released_by_close, after_close, answered = asyncio.run(run())
+
+    assert first == {"type": "delta", "text": "The launch "}
+    assert released_by_close, "closing the stream did not release the session lock - only garbage collection would"
+    assert after_close == {"meeting_id": None, "user_id": None}, "the fields outlived a stream that was closed early"
+    assert answered[-1]["type"] == "done", "the next question could not get the session"
+
+
+# ---------------------------------------------------------------------------
+# 6. The transcription fallbacks, and the routes
+# ---------------------------------------------------------------------------
+
+def test_the_sarvam_fallback_lines_carry_the_transcriptions_fields(db, user, gemini_down_sarvam_up, stub_embeddings, captured):
+    meeting = make_meeting(db, user)
+
+    transcription_service.transcribe_recording(str(meeting.id), "recordings/x.m4a")
+
+    sarvam = records_from(captured, ("app.services.transcription_fallback_sarvam",))
+    assert [r.getMessage() for r in sarvam] == [
+        "[transcription_fallback] starting Sarvam AI fallback transcription",
+        "[transcription_fallback] Sarvam AI fallback completed successfully",
+    ]
+    assert all((r.meeting_id, r.user_id) == (str(meeting.id), str(user.id)) for r in sarvam)
+
+
+def test_the_jina_fallback_lines_carry_the_transcriptions_fields(db, user, full_pipeline, captured, monkeypatch):
+    monkeypatch.setattr(settings, "jina_api_key", "stub-jina-key")
+    install_fast_sleeps(monkeypatch)
+    FakeGeminiEmbed([]).fail(TRANSIENT["503"], times=4).install(monkeypatch)
+    FakeJina([]).status(503).install(monkeypatch)
+    meeting = make_meeting(db, user)
+
+    transcription_service.transcribe_recording(str(meeting.id), "recordings/x.m4a")
+
+    lines = records_from(captured, ("app.services.embedding_service", "app.services.embedding_fallback_jina"))
+    assert [r.name for r in lines].count("app.services.embedding_fallback_jina") == 1
+    assert any(r.getMessage() == "[embedding] Gemini 503 persisted after retries, falling back to Jina AI" for r in lines)
+    assert all((r.meeting_id, r.user_id, r.levelno) == (str(meeting.id), str(user.id), logging.WARNING) for r in lines)
+
+
+def test_the_webhook_lines_carry_the_payloads_meeting_and_user(db, user, captured, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.api import webhooks
+    from app.main import app
+
+    meeting = make_meeting(db, user, status="recording")
+    body = {
+        "user_id": str(user.id), "meeting_id": str(meeting.id), "status": "completed",
+        "recording_path": f"{user.id}/{meeting.id}/recording.m4a",
+    }
+    headers = {"Authorization": "Bearer stub-token"}
+
+    def missing(path, *args, **kwargs):
+        raise RuntimeError("Object not found")
+
+    monkeypatch.setattr(webhooks, "get_signed_recording_url", missing)
+    TestClient(app).post("/webhooks/recording-complete", json=body, headers=headers)
+
+    other = make_meeting(db, user, status="recording")
+    monkeypatch.setattr(webhooks, "get_signed_recording_url", lambda path, *a, **k: f"https://signed/{path}")
+
+    def redis_down(meeting_id, storage_path):
+        raise ConnectionError("Error connecting to Redis")
+
+    monkeypatch.setattr(webhooks, "submit_transcription", redis_down)
+    TestClient(app, raise_server_exceptions=False).post(
+        "/webhooks/recording-complete", json={**body, "meeting_id": str(other.id)}, headers=headers,
+    )
+
+    signed, queued = records_from(captured, ("app.api.webhooks",))
+    assert (signed.levelno, signed.meeting_id, signed.user_id) == (logging.WARNING, str(meeting.id), str(user.id))
+    assert (queued.levelno, queued.meeting_id, queued.user_id) == (logging.ERROR, str(other.id), str(user.id))
+    assert queued.exc_info is not None
+
+
+def test_the_meetings_route_lines_carry_the_meeting_and_user(db, user, captured, monkeypatch):
+    from fastapi import HTTPException
+    from app.api import meetings
+
+    class _StorageDown:
+        @property
+        def storage(self):
+            return self
+
+        def from_(self, bucket):
+            return self
+
+        def remove(self, paths):
+            raise RuntimeError("storage unavailable")
+
+    pdf_meeting = make_meeting(db, user, status="completed", transcript=TRANSCRIPT)
+    deleted = make_meeting(db, user, status="completed")
+    monkeypatch.setattr(meetings, "supabase", _StorageDown())
+
+    def pdf_broken(meeting):
+        raise ValueError("bad font")
+
+    monkeypatch.setattr(meetings, "generate_meeting_pdf", pdf_broken)
+
+    with pytest.raises(HTTPException):
+        meetings.export_meeting_pdf(meeting_id=pdf_meeting.id, db=db, user_id=str(user.id))
+    meetings.delete_meeting(meeting_id=deleted.id, db=db, user_id=str(user.id))
+
+    pdf, storage = records_from(captured, ("app.api.meetings",))
+    assert (pdf.levelno, pdf.meeting_id, pdf.user_id) == (logging.ERROR, str(pdf_meeting.id), str(user.id))
+    assert pdf.exc_info is not None and pdf.exc_info[0] is ValueError
+    assert (storage.levelno, storage.meeting_id, storage.user_id) == (logging.WARNING, str(deleted.id), str(user.id))
+
+
+def test_the_chat_route_logs_a_stream_failure_with_its_traceback_and_fields(chat, logged_in, captured, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.api import chat as chat_api
+    from app.main import app
+
+    async def explodes(meeting_id, question, session_id=None, user_id=None):
+        raise RuntimeError("stream exploded")
+        yield  # an async generator
+
+    monkeypatch.setattr(chat_api, "ask_question_stream", explodes)
+
+    response = TestClient(app).post(
+        f"/meetings/{chat.meeting_id}/chat/stream", json={"question": "hi"}, headers=logged_in,
+    )
+
+    assert '"type": "error"' in response.text
+    [failure] = records_from(captured, ("app.api.chat",))
+    assert (failure.levelno, failure.meeting_id, failure.user_id) == (logging.ERROR, chat.meeting_id, chat.user_id)
+    assert failure.exc_info[0] is RuntimeError
+
+
+# ---------------------------------------------------------------------------
+# 7. No print() anywhere in backend/app
+# ---------------------------------------------------------------------------
+
+def test_backend_app_has_no_print_calls():
+    offenders = {
+        str(path.relative_to(APP_DIR)): lines
+        for path in sorted(APP_DIR.rglob("*.py"))
+        if (lines := print_calls(path))
+    }
+    assert offenders == {}, f"print() calls in backend/app (use logger.* - docs/scaling-plan.md B5): {offenders}"

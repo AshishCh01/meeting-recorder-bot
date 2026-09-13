@@ -171,9 +171,9 @@ def configure_logging() -> None:
     than stacking a second one on every call.
 
     stdout, not logging's default stderr, so these lines interleave in order
-    with the `print()` calls still left in `app/` (Phase B5 is converting
-    them). PYTHONUNBUFFERED is set in both Dockerfiles, so neither stream
-    buffers.
+    with uvicorn's and arq's own output. (`app/` itself has no print() calls
+    left since Phase B5; tests/test_structured_logging.py keeps it that way.)
+    PYTHONUNBUFFERED is set in both Dockerfiles, so nothing buffers.
 
     The handler gets LogContextFilter, so `_LOG_FORMAT`'s `log_fields` is
     always defined and carries meeting_id/user_id when they are known.

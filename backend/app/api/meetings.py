@@ -1,3 +1,4 @@
+import logging
 from uuid import UUID
 from fastapi import APIRouter, HTTPException, Depends, Response
 from sqlalchemy.orm import Session
@@ -17,6 +18,8 @@ from app.config import settings
 from app.services.pdf_service import generate_meeting_pdf
 
 router = APIRouter(prefix="/meetings", tags=["meetings"])
+
+logger = logging.getLogger(__name__)
 
 
 def _recorder_for(meeting: Meeting) -> bot_registry.BotHost:
@@ -335,7 +338,10 @@ def delete_meeting(
             # way, since leaving the bot running would otherwise record a
             # meeting the user just deleted, with no meeting row left for its
             # completion webhook to report back to.
-            print(f"[meetings] Warning: failed to stop bot for meeting {meeting_id} before delete: {e}")
+            logger.warning(
+                "[meetings] failed to stop bot before delete: %s", e,
+                extra={"meeting_id": str(meeting_id), "user_id": user_id},
+            )
 
     storage_path = f"{meeting.user_id}/{meeting.id}/recording.m4a"
     try:
@@ -343,7 +349,10 @@ def delete_meeting(
     except Exception as e:
         # Not fatal - meetings that never finished recording (e.g. "scheduled"
         # or "failed" status) have no storage object to begin with.
-        print(f"[meetings] Warning: failed to delete storage object {storage_path}: {e}")
+        logger.warning(
+            "[meetings] failed to delete storage object %s: %s", storage_path, e,
+            extra={"meeting_id": str(meeting_id), "user_id": user_id},
+        )
 
     db.query(MeetingChunk).filter(MeetingChunk.meeting_id == meeting.id).delete()
     db.delete(meeting)
@@ -377,5 +386,8 @@ def export_meeting_pdf(
             }
         )
     except Exception as e:
-        print(f"PDF Generation Error: {str(e)}")
+        logger.exception(
+            "[meetings] PDF generation failed: %s", e,
+            extra={"meeting_id": str(meeting_id), "user_id": user_id},
+        )
         raise HTTPException(status_code=500, detail="Failed to compile PDF document.")

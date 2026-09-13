@@ -11,6 +11,7 @@ request `embedding_dimensions`-dim output (768 by default) so vectors
 still fit the existing pgvector column with no schema change.
 """
 
+import logging
 import httpx
 import time
 import random
@@ -18,6 +19,8 @@ import random
 from app.config import settings
 
 JINA_URL = "https://api.jina.ai/v1/embeddings"
+
+logger = logging.getLogger(__name__)
 
 
 def _call_jina(texts: list[str], task: str, max_retries=3) -> list[list[float]]:
@@ -52,7 +55,10 @@ def _call_jina(texts: list[str], task: str, max_retries=3) -> list[list[float]]:
             if not is_retriable or attempt == max_retries - 1:
                 raise
             delay = (2 ** attempt) + random.uniform(0, 1)
-            print(f"[embedding] Jina fallback error, retrying in {delay:.1f}s (attempt {attempt+1}/{max_retries})")
+            logger.warning(
+                "[embedding] Jina fallback error (%s), retrying in %.1fs (attempt %s/%s)",
+                e, delay, attempt + 1, max_retries,
+            )
             time.sleep(delay)
 
 

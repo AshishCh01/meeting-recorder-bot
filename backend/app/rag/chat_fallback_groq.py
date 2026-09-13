@@ -19,6 +19,7 @@ embedding_fallback_jina.py takes for the embedding fallback.
 
 import asyncio
 import json
+import logging
 import random
 from typing import Any, AsyncGenerator
 
@@ -27,6 +28,10 @@ import httpx
 from app.config import settings
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+# Runs inside chat_service.ask_question_stream, which binds the turn's
+# meeting_id/user_id log fields (Phase B5).
+logger = logging.getLogger(__name__)
 
 # Worth retrying on Groq's side. Mirrors gemini_errors.TRANSIENT_STATUS_CODES
 # but is kept separate: this path never sees a google.genai exception, and
@@ -283,7 +288,10 @@ async def _stream_one_turn(client: httpx.AsyncClient, messages: list[dict], forc
 
         except (httpx.HTTPStatusError,) + TRANSIENT_NETWORK_ERRORS as e:
             status = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else type(e).__name__
-            print(f"[chat_fallback] Groq turn failed (attempt {attempt+1}/{max_retries}), code={status}: {e}")
+            logger.warning(
+                "[chat_fallback] Groq turn failed (attempt %s/%s), code=%s: %s",
+                attempt + 1, max_retries, status, e,
+            )
             if emitted_text or not _is_transient(e) or attempt == max_retries - 1:
                 raise
             await asyncio.sleep((2 ** attempt) + random.uniform(0, 0.5))

@@ -1,4 +1,5 @@
 import json
+import logging
 from uuid import UUID
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
@@ -11,6 +12,8 @@ from app.rag.chat_service import ask_question, ask_question_stream
 from app.services import rate_limit
 
 router = APIRouter(prefix="/meetings", tags=["chat"])
+
+logger = logging.getLogger(__name__)
 
 # A thread is append-only and unbounded, but the panel only ever needs
 # the recent tail - and returning all of it would make the endpoint get
@@ -146,7 +149,10 @@ async def chat_with_meeting_stream(
         except Exception as e:
             # The status line is already sent by this point, so a failure can
             # only be reported inside the stream, not as an HTTP error code.
-            print(f"[chat] stream failed for meeting {meeting_id}: {e}")
+            logger.exception(
+                "[chat] stream failed: %s", e,
+                extra={"meeting_id": str(meeting_id), "user_id": user_id},
+            )
             yield f"data: {json.dumps({'type': 'error', 'message': 'Something went wrong generating the answer.'})}\n\n"
 
     return StreamingResponse(

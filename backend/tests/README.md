@@ -53,7 +53,7 @@ that is *not* there), and so does the one real-Redis test in
 Postgres alone). The scheduler, status-machine, webhook,
 scheduled-without-time, fallback-ladder and chat reset/saving tests still run.
 The chat stream-error, AI-usage and structured-logging tests need only
-Postgres too. Full suite: 428 with Redis, 365 passed / 63 skipped without.
+Postgres too. Full suite: 438 with Redis, 375 passed / 63 skipped without.
 
 **Rate limiting is off unless a test turns it on.** `conftest.py` sets
 `RATE_LIMIT_ENABLED=false`, because Phase B1's limiter is an `async def`
@@ -141,7 +141,7 @@ fails if one ever is.
 **A skip is a failure when this is set.** CI sets it; nothing else does.
 
 The reason is the numbers in the section above: with Postgres but no Redis this
-suite reports `365 passed, 63 skipped` and exits **0**. Those 63 are B1's
+suite reports `375 passed, 63 skipped` and exits **0**. Those 63 are B1's
 atomicity gate, C3's two-hosts-two-meetings gate, C4's per-platform auth gate,
 A3's queue-durability gate, and B3's real-Redis enqueue-recovery and
 real-worker retry tests — the
@@ -153,11 +153,11 @@ it converts "nobody ran the tests" into "the tests passed".
 The guard is a `pytest_sessionfinish` hook at the bottom of `conftest.py`. It
 lists every test that skipped and why, then sets a failing exit status. It is
 opt-in rather than always-on because locally a partial run is genuinely useful
-— run without Redis and you get the 365 tests that do not need one, plus a note
+— run without Redis and you get the 375 tests that do not need one, plus a note
 about what you missed, instead of a red suite.
 
 It refuses *any* skip, not just Redis ones. There is no legitimately
-conditional test here today (with both services: `428 passed`, zero skipped),
+conditional test here today (with both services: `438 passed`, zero skipped),
 so a new skip is a question someone should have to answer in a pull request.
 
 ## What's covered
@@ -173,7 +173,7 @@ so a new skip is a question someone should have to answer in a pull request.
 | `test_chat_reset_and_saving.py` | B3 | A mid-answer break sends `reset` before the retry or the Groq request, and the final answer replaces the partial one on screen and in `chat_messages` - including preamble from an earlier tool turn, and through the non-streaming wrapper; when Gemini and Groq both fail (or Groq dies mid-answer) nothing is stored, the session is empty and the next prompt holds only the next question; a Groq answer is stored with exactly the tools Groq ran. |
 | `test_chat_stream_unhandled_errors.py` | chat fix (PR #17) | An `httpx.ReadError`/`WriteError` mid-answer resets and retries instead of escaping the stream, through the real `/chat/stream` route too; a persistent one ends cleanly with nothing stored; any other error from the Gemini call still propagates but rolls the question out of the session, so the next prompt holds only the next question. All failed on the old code. |
 | `test_ai_usage_metrics.py` | B4 | Every AI call writes the right `ai_usage_events` row: chat (tokens summed across tool iterations; Gemini and Groq rows under one `request_id`; `failed` rows with `NULL` tokens when nothing was reported), transcription (Gemini tokens and audio seconds, Sarvam audio seconds), indexing (Gemini or Jina, estimated tokens) and chat-search query embeddings, each attributed to user and meeting. Recording never raises and never breaks chat or transcription with the table genuinely unusable; a staged row commits only with its caller and a failed one does not poison the caller's transaction; transcription and indexing open no connection of their own; none is held while the chat model answers. Every query in `backend/sql/ai_usage_queries.sql` returns the right numbers against seeded rows. |
-| `test_structured_logging.py` | B5, part 1 | Log lines inside `log_context()` carry `meeting_id`/`user_id`, rendered by the real format `configure_logging` installs, and lines outside carry none; `extra=` wins; the previous values come back on exit (nested, set inside, or raised through), so a reused executor thread and concurrent asyncio tasks never see another meeting's fields. Every `transcription_service` line of a real run carries the meeting and its owner, at the right level - progress at INFO, retries and the Sarvam fallback at WARNING, failures at ERROR with the traceback - including the worker's terminal-failure path, the executor's crash callback and the queued line. No `print()` is left in `transcription_service.py`, counted by AST. Every test also fails if it leaks log context. |
+| `test_structured_logging.py` | B5 | Log lines inside `log_context()` carry `meeting_id`/`user_id`, rendered by the real format `configure_logging` installs, and lines outside carry none; `extra=` wins; the previous values come back on exit (nested, set inside, or raised through), so a reused executor thread and concurrent asyncio tasks never see another meeting's fields. Every `transcription_service` line of a real run carries the meeting and its owner, at the right level - progress at INFO, retries and the Sarvam fallback at WARNING, failures at ERROR with the traceback - including the worker's terminal-failure path, the executor's crash callback and the queued line. Every line of a chat turn carries its meeting and user - `chat_service`, the Groq fallback, and a search tool's embedding call on another thread - and stopping a stream early releases the session lock at once and leaves no fields behind. The Sarvam and Jina fallback lines, and the webhook, meetings and chat route lines, carry the fields too. **No `print()` anywhere in `backend/app`**, counted by AST. Every test also fails if it leaks log context. |
 | `test_observability.py` | A4 | Sentry is disabled and harmless with no `SENTRY_DSN`; a request that raises inside a route produces an event with no Supabase JWT anywhere in it - header, frame locals or exception message; `meeting_id`/`user_id` ride along on transcription events. |
 | `test_bot_dispatch_queue.py` | C2 | A meeting requested while the recorder is full reaches `queued` and joins when capacity frees; a queued meeting survives the sweep that would have killed it in `joining`, and is still swept at its own TTL; a deleted or stopped meeting is dropped rather than joined; a 409 re-queues instead of failing; exhausted waiting writes a terminal failure naming the cause; stopping a queued meeting cancels it without calling the bot, and a stop that loses the race to the dispatcher stops the bot rather than overwriting the claim; the flag off still posts synchronously, raises on a busy bot, and enqueues nothing. |
 | `test_bot_pool.py` | C3 | Two meetings dispatched at once against two single-slot recorders land one on each, read off `bot_host_id`; a recorder that stops answering freezes its cached `last_seen` rather than refreshing it with a failure, and drops out once past the TTL, while the survivor takes the next meeting on its first attempt; **the existing watchdog already sweeps a meeting whose host died** — no new sweep code, and the module mentions no host at all; stop, delete and re-upload reach the URL of the host the meeting actually landed on; an unresolvable host is a 409, never a 500, and never a call to some other recorder; a `queued` meeting cancels without the host column being resolved at all; and an empty cache after a Redis restart repopulates in one poll cycle instead of reading as "all hosts down". |
