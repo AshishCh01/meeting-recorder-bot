@@ -159,7 +159,9 @@ def search_transcript(query: str, tool_context: ToolContext) -> dict:
     # Must match whichever provider embedded this meeting's chunks
     # (older meetings indexed before this column existed default to
     # "gemini", since that's all that existed then).
-    query_embedding = embed_query(query, provider=row.embedding_provider or "gemini")
+    query_embedding = embed_query(
+        query, provider=row.embedding_provider or "gemini", meeting_id=meeting_id, user_id=user_id,
+    )
 
     # Ownership was settled by the read above. If the meeting is deleted
     # during the embed, its chunks go with it and this finds none.

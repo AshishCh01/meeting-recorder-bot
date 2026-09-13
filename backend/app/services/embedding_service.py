@@ -8,7 +8,7 @@ from google.genai import types
 from app.config import settings
 from app.db.models import Meeting, MeetingChunk
 from app.services.embedding_fallback_jina import embed_documents_with_jina, embed_query_with_jina
-from app.services.cost_tracker import gemini_embedding_cost, log_cost
+from app.services.cost_tracker import estimate_tokens, gemini_embedding_cost, jina_embedding_cost, record_usage
 from app.services.gemini_errors import TRANSIENT_EXCEPTIONS, error_code_str, is_transient
 
 # Initialize the Gemini GenAI client
@@ -152,7 +152,7 @@ def _embed_documents(texts: list[str]) -> tuple[list[list[float]], str]:
         raise
 
 
-def embed_query(query: str, provider: str = GEMINI_PROVIDER) -> list[float]:
+def embed_query(query: str, provider: str = GEMINI_PROVIDER, *, meeting_id=None, user_id=None) -> list[float]:
     """
     Embeds a chat query. `provider` MUST match whichever model indexed
     the meeting being queried (Meeting.embedding_provider) - Gemini and
@@ -160,20 +160,55 @@ def embed_query(query: str, provider: str = GEMINI_PROVIDER) -> list[float]:
     mixing them wouldn't error, it would just silently return wrong
     nearest-neighbor results. Callers should read the meeting's stored
     provider and pass it through rather than assume Gemini.
+
+    `meeting_id`/`user_id` only attribute the usage row (Phase B4). The row
+    is written with a session of its own, so this must be called with no
+    session open - which search_transcript already guarantees.
     """
     if provider == JINA_PROVIDER:
-        return embed_query_with_jina(query)
+        vector = embed_query_with_jina(query)
+        _record_query_usage(query, JINA_PROVIDER, "ok", meeting_id, user_id)
+        return vector
 
     try:
         response = _call_gemini_embed_with_retry(query)
-        return response.embeddings[0].values
+        vector = response.embeddings[0].values
+        _record_query_usage(query, GEMINI_PROVIDER, "ok", meeting_id, user_id)
+        return vector
     except TRANSIENT_EXCEPTIONS as e:
         is_retriable = is_transient(e)
         code_str = error_code_str(e)
         if is_retriable and settings.jina_api_key:
             print(f"[embedding] Gemini {code_str} persisted after retries, falling back to Jina AI for query...")
-            return embed_query_with_jina(query)
+            vector = embed_query_with_jina(query)
+            _record_query_usage(query, JINA_PROVIDER, "fallback", meeting_id, user_id)
+            return vector
         raise
+
+
+def _model_for(provider: str) -> str:
+    return settings.jina_embedding_model if provider == JINA_PROVIDER else settings.gemini_embedding_model
+
+
+def _embedding_cost(provider: str, tokens: int) -> float:
+    return jina_embedding_cost(tokens) if provider == JINA_PROVIDER else gemini_embedding_cost(tokens)
+
+
+def _record_query_usage(query: str, provider: str, outcome: str, meeting_id, user_id) -> None:
+    # Neither provider's response is read for usage here, so the count is the
+    # same ~4 chars/token heuristic indexing uses, and flagged as such.
+    tokens = estimate_tokens(len(query))
+    record_usage(
+        operation="query_embedding",
+        provider=provider,
+        model=_model_for(provider),
+        outcome=outcome,
+        user_id=user_id,
+        meeting_id=meeting_id,
+        input_tokens=tokens,
+        usd=_embedding_cost(provider, tokens),
+        estimated=True,
+    )
 
 
 def index_transcript(db: Session, meeting_id: str, transcript: dict) -> float:
@@ -200,16 +235,25 @@ def index_transcript(db: Session, meeting_id: str, transcript: dict) -> float:
 
     # The Gemini embed API doesn't return usage_metadata, so we estimate
     # token count with the same ~4-chars-per-token heuristic used for
-    # chunking above. Cost is only meaningful for Gemini - no rate is
-    # configured for the Jina fallback.
-    token_estimate = sum(len(c["content"]) for c in chunks) // 4
-    cost = gemini_embedding_cost(token_estimate) if provider == GEMINI_PROVIDER else 0.0
-    log_cost(
-        "embedding",
-        meeting=meeting_id,
+    # chunking above - and store it flagged as an estimate.
+    token_estimate = estimate_tokens(sum(len(c["content"]) for c in chunks))
+    cost = _embedding_cost(provider, token_estimate)
+    owner_id = db.query(Meeting.user_id).filter(Meeting.id == meeting_id).scalar()
+    # Staged in this session, not written on a connection of its own: this
+    # runs inside a worker job that already holds one (cost_tracker.py). It is
+    # committed with the chunks below, so it is recorded exactly when the
+    # index it paid for is.
+    record_usage(
+        operation="embedding",
         provider=provider,
-        tokens=token_estimate,
-        usd=f"{cost:.6f}",
+        model=_model_for(provider),
+        outcome="ok" if provider == GEMINI_PROVIDER else "fallback",
+        user_id=owner_id,
+        meeting_id=meeting_id,
+        input_tokens=token_estimate,
+        usd=cost,
+        estimated=True,
+        db=db,
     )
 
     # Delete existing chunks for this meeting.

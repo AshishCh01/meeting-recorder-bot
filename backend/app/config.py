@@ -357,13 +357,19 @@ class Settings(BaseSettings):
     # handler and every logger.info() in app.* is silently dropped.
     log_level: str = "INFO"
 
-    # Cost tracking: per-million-token USD rates for the [cost] log lines
-    # in transcription_service.py, chat_service.py, and embedding_service.py.
-    # Update these via env vars when Gemini's pricing changes - never hardcode
-    # a rate at a call site.
+    # Cost tracking (Phase B4): USD rates applied when an ai_usage_events row
+    # is written - see app/services/cost_tracker.py. Update these via env vars
+    # when a provider's pricing changes - never hardcode a rate at a call site.
     gemini_input_cost_per_mtok: float = 0.30
     gemini_output_cost_per_mtok: float = 2.50
     gemini_embedding_cost_per_mtok: float = 0.15
+    # The fallback providers. 0 until real rates are set, which is safe
+    # because every row also stores the raw units (tokens, audio seconds):
+    # a spend query can be re-run against corrected rates at any time.
+    groq_input_cost_per_mtok: float = 0.0
+    groq_output_cost_per_mtok: float = 0.0
+    jina_embedding_cost_per_mtok: float = 0.0
+    sarvam_cost_per_audio_hour: float = 0.0
 
     class Config:
         env_file = None if IGNORE_DOTENV else ".env"

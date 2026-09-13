@@ -21,7 +21,7 @@ from app.db.database import SessionLocal
 from app.db.models import Meeting
 from app.services.embedding_service import index_transcript
 from app.services.transcription_fallback_sarvam import transcribe_with_sarvam_fallback
-from app.services.cost_tracker import gemini_generation_cost, log_cost
+from app.services.cost_tracker import gemini_generation_cost, record_usage, sarvam_transcription_cost
 from app.services.gemini_errors import TRANSIENT_EXCEPTIONS, error_code_str, is_transient
 
 client = genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOptions(timeout=90_000))
@@ -333,25 +333,33 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
             usage = response.usage_metadata
             prompt_tokens = (usage.prompt_token_count or 0) if usage else 0
             output_tokens = (usage.candidates_token_count or 0) if usage else 0
-            transcription_cost = gemini_generation_cost(prompt_tokens, output_tokens)
-            log_cost(
-                "transcription",
-                meeting=meeting_id,
-                audio_sec=f"{audio_duration_sec:.1f}" if audio_duration_sec is not None else "unknown",
-                in_tok=prompt_tokens,
-                out_tok=output_tokens,
-                usd=f"{transcription_cost:.6f}",
-            )
 
             meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+            # Staged in this session and committed with the transcript below
+            # (see cost_tracker.py for why not a connection of its own). The
+            # per-meeting total that used to be logged here is now a query
+            # over ai_usage_events - docs/scaling-plan.md B4.
+            record_usage(
+                operation="transcription",
+                provider="gemini",
+                model=settings.gemini_model,
+                outcome="ok",
+                user_id=meeting.user_id if meeting else None,
+                meeting_id=meeting_id,
+                input_tokens=prompt_tokens if usage else None,
+                output_tokens=output_tokens if usage else None,
+                audio_seconds=audio_duration_sec,
+                usd=gemini_generation_cost(prompt_tokens, output_tokens),
+                db=db,
+            )
             if meeting:
                 meeting.transcript = result
                 meeting.title = (result.get("title") or "").strip()[:60] or None
                 meeting.status = "completed"
-                db.commit()
+            db.commit()
 
             try:
-                embedding_cost = index_transcript(db, meeting_id, result)
+                index_transcript(db, meeting_id, result)
             except Exception as e:
                 # Was swallowed here (meeting left "completed" with a note).
                 # Under a queue that throws away a free repair: the retry
@@ -359,14 +367,6 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
                 # resume check the retry costs embedding only. The worker
                 # writes that same note once retries are exhausted.
                 raise IndexingFailed(str(e)) from e
-
-            log_cost(
-                "meeting_total",
-                meeting=meeting_id,
-                transcription_usd=f"{transcription_cost:.6f}",
-                embedding_usd=f"{embedding_cost:.6f}",
-                usd=f"{transcription_cost + embedding_cost:.6f}",
-            )
 
             return result
 
@@ -388,12 +388,25 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
                 try:
                     result = transcribe_with_sarvam_fallback(tmp_path)
                     meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+                    # Sarvam is billed on audio; the module does not surface
+                    # its analysis call's token usage, so none is claimed.
+                    record_usage(
+                        operation="transcription",
+                        provider="sarvam",
+                        model=settings.sarvam_stt_model,
+                        outcome="fallback",
+                        user_id=meeting.user_id if meeting else None,
+                        meeting_id=meeting_id,
+                        audio_seconds=audio_duration_sec,
+                        usd=sarvam_transcription_cost(audio_duration_sec),
+                        db=db,
+                    )
                     if meeting:
                         meeting.transcript = result
                         meeting.title = (result.get("title") or "").strip()[:60] or None
                         meeting.status = "completed"
                         meeting.error_message = f"Transcribed via Sarvam AI fallback (Gemini {code_str} unavailable)"
-                        db.commit()
+                    db.commit()
                     try:
                         index_transcript(db, meeting_id, result)
                     except Exception as idx_err:
@@ -462,10 +475,9 @@ def _resume_if_work_already_done(db, meeting_id: str):
     `status.notin_(["transcribing", "completed"])` guard cannot help. Without
     the check below, every retry would re-download the recording, re-upload it
     to the Gemini File API and re-transcribe it from scratch. Transcription is
-    the expensive call by a wide margin (log_cost's meeting_total line reports
-    transcription_usd and embedding_usd separately, so the split is measured
-    rather than assumed), and a crash-looping meeting would re-bill it on
-    every attempt.
+    the expensive call by a wide margin (ai_usage_events records transcription
+    and embedding as separate rows, so the split is measured rather than
+    assumed), and a crash-looping meeting would re-bill it on every attempt.
 
     Two resumable states:
       - completed with an embedding_provider -> the whole job is done.
