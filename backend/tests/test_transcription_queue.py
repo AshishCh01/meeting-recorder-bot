@@ -24,6 +24,7 @@ import uuid
 import pytest
 from arq import create_pool
 from arq.connections import RedisSettings
+from arq.worker import Retry
 from sqlalchemy import text
 
 from app.config import settings
@@ -394,8 +395,11 @@ def test_worker_retry_resumes_instead_of_restarting(db, user, stub_embeddings, g
 
     transcription_service.index_transcript = flaky_index
     try:
-        with pytest.raises(transcription_service.IndexingFailed):
+        # arq's Retry, carrying the IndexingFailed - the same run through a
+        # real worker is Gate 5's first test.
+        with pytest.raises(Retry) as exc:
             asyncio.run(transcribe_job({"job_try": 1}, str(meeting_id), "recordings/x.m4a"))
+        assert isinstance(exc.value.__cause__, transcription_service.IndexingFailed)
 
         transcription_service.index_transcript = real_index
         asyncio.run(transcribe_job({"job_try": 2}, str(meeting_id), "recordings/x.m4a"))
@@ -419,9 +423,10 @@ def test_exhausted_retries_mark_a_transcript_less_meeting_failed(db, user, monke
 
     monkeypatch.setattr(worker_module, "transcribe_recording", boom)
 
-    # Not the last attempt: raise so arq retries, and write nothing terminal.
-    with pytest.raises(RuntimeError, match="storage unreachable"):
+    # Not the last attempt: hand arq a Retry, and write nothing terminal.
+    with pytest.raises(Retry) as exc:
         asyncio.run(transcribe_job({"job_try": 1}, str(meeting.id), "recordings/x.m4a"))
+    assert "storage unreachable" in str(exc.value.__cause__)
     assert reread(meeting.id).status == "transcribing"
 
     # Last attempt: the meeting must not be left non-terminal.
@@ -579,3 +584,214 @@ def test_first_run_success_transcribes_and_indexes(db, user, full_pipeline, stub
     assert row.status == "completed"
     assert row.embedding_provider == "gemini"
     assert chunk_count(meeting.id) > 0
+
+
+# ---------------------------------------------------------------------------
+# Gate 5 - retries happen in a real worker, not only in a direct call
+# ---------------------------------------------------------------------------
+#
+# The Gate 3/4 tests above drive transcribe_job with a hand-built
+# {"job_try": n}, which assumes arq will call it again with n + 1. arq 0.26
+# only re-runs a job that raised arq.worker.Retry, RetryJob or CancelledError;
+# any other exception fails the job on the spot (Worker.run_job). These run the
+# task inside a real Worker, so the retry has to actually happen.
+
+class _RealWorkerRun:
+    """One burst-mode worker over whatever is queued; records what arq counted."""
+
+    def __init__(self, monkeypatch, retry_delay_seconds=0):
+        # Burst mode waits for deferred jobs, so the delay is pinned short
+        # here; the deferral itself is asserted in its own test below.
+        monkeypatch.setattr(settings, "transcription_retry_delay_seconds", retry_delay_seconds)
+        self.terminal_calls = []
+        real_terminal = worker_module.record_terminal_failure
+
+        def spy(meeting_id, exc):
+            self.terminal_calls.append((meeting_id, exc))
+            return real_terminal(meeting_id, exc)
+
+        monkeypatch.setattr(worker_module, "record_terminal_failure", spy)
+
+    def enqueue_and_drain(self, meeting_id, storage_path="recordings/x.m4a"):
+        async def run():
+            pool = await create_pool(redis_settings())
+            try:
+                await pool.enqueue_job("transcribe_job", meeting_id, storage_path)
+            finally:
+                await pool.aclose()
+
+            from arq.worker import Worker
+            worker = Worker(
+                functions=[transcribe_job],
+                redis_settings=redis_settings(),
+                burst=True,
+                max_tries=settings.transcription_max_tries,
+                poll_delay=0.05,
+            )
+            try:
+                await worker.async_run()
+                return worker.jobs_complete, worker.jobs_failed, worker.jobs_retried
+            finally:
+                await worker.close()
+
+        self.complete, self.failed, self.retried = asyncio.run(run())
+
+
+def _flaky_embeddings(monkeypatch, fail_times):
+    """An embedding provider that fails its first `fail_times` calls, then works."""
+    calls = []
+
+    def _embed_documents(texts):
+        calls.append(list(texts))
+        if len(calls) <= fail_times:
+            raise RuntimeError("embedding provider down")
+        return [[0.5] * EMBED_DIM for _ in texts], embedding_service.GEMINI_PROVIDER
+
+    monkeypatch.setattr(embedding_service, "_embed_documents", _embed_documents)
+    return calls
+
+
+def test_a_real_worker_retries_a_failed_attempt_and_resumes_at_indexing(db, user, monkeypatch, gemini_tripwire):
+    """
+    The retry the resume check was built for. Attempt 1 fails indexing a
+    stored transcript; arq must run attempt 2, which re-indexes only - the
+    tripwire fails the test if anything re-downloads or re-transcribes.
+    """
+    monkeypatch.setattr(settings, "transcription_max_tries", 3)
+    meeting = make_meeting(db, user.id, status="completed", transcript=TRANSCRIPT)
+    embed_calls = _flaky_embeddings(monkeypatch, fail_times=1)
+    run = _RealWorkerRun(monkeypatch)
+
+    run.enqueue_and_drain(str(meeting.id))
+
+    assert len(embed_calls) == 2, f"expected a failed attempt and a retry, got {len(embed_calls)} attempt(s)"
+    assert (run.complete, run.failed, run.retried) == (1, 0, 1)
+    assert run.terminal_calls == [], "a job that recovered was written off as terminal"
+    row = reread(meeting.id)
+    assert row.status == "completed"
+    assert row.embedding_provider == "gemini"
+    assert row.error_message is None
+    assert chunk_count(meeting.id) > 0
+
+
+def test_a_real_worker_retries_up_to_max_tries_then_writes_the_terminal_state(db, user, monkeypatch, gemini_tripwire):
+    """
+    Fails on every attempt. arq runs all of them - not one - and the last
+    records the terminal note instead of leaving an un-indexed "completed"
+    meeting with nothing on it.
+    """
+    monkeypatch.setattr(settings, "transcription_max_tries", 3)
+    meeting = make_meeting(db, user.id, status="completed", transcript=TRANSCRIPT)
+    embed_calls = _flaky_embeddings(monkeypatch, fail_times=99)
+    run = _RealWorkerRun(monkeypatch)
+
+    run.enqueue_and_drain(str(meeting.id))
+
+    assert len(embed_calls) == 3, f"expected 3 attempts, got {len(embed_calls)}"
+    # The last attempt handles the failure itself and returns, so arq counts
+    # the job complete rather than failed - see transcribe_job.
+    assert (run.complete, run.failed, run.retried) == (1, 0, 2)
+    assert len(run.terminal_calls) == 1
+    row = reread(meeting.id)
+    assert row.status == "completed"
+    assert "RAG indexing failed" in row.error_message
+    assert "embedding provider down" in row.error_message
+    assert row.embedding_provider is None
+
+
+def test_a_real_worker_fails_a_transcript_less_meeting_after_max_tries(db, user, monkeypatch):
+    monkeypatch.setattr(settings, "transcription_max_tries", 3)
+    meeting = make_meeting(db, user.id, status="transcribing")
+    attempts = []
+
+    def boom(mid, path):
+        attempts.append(mid)
+        raise RuntimeError("storage unreachable")
+
+    monkeypatch.setattr(worker_module, "transcribe_recording", boom)
+    run = _RealWorkerRun(monkeypatch)
+
+    run.enqueue_and_drain(str(meeting.id))
+
+    assert len(attempts) == 3, f"expected 3 attempts, got {len(attempts)}"
+    assert (run.complete, run.failed, run.retried) == (1, 0, 2)
+    row = reread(meeting.id)
+    assert row.status == "failed", "left non-terminal for the watchdog"
+    assert "repeated attempts" in row.error_message
+    assert "storage unreachable" in row.error_message
+
+
+def test_the_retry_log_lines_match_what_the_worker_actually_did(db, user, monkeypatch, caplog):
+    """
+    "retrying" used to be logged for a retry that never happened. Each retry
+    warning now has to correspond to a real re-run, and the give-up line to
+    the real attempt count.
+    """
+    import logging
+
+    monkeypatch.setattr(settings, "transcription_max_tries", 3)
+    meeting = make_meeting(db, user.id, status="transcribing")
+    attempts = []
+
+    def boom(mid, path):
+        attempts.append(mid)
+        raise RuntimeError("storage unreachable")
+
+    monkeypatch.setattr(worker_module, "transcribe_recording", boom)
+    run = _RealWorkerRun(monkeypatch)
+
+    with caplog.at_level(logging.INFO, logger="app.worker"):
+        run.enqueue_and_drain(str(meeting.id))
+
+    lines = [r.getMessage() for r in caplog.records if r.name == "app.worker"]
+    started = [line for line in lines if "transcribing meeting" in line]
+    retrying = [line for line in lines if "retrying" in line]
+    gave_up = [line for line in lines if "gave up" in line]
+
+    assert len(started) == len(attempts) == 3, f"attempt lines {started} for {len(attempts)} real attempt(s)"
+    assert len(retrying) == run.retried == 2, f"retry lines {retrying} for {run.retried} real retries"
+    assert gave_up == [f"[worker] meeting {meeting.id} gave up after 3 attempts: storage unreachable"]
+    assert [f"attempt {n}/3" in line for n, line in zip((1, 2, 3), started)] == [True, True, True]
+    assert [f"attempt {n}/3 failed" in line for n, line in zip((1, 2), retrying)] == [True, True]
+
+
+def test_the_next_attempt_waits_out_the_configured_delay(db, user, monkeypatch):
+    """The retry is deferred, not immediate: a provider outage gets time to clear."""
+    import time
+
+    monkeypatch.setattr(settings, "transcription_max_tries", 2)
+    meeting = make_meeting(db, user.id, status="transcribing")
+    started_at = []
+
+    def boom(mid, path):
+        started_at.append(time.monotonic())
+        raise RuntimeError("storage unreachable")
+
+    monkeypatch.setattr(worker_module, "transcribe_recording", boom)
+    run = _RealWorkerRun(monkeypatch, retry_delay_seconds=1)
+
+    run.enqueue_and_drain(str(meeting.id))
+
+    assert len(started_at) == 2
+    assert started_at[1] - started_at[0] >= 0.9, f"attempt 2 ran {started_at[1] - started_at[0]:.2f}s after attempt 1"
+
+
+def test_a_non_final_attempt_hands_arq_a_retry_with_the_configured_delay(db, user, monkeypatch):
+    """The contract the real-worker tests depend on, stated at the function."""
+    from arq.worker import Retry
+
+    monkeypatch.setattr(settings, "transcription_max_tries", 3)
+    monkeypatch.setattr(settings, "transcription_retry_delay_seconds", 30)
+    meeting = make_meeting(db, user.id, status="transcribing")
+
+    def boom(mid, path):
+        raise RuntimeError("storage unreachable")
+
+    monkeypatch.setattr(worker_module, "transcribe_recording", boom)
+
+    with pytest.raises(Retry) as exc:
+        asyncio.run(transcribe_job({"job_try": 2}, str(meeting.id), "recordings/x.m4a"))
+
+    assert exc.value.defer_score == 30_000
+    assert isinstance(exc.value.__cause__, RuntimeError), "the original failure is lost from the traceback"
+    assert reread(meeting.id).status == "transcribing", "a non-final attempt wrote a terminal state"
