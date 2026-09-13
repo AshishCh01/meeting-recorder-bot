@@ -1,3 +1,4 @@
+import logging
 import random
 import time
 
@@ -16,6 +17,11 @@ client = genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOp
 
 GEMINI_PROVIDER = "gemini"
 JINA_PROVIDER = "jina"
+
+# Indexing runs inside a transcription and query embedding inside a chat turn,
+# both of which bind meeting_id/user_id as log fields (Phase B5) - nothing to
+# add here.
+logger = logging.getLogger(__name__)
 
 
 def _build_chunks(conversation: list[dict]) -> list[dict]:
@@ -124,7 +130,10 @@ def _call_gemini_embed_with_retry(contents, max_retries: int = 4):
             if not retriable or attempt == max_retries - 1:
                 raise
             delay = (2 ** attempt) + random.uniform(0, 1)
-            print(f"[embedding] Gemini {code_str}, retrying in {delay:.1f}s (attempt {attempt+1}/{max_retries})")
+            logger.warning(
+                "[embedding] Gemini %s, retrying in %.1fs (attempt %s/%s)",
+                code_str, delay, attempt + 1, max_retries,
+            )
             time.sleep(delay)
 
 
@@ -147,7 +156,7 @@ def _embed_documents(texts: list[str]) -> tuple[list[list[float]], str]:
         is_retriable = is_transient(e)
         code_str = error_code_str(e)
         if is_retriable and settings.jina_api_key:
-            print(f"[embedding] Gemini {code_str} persisted after retries, falling back to Jina AI...")
+            logger.warning("[embedding] Gemini %s persisted after retries, falling back to Jina AI", code_str)
             return embed_documents_with_jina(texts), JINA_PROVIDER
         raise
 
@@ -179,7 +188,7 @@ def embed_query(query: str, provider: str = GEMINI_PROVIDER, *, meeting_id=None,
         is_retriable = is_transient(e)
         code_str = error_code_str(e)
         if is_retriable and settings.jina_api_key:
-            print(f"[embedding] Gemini {code_str} persisted after retries, falling back to Jina AI for query...")
+            logger.warning("[embedding] Gemini %s persisted after retries, falling back to Jina AI for query", code_str)
             vector = embed_query_with_jina(query)
             _record_query_usage(query, JINA_PROVIDER, "fallback", meeting_id, user_id)
             return vector

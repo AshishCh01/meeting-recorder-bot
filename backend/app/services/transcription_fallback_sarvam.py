@@ -9,12 +9,17 @@ index_transcript, frontend) needs no changes.
 """
 
 import json
+import logging
 import os
 import tempfile
 
 from sarvamai import SarvamAI
 
 from app.config import settings
+
+# Only ever called from inside transcribe_recording, which binds the meeting's
+# log fields (Phase B5).
+logger = logging.getLogger(__name__)
 
 _client = None
 
@@ -172,7 +177,7 @@ def transcribe_with_sarvam_fallback(audio_path: str) -> dict:
     fails. audio_path is the same tmp_path already downloaded from
     Supabase - no re-download needed.
     """
-    print("[transcription_fallback] Starting Sarvam AI fallback transcription...")
+    logger.info("[transcription_fallback] starting Sarvam AI fallback transcription")
     stt_result = _run_stt_job(audio_path)
 
     transcript_text = stt_result.get("transcript", "")
@@ -186,5 +191,5 @@ def transcribe_with_sarvam_fallback(audio_path: str) -> dict:
         "conclusion": analysis.get("conclusion", ""),
         "conversation": _build_conversation(stt_result),
     }
-    print("[transcription_fallback] Sarvam AI fallback completed successfully")
+    logger.info("[transcription_fallback] Sarvam AI fallback completed successfully")
     return result

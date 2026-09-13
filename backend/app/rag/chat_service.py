@@ -1,4 +1,6 @@
 import asyncio
+import contextlib
+import logging
 import uuid
 from collections import OrderedDict
 import httpx
@@ -12,6 +14,9 @@ from app.rag.tools import get_meeting_summary, get_action_items, search_by_speak
 from app.rag.chat_fallback_groq import gemini_history_to_openai, run_groq_chat_stream
 from app.services.cost_tracker import gemini_generation_cost, groq_generation_cost, record_usage
 from app.services.gemini_errors import is_transient
+from app.observability import log_context
+
+logger = logging.getLogger(__name__)
 
 INSTRUCTION = """
 You are an advanced Agentic RAG assistant dedicated to answering questions about ONE specific
@@ -153,6 +158,24 @@ def _session_id(meeting_id: str, session_id: str | None) -> str:
 
 async def ask_question_stream(meeting_id: str, question: str, session_id: str | None = None, user_id: str = None):
     """
+    Every line logged during this turn - here, in the tools' threads (which
+    asyncio.to_thread runs with a copy of this context), in the Groq fallback
+    and in the embedding call a search makes - carries meeting_id and user_id
+    (Phase B5). The fields are bound for as long as the turn runs and put back
+    when it ends.
+
+    aclosing, so that when a caller stops early (a client disconnecting
+    mid-stream) the inner generator is closed right then - releasing the
+    session lock it holds - rather than whenever it is garbage-collected.
+    """
+    with log_context(meeting_id=meeting_id, user_id=user_id):
+        async with contextlib.aclosing(_ask_question_stream(meeting_id, question, session_id, user_id)) as events:
+            async for event in events:
+                yield event
+
+
+async def _ask_question_stream(meeting_id: str, question: str, session_id: str | None = None, user_id: str = None):
+    """
     Runs the agent loop and yields events as they happen, so the caller can
     show the answer while it's still being generated instead of waiting for
     the whole multi-turn tool-calling loop to finish:
@@ -190,7 +213,7 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
             except Exception as e:
                 # Older context is worth losing; the question is not. Answer
                 # it against an empty history rather than failing outright.
-                print(f"[chat] could not load stored thread for meeting {meeting_id}: {e}")
+                logger.warning("[chat] could not load stored thread: %s", e, exc_info=True)
 
         # Truncate history to preserve context window limits
         if len(history) > HISTORY_TURN_LIMIT:
@@ -323,7 +346,7 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                     _save_exchange, meeting_id, user_id, question, answer, list(tools_used)
                 )
             except Exception as e:
-                print(f"[chat] could not store thread for meeting {meeting_id}: {e}")
+                logger.warning("[chat] could not store thread: %s", e, exc_info=True)
 
         # Groups this turn's usage rows - a Gemini row, and a Groq row if the
         # fallback ran - so cost per chat turn is one GROUP BY (Phase B4).
@@ -426,7 +449,10 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                     # message. A non-transient fault (e.g. a 400 from malformed
                     # history) otherwise looks identical to rate limiting.
                     code = getattr(e, "code", None) or type(e).__name__
-                    print(f"[chat] generate_content_stream failed (attempt {attempt+1}/{chat_max_retries}), code={code}: {e}")
+                    logger.warning(
+                        "[chat] generate_content_stream failed (attempt %s/%s), code=%s: %s",
+                        attempt + 1, chat_max_retries, code, e,
+                    )
 
                     # Deltas from the dead turn have already reached the
                     # client, so retrying or failing over would print the
@@ -460,7 +486,7 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                         # malformed history would fail identically anywhere,
                         # and burning a second provider's quota on it is waste.
                         if is_transient(e) and settings.groq_api_key:
-                            print(f"[chat] Gemini {code} persisted after retries, falling back to Groq...")
+                            logger.warning("[chat] Gemini %s persisted after retries, falling back to Groq", code)
                             fallback_text = ""
                             fallback_streamed = False
                             fallback_exhausted = False
@@ -483,7 +509,7 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                                             answer_parts.append(event["text"])
                                         yield event
                             except Exception as groq_err:
-                                print(f"[chat] Groq fallback also failed: {groq_err}")
+                                logger.exception("[chat] Groq fallback also failed: %s", groq_err)
 
                             # One row for the fallback, whatever happened. A
                             # Groq failure that never reached its final event

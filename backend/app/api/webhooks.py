@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, update
@@ -9,6 +11,8 @@ from app.services.storage_service import get_signed_recording_url
 from app.services.transcription_service import submit_transcription
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+
+logger = logging.getLogger(__name__)
 
 # **Nothing in this file is rate limited, and nothing in it should be**
 # (docs/scaling-plan.md, Phase B1).
@@ -84,7 +88,10 @@ def recording_complete(
         try:
             signed_url = get_signed_recording_url(payload.recording_path)
         except Exception as e:
-            print(f"[webhook] Could not generate signed URL: {e}")
+            logger.warning(
+                "[webhook] could not generate signed URL: %s", e,
+                extra={"meeting_id": payload.meeting_id, "user_id": payload.user_id},
+            )
             db.execute(
                 update(Meeting)
                 .where(Meeting.id == payload.meeting_id, Meeting.status.notin_(["transcribing", "completed"]))
@@ -144,7 +151,11 @@ def recording_complete(
             #
             # A process that dies between the commit above and this line runs
             # no undo; that window is still bounded by the watchdog.
-            print(f"[webhook] Could not queue transcription for meeting {payload.meeting_id}: {e}")
+            logger.error(
+                "[webhook] could not queue transcription - undoing the claim: %s", e,
+                exc_info=True,
+                extra={"meeting_id": payload.meeting_id, "user_id": payload.user_id},
+            )
             db.execute(
                 update(Meeting)
                 .where(Meeting.id == payload.meeting_id, Meeting.status == "transcribing")
