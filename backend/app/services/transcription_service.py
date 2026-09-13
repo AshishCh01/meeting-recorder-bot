@@ -398,11 +398,17 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
                         index_transcript(db, meeting_id, result)
                     except Exception as idx_err:
                         # Same reasoning as the Gemini path above - retryable
-                        # rather than swallowed. Raised from inside an except
-                        # block, so it propagates without re-entering any
-                        # handler here; the `finally` cleanup still runs.
+                        # rather than swallowed.
                         raise IndexingFailed(str(idx_err)) from idx_err
                     return result
+                except IndexingFailed:
+                    # Sarvam succeeded and the transcript is saved - only the
+                    # index is missing. This `try` wraps the indexing call, so
+                    # without this clause the `except Exception` below caught
+                    # IndexingFailed and marked a transcribed meeting failed,
+                    # blaming Sarvam. Let it out to the queue, like the Gemini
+                    # path; the `finally` cleanup still runs.
+                    raise
                 except Exception as fallback_err:
                     print(f"[transcription] Sarvam AI fallback also failed: {fallback_err}")
                     _mark_failed(

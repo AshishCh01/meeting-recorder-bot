@@ -139,6 +139,10 @@ class Settings(BaseSettings):
     # of transcribe_recording makes attempts after the first cheap - they skip
     # straight to indexing rather than re-billing a full Gemini transcription.
     transcription_max_tries: int = 3
+    # How long arq waits before the next attempt of a failed transcription
+    # job. Mostly a transient AI provider or embedding outage, so a short wait
+    # beats an immediate re-run that hits the same outage.
+    transcription_retry_delay_seconds: int = 30
     # Generous: a long recording is a download, a Gemini File API upload, a
     # poll to ACTIVE (capped at 5 minutes on its own), transcription and a
     # full embed. Must exceed the worst realistic case, or arq kills a job

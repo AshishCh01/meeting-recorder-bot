@@ -21,6 +21,7 @@ from contextlib import suppress
 from datetime import timedelta
 
 from arq.connections import RedisSettings
+from arq.worker import Retry
 
 from app.config import settings
 from app.observability import configure_logging, init_sentry, set_meeting_context
@@ -82,6 +83,13 @@ async def transcribe_job(ctx, meeting_id: str, storage_path: str):
     Retries are arq's, bounded by max_tries below. The resume check at the top
     of transcribe_recording is what makes them affordable: attempt 2 skips
     transcription entirely and re-runs only the indexing step.
+
+    A non-final failure raises arq's Retry, not the original exception. arq
+    re-runs a job only for Retry, RetryJob or CancelledError; anything else
+    fails it on the spot. This used to re-raise the original exception, so the
+    job ran exactly once, never reached the terminal branch below, and a
+    one-off indexing failure left a "completed" meeting with no index and no
+    note (docs/scaling-plan.md, B3).
     """
     attempt = ctx.get("job_try", 1)
     # Tag this job's Sentry scope before anything can fail. `arq-job.args` is
@@ -97,12 +105,14 @@ async def transcribe_job(ctx, meeting_id: str, storage_path: str):
         return await asyncio.to_thread(transcribe_recording, meeting_id, storage_path)
     except Exception as e:
         if attempt < settings.transcription_max_tries:
-            # Let arq retry. Nothing terminal is written yet, so the meeting
-            # keeps whatever state the attempt left it in.
+            # Hand the retry to arq explicitly. Nothing terminal is written
+            # yet, so the meeting keeps whatever state the attempt left it in.
+            delay = settings.transcription_retry_delay_seconds
             logger.warning(
-                "[worker] meeting %s attempt %s failed (%s) - retrying", meeting_id, attempt, e,
+                "[worker] meeting %s attempt %s/%s failed (%s) - retrying in %ss",
+                meeting_id, attempt, settings.transcription_max_tries, e, delay,
             )
-            raise
+            raise Retry(defer=delay) from e
         # Last attempt. Something has to write the terminal state, or the
         # meeting sits in a non-terminal status until the watchdog sweeps it -
         # this is what submit_transcription's _on_done callback did on the
