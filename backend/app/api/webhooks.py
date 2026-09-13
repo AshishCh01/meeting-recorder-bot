@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import update
+from sqlalchemy import and_, update
 from app.db.database import get_db
 from app.db.models import Meeting
 from app.api.auth import verify_webhook_token
@@ -59,6 +59,9 @@ def recording_complete(
     # apart, so an out-of-order response could otherwise race "recording"
     # backward to "waiting_for_admission" - exclude states already past
     # each ping's point in the lifecycle to keep status moving forward only.
+    # "uploading" is deliberately not excluded: a ping can only meet it from a
+    # session that is still live, where the ping is the true state - see
+    # tests/test_webhook_uploading_pings.py.
     if payload.status == "waiting_for_admission":
         db.execute(
             update(Meeting)
@@ -92,11 +95,27 @@ def recording_complete(
 
         result = db.execute(
             update(Meeting)
-            .where(Meeting.id == payload.meeting_id, Meeting.status.notin_(["transcribing", "completed"]))
+            .where(
+                Meeting.id == payload.meeting_id,
+                Meeting.status.notin_(["transcribing", "completed"]),
+                # A "failed" meeting is claimable only if no completed report
+                # was ever accepted for it. recording_url is set by this
+                # claim and by nothing else (the hand-off undo below clears
+                # it), so a failed row that has one failed *after* its
+                # recording was handed to transcription - and this is a
+                # redelivery of that same report, not a late recording.
+                # Claiming it would pay to transcribe the same audio again;
+                # its recovery is POST /meetings/{id}/retry. A failed row
+                # without one (the watchdog swept it mid-recording, storage
+                # did not have the file yet) is a real late completion, and
+                # recovering it is what this branch is for.
+                ~and_(Meeting.status == "failed", Meeting.recording_url.isnot(None)),
+            )
             .values(
                 status="transcribing",
                 recording_url=signed_url,
-                duration_seconds=payload.duration_seconds
+                duration_seconds=payload.duration_seconds,
+                error_message=None,
             )
         )
         db.commit()
@@ -104,7 +123,40 @@ def recording_complete(
         if result.rowcount == 0:
             return {"status": "already_processed"}
 
-        submit_transcription(payload.meeting_id, payload.recording_path)
+        try:
+            submit_transcription(payload.meeting_id, payload.recording_path)
+        except Exception as e:
+            # The claim above is only worth keeping if the hand-off happened.
+            # Left in place, every retry meeting-bot sends lands on the
+            # rowcount == 0 branch as "already_processed" and nothing is ever
+            # enqueued - the meeting sits in "transcribing" with no job until
+            # the watchdog times it out. So undo it, in this request, and
+            # answer with an error the bot retries on: the retry finds a
+            # meeting no completed report has been accepted for (recording_url
+            # cleared) and claims it again. Only the request holding the claim
+            # gets here, and only when nothing was handed off, so at most one
+            # transcription still holds.
+            #
+            # "failed", not the status before the claim, so a Redis outage that
+            # outlasts the bot's retries ends terminal and Retry-able right
+            # away. Guarded on "transcribing" so this never overwrites a
+            # meeting something else has already moved on.
+            #
+            # A process that dies between the commit above and this line runs
+            # no undo; that window is still bounded by the watchdog.
+            print(f"[webhook] Could not queue transcription for meeting {payload.meeting_id}: {e}")
+            db.execute(
+                update(Meeting)
+                .where(Meeting.id == payload.meeting_id, Meeting.status == "transcribing")
+                .values(
+                    status="failed",
+                    recording_url=None,
+                    error_message=f"Recording saved, but transcription could not be queued: {e}",
+                )
+            )
+            db.commit()
+            raise HTTPException(503, "Could not queue transcription - retry this webhook")
+
         return {"status": "received"}
 
     result = db.execute(
