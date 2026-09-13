@@ -572,6 +572,175 @@ def test_first_run_indexing_failure_keeps_the_meeting_completed(db, user, full_p
     assert row.embedding_provider is None
 
 
+class _FakeSarvamJob:
+    """Enough of a Sarvam batch STT job for transcription_fallback_sarvam._run_stt_job."""
+
+    STT = {
+        "transcript": "Let's start with the roadmap. Agreed, I'll take the API work.",
+        "diarized_transcript": {"entries": [
+            {"speaker_id": "0", "transcript": "Let's start with the roadmap.", "start_time_seconds": 0.0, "end_time_seconds": 4.0},
+            {"speaker_id": "1", "transcript": "Agreed, I'll take the API work.", "start_time_seconds": 5.0, "end_time_seconds": 9.0},
+        ]},
+    }
+
+    def upload_files(self, file_paths):
+        pass
+
+    def start(self):
+        pass
+
+    def wait_until_complete(self, poll_interval, timeout):
+        pass
+
+    def get_file_results(self):
+        return {"successful": [{"file_name": "audio.m4a"}], "failed": []}
+
+    def download_outputs(self, output_dir):
+        with open(os.path.join(output_dir, "audio.json"), "w", encoding="utf-8") as f:
+            json.dump(self.STT, f)
+
+
+class _FakeSarvamClient:
+    """The two SarvamAI SDK surfaces the fallback calls: batch STT and chat."""
+
+    def __init__(self, fail_with=None):
+        self.stt_jobs = 0
+        self.fail_with = fail_with
+        client = self
+
+        class _STT:
+            def create_job(self, **kwargs):
+                client.stt_jobs += 1
+                if client.fail_with is not None:
+                    raise client.fail_with
+                return _FakeSarvamJob()
+
+        class _Chat:
+            def completions(self, **kwargs):
+                analysis = {
+                    "title": "Roadmap via Sarvam", "summary": "Roadmap agreed.", "key_points": ["Roadmap"],
+                    "action_items": [], "conclusion": "Ship it.",
+                }
+                message = type("M", (), {"content": json.dumps(analysis)})()
+                return type("R", (), {"choices": [type("Ch", (), {"message": message})()]})()
+
+        self.speech_to_text_job = _STT()
+        self.chat = _Chat()
+
+
+@pytest.fixture
+def gemini_down_sarvam_up(monkeypatch, full_pipeline):
+    """
+    Gemini fails at the client call with a real 503, through the real retry
+    loop (sleeps skipped); Sarvam answers at its SDK client. Everything else is
+    full_pipeline's stubbed download/upload.
+    """
+    from google.genai import errors
+    from app.services import transcription_fallback_sarvam
+
+    gemini_calls = []
+
+    def overloaded(**kwargs):
+        gemini_calls.append(kwargs.get("model"))
+        raise errors.ServerError(503, {"error": {"code": 503, "message": "The model is overloaded.", "status": "UNAVAILABLE"}})
+
+    monkeypatch.setattr(transcription_service, "_call_gemini_with_retry", _REAL_CALL_GEMINI_WITH_RETRY)
+    monkeypatch.setattr(transcription_service.client.models, "generate_content", overloaded)
+    monkeypatch.setattr(transcription_service.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(settings, "sarvam_api_key", "stub-sarvam-key")
+
+    sarvam = _FakeSarvamClient()
+    monkeypatch.setattr(transcription_fallback_sarvam, "get_sarvam_client", lambda: sarvam)
+    return {"gemini_calls": gemini_calls, "sarvam": sarvam}
+
+
+_REAL_CALL_GEMINI_WITH_RETRY = transcription_service._call_gemini_with_retry
+
+
+def test_sarvam_fallback_indexing_failure_keeps_the_meeting_completed(db, user, gemini_down_sarvam_up, monkeypatch):
+    """
+    B3 bug 2. Gemini is down, Sarvam transcribes, indexing fails. The Sarvam
+    branch raised IndexingFailed from inside its own `try`, whose
+    `except Exception` caught it: the meeting went "failed" with a message
+    blaming Sarvam, over a transcript Sarvam had produced and saved. It must
+    behave exactly like the Gemini path's first-run indexing failure above.
+    """
+    meeting = make_meeting(db, user.id, status="transcribing")
+
+    def boom(db_, mid, transcript):
+        raise RuntimeError("embedding provider down")
+
+    monkeypatch.setattr(transcription_service, "index_transcript", boom)
+
+    with pytest.raises(transcription_service.IndexingFailed, match="embedding provider down"):
+        transcription_service.transcribe_recording(str(meeting.id), "recordings/x.m4a")
+
+    assert len(gemini_down_sarvam_up["gemini_calls"]) == 4, "Gemini's own retries did not run first"
+    assert gemini_down_sarvam_up["sarvam"].stt_jobs == 1
+    row = reread(meeting.id)
+    assert row.status == "completed", "an indexing failure marked a Sarvam-transcribed meeting failed"
+    assert row.transcript["title"] == "Roadmap via Sarvam"
+    assert row.error_message == "Transcribed via Sarvam AI fallback (Gemini 503 unavailable)"
+    assert row.embedding_provider is None
+
+
+def test_sarvam_fallback_success_still_transcribes_and_indexes(db, user, gemini_down_sarvam_up, stub_embeddings):
+    meeting = make_meeting(db, user.id, status="transcribing")
+
+    result = transcription_service.transcribe_recording(str(meeting.id), "recordings/x.m4a")
+
+    assert result["title"] == "Roadmap via Sarvam"
+    assert [c["text"] for c in result["conversation"]] == [
+        "Speaker 0 - Let's start with the roadmap.",
+        "Speaker 1 - Agreed, I'll take the API work.",
+    ]
+    assert len(stub_embeddings) == 1
+    row = reread(meeting.id)
+    assert row.status == "completed"
+    assert row.embedding_provider == "gemini"
+    assert "Sarvam AI fallback" in row.error_message
+    assert chunk_count(meeting.id) > 0
+
+
+def test_sarvam_itself_failing_still_marks_the_meeting_failed(db, user, gemini_down_sarvam_up, stub_embeddings):
+    """A real fallback failure is still a failed meeting - that branch is unchanged."""
+    gemini_down_sarvam_up["sarvam"].fail_with = RuntimeError("Sarvam quota exceeded")
+    meeting = make_meeting(db, user.id, status="transcribing")
+
+    assert transcription_service.transcribe_recording(str(meeting.id), "recordings/x.m4a") is None
+
+    assert stub_embeddings == []
+    row = reread(meeting.id)
+    assert row.status == "failed"
+    assert row.error_message == "Gemini 503 and Sarvam AI fallback both failed: Sarvam quota exceeded"
+    assert row.transcript is None
+
+
+def test_a_real_worker_retries_a_sarvam_indexing_failure_without_transcribing_again(db, user, gemini_down_sarvam_up, monkeypatch):
+    """
+    End to end with bug 1's fix: attempt 1 goes Gemini -> Sarvam -> indexing
+    fails; attempt 2 resumes at indexing on the stored Sarvam transcript and
+    calls neither provider again.
+    """
+    monkeypatch.setattr(settings, "transcription_max_tries", 3)
+    meeting = make_meeting(db, user.id, status="transcribing")
+    embed_calls = _flaky_embeddings(monkeypatch, fail_times=1)
+    run = _RealWorkerRun(monkeypatch)
+
+    run.enqueue_and_drain(str(meeting.id))
+
+    assert (run.complete, run.failed, run.retried) == (1, 0, 1)
+    assert len(embed_calls) == 2
+    assert len(gemini_down_sarvam_up["gemini_calls"]) == 4, "attempt 2 went back to Gemini"
+    assert gemini_down_sarvam_up["sarvam"].stt_jobs == 1, "attempt 2 paid for a second Sarvam transcription"
+    assert run.terminal_calls == []
+    row = reread(meeting.id)
+    assert row.status == "completed"
+    assert row.transcript["title"] == "Roadmap via Sarvam"
+    assert row.embedding_provider == "gemini"
+    assert chunk_count(meeting.id) > 0
+
+
 def test_first_run_success_transcribes_and_indexes(db, user, full_pipeline, stub_embeddings):
     """The ordinary path still works with the resume check in front of it."""
     meeting = make_meeting(db, user.id, status="transcribing")
