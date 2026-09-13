@@ -196,7 +196,7 @@ def user(db):
 # Five test files skip themselves when TEST_REDIS_URL is unset:
 # test_rate_limit, test_bot_pool, test_bot_dispatch_queue, test_bot_auth_health
 # and test_transcription_queue. With Postgres but no Redis this suite reports
-# `166 passed, 51 skipped` and exits **0**.
+# `222 passed, 51 skipped` and exits **0**.
 #
 # Those 51 are not filler. They are B1's atomicity gate, C3's
 # two-hosts-two-meetings gate, C4's per-platform auth gate and A3's
@@ -209,11 +209,11 @@ def user(db):
 # So CI sets PYTEST_REQUIRE_NO_SKIPS=1 and a skip becomes a failure, naming
 # every test that skipped and why. Opt-in rather than always-on, because
 # locally a partial run is genuinely useful - a developer with no Redis should
-# still get the 166 tests that do not need one, and be told what they missed
+# still get the 222 tests that do not need one, and be told what they missed
 # rather than handed a red suite.
 #
 # Deliberately "no skips at all" rather than "no *Redis* skips". This suite has
-# no legitimately-conditional test today (with both services: 217 passed, 0
+# no legitimately-conditional test today (with both services: 273 passed, 0
 # skipped), so any future skip is a question worth forcing someone to answer in
 # a pull request rather than a category to pre-approve here.
 _skipped_in_this_run: list = []
