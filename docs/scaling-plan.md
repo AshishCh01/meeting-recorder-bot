@@ -1625,11 +1625,11 @@ Two deliberate properties:
 
 Three Pythons were in play and the one that mattered had never run:
 
-| Where | Version | Had ever run this code? |
-|---|---|---|
-| `backend/Dockerfile` — what deploys | **3.12** | **No** |
-| `backend/Dockerfile.dev` — local containers | 3.11 | Yes |
-| the developer's `backend/venv` | 3.13 | Yes |
+| Where | Version at B2 | Had ever run this code? | Version now |
+|---|---|---|---|
+| `backend/Dockerfile` — what deploys | **3.12** | **No** | 3.12 |
+| `backend/Dockerfile.dev` — local containers | 3.11 | Yes | **3.12** (reconciled, below) |
+| the developer's `backend/venv` | 3.13 | Yes | 3.13 |
 
 `backend/Dockerfile` has never been built — every local image comes from
 `docker compose up`, which uses `Dockerfile.dev`. The evidence was in the tree:
@@ -1646,15 +1646,62 @@ place the deploy-time runtime is exercised at all.
 the phase's largest open risk and it is now closed — a finding of "no finding",
 which is worth recording precisely because it was not knowable beforehand.
 
-**`Dockerfile.dev` stays 3.11, and that is queued work, not an oversight.**
-Reconciling it needs a `backend` **and** `worker` rebuild (both images install
-from the same `requirements*.txt`, and the worker's compose service overrides
-its pool size, so both have to come back up together), which is a different
-kind of change from adding a workflow file and is deliberately sequenced after
-CI has shown 3.12 sound. It now has: the next person to do it starts from a
-green 3.12 signal rather than from a hope. Until then the spread is 3.11 local
-/ 3.12 CI + deploy / 3.13 developer venv, and CI is the one that matches
-production.
+**`Dockerfile.dev` reconciled to 3.12 — done.** It was deliberately left at
+3.11 while B2 landed and sequenced after CI had shown 3.12 sound. The change is
+the one `FROM` line; nothing else in the file needed to move. In
+`docker-compose.yml` both `backend` and `worker` carry their own `build:` of
+`./backend` + `Dockerfile.dev` (two images from one Dockerfile), so both were
+rebuilt and restarted together; `meeting-bot`, `meeting-bot-2` and `frontend`
+were not touched. `docker-compose.prod.yml` builds both from
+`backend/Dockerfile`, which was already 3.12. The spread is now 3.12 local
+compose / 3.12 CI / 3.12 deploy, with only the developer venv on 3.13.
+
+What the gates showed:
+
+- **Runtime:** `backend` and `worker` report Python 3.12.14 (both were 3.11.16).
+- **Build:** 307s for both images on a cold cp312 wheel cache — ~204s of it the
+  `apt-get install ffmpeg` layer, ~71s pip. Every compiled dependency came as a
+  published cp312 or abi3 wheel; nothing built from source. The 83 installed
+  packages are the same set in both images, and `pip check` is clean. Image
+  size 1.24GB → 1.23GB.
+- **Boot:** `alembic upgrade head` was a no-op (DB already at head
+  `f4a7c2e9b1d6`, checked before the rebuild), uvicorn started, `GET /health`
+  200, no import errors. The worker started arq with both job functions and the
+  5s heartbeat loop, no import errors. The `/app/venv` anonymous volume was not
+  a factor; no `--renew-anon-volumes` needed.
+- **Suite on the 3.12 image:** `217 passed` with `PYTEST_REQUIRE_NO_SKIPS=1`.
+  Host suites unchanged: backend 217 (venv, 3.13), meeting-bot 44.
+
+**Nothing behaved differently on 3.12.** Two things about running the suite
+*inside the compose `backend` container* did not work as written, and neither
+is about Python — both are compose configuration that predates this change,
+and both would have bitten a 3.11 container identically:
+
+1. **`host.docker.internal` does not resolve in the compose services.** Their
+   `dns: [8.8.8.8, 1.1.1.1]` (the Supabase-pooler DNS fix above) replaces
+   Docker Desktop's resolver, which is what answers that name. A throwaway
+   container on the same network resolves it to `192.168.65.254` without the
+   override and fails with it. The documented `docker compose exec ... @host.docker.internal`
+   invocation therefore errors in all 217 tests at connect time.
+2. **Compose injects `backend/.env` and `BOT_HOSTS` as real environment
+   variables.** `IGNORE_DOTENV` stops the app reading the file, but `env_file:`
+   puts its keys straight into the process. Via the gateway IP the run is
+   `211 passed, 6 failed`: `test_env_isolation` correctly names six real
+   credentials present in the environment, a webhook test gets 401, and four
+   `test_retry_reupload` tests get 409 because two recorders are configured.
+   The isolation guard is doing its job.
+
+So the 217 above was run in the rebuilt image with the same bind-mounted code
+but outside compose's environment (`docker run --rm` of the backend image),
+where `host.docker.internal` resolves as intended. Dockerfile.dev's own comment
+that `docker compose exec backend python -m pytest` "works without installing
+anything" is true of the install and not of the environment; that is left as an
+open note, not fixed here.
+
+One incidental difference, not a Python one: the 3.12 run shows one extra
+`DeprecationWarning` (anyio's `BlockingPortal` alias, via Starlette's test
+client). `anyio` is an unpinned transitive dependency; the fresh image resolved
+4.15.1 while the older venv has 4.14.2.
 
 ### The finding this actually turned up
 

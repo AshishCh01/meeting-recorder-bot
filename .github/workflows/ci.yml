@@ -74,12 +74,10 @@ jobs:
 
       # 3.12 deliberately: it is what backend/Dockerfile deploys on, and until
       # this workflow existed nothing had ever run this code on it. Local
-      # containers are 3.11 (Dockerfile.dev) and the developer's venv is 3.13,
-      # so the 217-test runs everyone quotes happened on 3.13. Reconciling
-      # Dockerfile.dev to 3.12 is queued separately - it needs a backend +
-      # worker rebuild - and is deliberately sequenced after CI shows 3.12 is
-      # sound. Do not "fix" a 3.12-only failure by moving this to 3.13; that is
-      # a finding about deploy day, discovered in the one place it is cheap.
+      # containers (Dockerfile.dev) are 3.12 too, so CI, local compose and
+      # production share one runtime; only the developer's venv differs (3.13).
+      # Do not "fix" a 3.12-only failure by moving this to 3.13; that is a
+      # finding about deploy day, discovered in the one place it is cheap.
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
