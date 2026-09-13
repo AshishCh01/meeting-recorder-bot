@@ -14,20 +14,35 @@ const BOT_CLASSES = {
   zoom: ZoomBot,
 };
 
-export async function runMeetingLifecycle(session) {
-  const BotClass = BOT_CLASSES[session.platform];
-  if (!BotClass) throw new Error(`Unsupported platform: ${session.platform}`);
-
-  // Per-session audio sink (phase 2) — the bot's browser audio and this
-  // session's ffmpeg capture both get pointed at it below, isolating this
-  // meeting's audio from any other concurrently-running meeting's.
-  const audioSink = await AudioSink.provision(session.meetingId);
-  session.audioSinkName = audioSink.sinkName;
-
-  const bot = new BotClass(session);
-  const recorder = new Recorder(session.meetingId, audioSink.monitorSource);
+export async function runMeetingLifecycle(session, {
+  provisionSink = (meetingId) => AudioSink.provision(meetingId),
+} = {}) {
+  // Everything that can fail belongs inside the try. By the time this runs,
+  // server.js has already answered the backend 202, so the only way the
+  // backend learns a meeting failed is notifyBackend in the finally below.
+  // Anything thrown before the try skips that finally: server.js's .catch
+  // only logs it, and the meeting sits in "joining" until the watchdog sweeps
+  // it ten minutes later with a generic message. AudioSink.provision() and
+  // the platform check used to live up here, and provision() fails on any
+  // Linux host whose PulseAudio is down - see
+  // test/lifecycle.failure-reporting.test.js.
+  let bot = null;
+  let recorder = null;
+  let audioSink = null;
 
   try {
+    const BotClass = BOT_CLASSES[session.platform];
+    if (!BotClass) throw new Error(`Unsupported platform: ${session.platform}`);
+
+    // Per-session audio sink (phase 2) — the bot's browser audio and this
+    // session's ffmpeg capture both get pointed at it below, isolating this
+    // meeting's audio from any other concurrently-running meeting's.
+    audioSink = await provisionSink(session.meetingId);
+    session.audioSinkName = audioSink.sinkName;
+
+    bot = new BotClass(session);
+    recorder = new Recorder(session.meetingId, audioSink.monitorSource);
+
     await bot.join();
 
     session.markWaitingForAdmission();
@@ -68,18 +83,27 @@ export async function runMeetingLifecycle(session) {
     recordJoinFailure(session.platform, err.message);
     session.markFailed(err.message);
   } finally {
-    console.log('[Lifecycle] 1. Closing Chromium...');
-    await bot.leave().catch(() => {});
+    // Each of these may never have been created, if the try failed before
+    // reaching it. Skip what does not exist; never skip notifyBackend.
+    if (bot) {
+      console.log('[Lifecycle] 1. Closing Chromium...');
+      await bot.leave().catch(() => {});
+    }
 
-    console.log('[Lifecycle] 3. Safely stopping FFmpeg...');
-    const localPath = await recorder.stop().catch((e) => {
-      console.error('[Lifecycle] FFmpeg stop error:', e);
-      return null;
-    });
+    let localPath = null;
+    if (recorder) {
+      console.log('[Lifecycle] 3. Safely stopping FFmpeg...');
+      localPath = await recorder.stop().catch((e) => {
+        console.error('[Lifecycle] FFmpeg stop error:', e);
+        return null;
+      });
+    }
 
     // Never let a sink-cleanup failure abort the rest of the shutdown - the
     // recording still needs uploading and the backend still needs notifying.
-    await audioSink.release().catch(() => {});
+    if (audioSink) {
+      await audioSink.release().catch(() => {});
+    }
 
     let uploadedStorageKey = null;
 
