@@ -16,10 +16,12 @@ observable.
 processes start exactly as they did before. Local dev and the test suite need
 no DSN.
 """
+import contextlib
+import contextvars
 import logging
 import re
 import sys
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from app.config import settings
 
@@ -73,9 +75,84 @@ _SENSITIVE_VAR_SUBSTRINGS = (
 # of them.
 _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}")
 
-_LOG_FORMAT = "%(asctime)s %(levelname)-8s [%(name)s] %(message)s"
+# `log_fields` is " meeting_id=... user_id=..." when either is known, and empty
+# otherwise - see LogContextFilter. Plain text, not JSON, on purpose: these are
+# read with `docker compose logs`, and the fields can be emitted as JSON later
+# without touching a single call site (docs/scaling-plan.md, B5).
+_LOG_FORMAT = "%(asctime)s %(levelname)-8s [%(name)s] %(message)s%(log_fields)s"
+
+# The structured fields every log line inside a meeting's work carries (Phase
+# B5). Context variables rather than an `extra=` at every call: set once where
+# the meeting is known, and every line logged underneath - including from
+# helpers that were never told which meeting they are working on - gets them.
+#
+# Context variables follow asyncio tasks and asyncio.to_thread (which copies
+# the caller's context), so a value set inside one arq job or one request never
+# reaches another. A ThreadPoolExecutor does NOT copy context and reuses its
+# threads, which is why log_context restores the previous values on exit
+# instead of leaving them set.
+_LOG_FIELDS = ("meeting_id", "user_id")
+_log_context_vars = {
+    name: contextvars.ContextVar(f"log_{name}", default=None) for name in _LOG_FIELDS
+}
 
 _sentry_enabled = False
+
+
+class LogContextFilter(logging.Filter):
+    """
+    Adds `meeting_id`, `user_id` and the rendered `log_fields` to every record
+    that reaches the handler it is attached to.
+
+    A value passed explicitly with `extra={"meeting_id": ...}` wins over the
+    context. Never drops a record.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        rendered = []
+        for name in _LOG_FIELDS:
+            value = getattr(record, name, None)
+            if value is None:
+                value = _log_context_vars[name].get()
+                setattr(record, name, value)
+            if value is not None:
+                rendered.append(f"{name}={value}")
+        record.log_fields = (" " + " ".join(rendered)) if rendered else ""
+        return True
+
+
+@contextlib.contextmanager
+def log_context(meeting_id: Any = None, user_id: Any = None) -> Iterator[None]:
+    """
+    Every log line inside the block carries these fields. Nestable.
+
+    On exit, both fields go back to what they were on entry - including any
+    set_log_context() made inside the block - so a reused thread starts its
+    next piece of work clean.
+    """
+    previous = {name: var.get() for name, var in _log_context_vars.items()}
+    set_log_context(meeting_id=meeting_id, user_id=user_id)
+    try:
+        yield
+    finally:
+        for name, var in _log_context_vars.items():
+            var.set(previous[name])
+
+
+def set_log_context(meeting_id: Any = None, user_id: Any = None) -> None:
+    """
+    Adds a field to the current context once it becomes known - typically
+    user_id, after the meeting row has been read. Only non-None values are
+    set. Use inside a log_context() block, which undoes it on exit.
+    """
+    for name, value in (("meeting_id", meeting_id), ("user_id", user_id)):
+        if value is not None:
+            _log_context_vars[name].set(str(value))
+
+
+def current_log_context() -> dict:
+    """The fields in effect right now - for tests and debugging."""
+    return {name: var.get() for name, var in _log_context_vars.items()}
 
 
 def configure_logging() -> None:
@@ -94,9 +171,12 @@ def configure_logging() -> None:
     than stacking a second one on every call.
 
     stdout, not logging's default stderr, so these lines interleave in order
-    with the `print()` calls still left in `app/services/*` (converting those
-    is Phase B). PYTHONUNBUFFERED is set in both Dockerfiles, so neither
-    stream buffers.
+    with the `print()` calls still left in `app/` (Phase B5 is converting
+    them). PYTHONUNBUFFERED is set in both Dockerfiles, so neither stream
+    buffers.
+
+    The handler gets LogContextFilter, so `_LOG_FORMAT`'s `log_fields` is
+    always defined and carries meeting_id/user_id when they are known.
     """
     logging.basicConfig(
         level=settings.log_level.upper(),
@@ -104,6 +184,9 @@ def configure_logging() -> None:
         stream=sys.stdout,
         force=True,
     )
+    for handler in logging.getLogger().handlers:
+        if not any(isinstance(f, LogContextFilter) for f in handler.filters):
+            handler.addFilter(LogContextFilter())
 
 
 def _scrub_mapping(values: dict) -> None:
