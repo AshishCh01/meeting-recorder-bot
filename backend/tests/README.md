@@ -108,7 +108,8 @@ Tear down with `docker stop meetiq-test-pg meetiq-test-redis`.
 `.github/workflows/ci.yml` (Phase B2) runs this suite on every push to `main`
 and every pull request, on **Python 3.12** — which is what `backend/Dockerfile`
 deploys on, and which nothing had ever run this code on before that workflow
-existed (`Dockerfile.dev` is 3.11 and the developer venv is 3.13). It uses the
+existed. `Dockerfile.dev` has since moved to 3.12 as well, so local containers
+match CI and production; the developer venv is 3.13. It uses the
 same two images and the **same host ports** as the commands above, so the
 invocation in this file is the invocation that runs in CI, character for
 character. No repository secret is involved, and the workflow has a step that
