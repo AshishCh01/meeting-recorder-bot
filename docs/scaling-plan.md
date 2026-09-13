@@ -27,8 +27,10 @@ and what it costs. **B2 has shipped too**: both suites now run on every push
 to `main` and every pull request, on the Python 3.12 that `backend/Dockerfile`
 deploys on and that had never run this code before — it passes. A skip guard
 makes a missing service container a red build rather than a green
-`166 passed, 51 skipped`. B3–B5 (broader coverage, cost as a metric, structured
-logging) remain deferred; none of them block a deploy.
+`166 passed, 51 skipped`. **B3 is under way**: items 1 and 2 (the meeting
+status machine, webhook idempotency) have landed as tests, with four findings
+written up rather than fixed; items 3–5 are still to come. B4–B5 (cost as a
+metric, structured logging) remain deferred; none of them block a deploy.
 
 Between A5 and C3, a batch of hardening landed that this plan treats as
 prerequisites rather than phases of their own — found by testing the phases
@@ -76,7 +78,8 @@ draft was numbered as steps 1–7; those numbers still appear in conversation, s
 | ~~**A5**~~ | ~~JWTs verified locally~~ — **done, `588ceb9`** | High | Fallback wrapper, then revert |
 | **B1** | Per-user rate limiting on chat and meeting creation — **done** | Low | `RATE_LIMIT_ENABLED=false` |
 | **B2** | CI on every push and PR — **done** | None | Deleting the workflow |
-| **B3–B5** | Broader tests, cost as a metric, structured logging | — | Deferred by decision |
+| **B3** | Broader tests — **items 1–2 done**, items 3–5 to come | None | Deleting the test files |
+| **B4–B5** | Cost as a metric, structured logging | — | Deferred by decision |
 | ~~**C**~~ | ~~Bot pool — the recording tier~~ — **done, C1–C5** | High | Per sub-step |
 
 **The rule for every phase:** independently deployable, independently revertable,
@@ -1297,7 +1300,7 @@ one item that blocked the deploy was done on its own.
 |---|---|---|
 | **B1** | Per-user rate limiting on chat and meeting creation | **done** — below |
 | **B2** | CI: run both suites automatically | **done** — below |
-| **B3** | Broaden test coverage — the status machine, webhook idempotency, the AI fallback ladders | Deferred |
+| **B3** | Broaden test coverage — the status machine, webhook idempotency, the AI fallback ladders | **in progress** — items 1–2 done, below |
 | **B4** | `log_cost` → a real metric rather than a debug line | Deferred |
 | **B5** | The remaining `print()` calls → `logger.*` with structured fields | Deferred |
 
@@ -1896,7 +1899,10 @@ rather than as a phase of its own:
 | `test_auth_user_row_session.py` | 5 | `c5f2c84` |
 | `test_get_meeting_session.py` | 4 | `d505d46` |
 | `test_env_isolation.py` | 2 | `a2a80f9` |
-| **total** | **217** | |
+| **total before B3** | **217** | |
+| `test_meeting_status_machine.py` | 46 | **B3, item 1** |
+| `test_webhook_idempotency.py` | 10 | **B3, item 2** |
+| **total** | **273** | |
 
 *(An earlier version of this table said "40 tests across A1/A3/A4". That was
 true when Phase B was written and has been stale since A5.)*
@@ -1923,6 +1929,138 @@ Highest-value targets, in order:
 5. **Worker failure and retry** — A3's one untested-live path. `j_failed=0
    j_retried=0` to date, so `record_terminal_failure`'s branch on transcript
    and the `IndexingFailed` re-raise have only ever run against stubs.
+
+### Items 1 and 2 — done
+
+**B3 is not done.** Items 3–5 (the AI fallback ladders, `chat_service` reset
+semantics, worker failure and retry) are a separate part, still to come. What
+landed is tests only: no application code changed. Backend suite **217 → 273**
+with both services and `PYTEST_REQUIRE_NO_SKIPS=1`, nothing skipped. With
+Postgres alone it is `222 passed, 51 skipped`: the same 51 as before, because
+none of the 56 new tests needs Redis.
+
+**`test_meeting_status_machine.py` (46) proves closure.** For every
+non-terminal status there is a real, tested way to `completed` or `failed`:
+
+| Status | Way out | Tested in |
+|---|---|---|
+| `scheduled` | scheduler claim, or the missed-window failure | `test_scheduler_claim.py` (**no TTL — finding 3**) |
+| `queued` | dispatcher → `joining`/`failed`; watchdog | `test_bot_dispatch_queue.py`; watchdog here too |
+| `joining` | any webhook; watchdog | here |
+| `waiting_for_admission` | `recording`/`completed`/`failed` webhook; watchdog | here |
+| `recording` | `completed`/`failed` webhook; watchdog | here, and `test_bot_pool.py` |
+| `uploading` | `completed`/`failed` webhook; watchdog | here, and `test_retry_reupload.py` |
+| `transcribing` | transcription → `completed`/`failed`; watchdog | `test_transcription_queue.py`; watchdog here |
+
+What the file checks:
+
+- **The TTL table.** Every status except `scheduled` and the two terminal ones
+  has a TTL. The TTLs are pinned to *different* values, because the defaults
+  give `joining` and `waiting_for_admission` the same 10 minutes, and a crossed
+  mapping would pass on those defaults.
+- **No unknown statuses.** A scan of `app/` finds no status literal outside
+  the vocabulary, so a new status cannot ship without someone deciding its TTL.
+- **Recording TTL vs the bot's cap.** The recording TTL outlasts meeting-bot's
+  own hard cap. The queued-TTL-vs-dispatcher relationship was already
+  asserted in `test_bot_dispatch_queue.py`, so it is not duplicated here.
+- **The watchdog, per status.** In each of the six statuses, one minute past
+  the TTL fails the meeting and one minute short leaves it alone. `scheduled`
+  and terminal rows are never touched, even at 30 days old.
+- **The scheduler.** The claim bumps `updated_at`, so a meeting booked three
+  days ahead is not swept the moment it is claimed. A trigger that raises
+  fails the meeting. A claim that crashes mid-revalidation leaves it in
+  `joining`, which the scheduler never looks at again, and the watchdog is
+  shown to be its way out.
+- **The webhook's three branches.** A late admission ping cannot undo
+  `recording`, `transcribing`, `completed` or `failed`. A late `recording`
+  ping cannot un-complete a meeting, and a late `failed` report cannot undo
+  `transcribing`/`completed`. A ping restarts the watchdog clock. A session
+  that produced no file (the bot reports `uploading` with no path) and a
+  `completed` report whose file is missing both end `failed`.
+
+**`test_webhook_idempotency.py` (10).**
+
+- **Same payload twice.** The second delivery gets `already_processed`, and
+  `submit_transcription` was still called exactly once.
+- **Same payload racing itself.** Both requests are held with a barrier
+  before the UPDATE. Postgres re-evaluates the loser's `WHERE`, so one
+  transcription runs.
+- **After `completed`.** A delivery for a meeting that is already `completed`
+  takes the same branch and leaves the transcript alone.
+- **Wrong user.** A mismatched `user_id` is a 409 for every status, with no
+  storage call and `updated_at` unchanged.
+- **Duplicate pings.** A second `waiting_for_admission` or `recording` ping has
+  no `rowcount` branch. It answers `received` again (not `already_processed`)
+  and rewrites the same status, which also bumps `updated_at`. A duplicate
+  `failed` report is harmless the same way.
+
+**Falsified.** Every test below was run against a deliberately broken copy of
+the code it guards, went red, and the code was restored:
+
+| Mutation | Tests that failed |
+|---|---|
+| `rowcount == 0` branch removed | the three completed-redelivery tests (sequential, racing, after `completed`) |
+| completed UPDATE's exclusion list emptied | the same three |
+| admission ping's exclusion list emptied | late admission ping ×4 |
+| `"completed"` dropped from the recording ping's list | late recording ping `[completed]` |
+| failed report's exclusion list emptied | late failed report ×2 |
+| 409 ownership check removed | mismatched `user_id` ×4 |
+| `joining`/`waiting_for_admission` TTLs swapped | TTL table, stuck `[joining]`, stuck/fresh `[waiting_for_admission]` |
+| `uploading` removed from the watchdog | TTL table, stuck `[uploading]` |
+| `onupdate` removed from `Meeting.updated_at` | claim restarts the clock; ping restarts the clock |
+| scheduler's trigger-failure write removed | a bot that will not start fails the meeting |
+| a `status="pending"` literal added | no status outside the vocabulary |
+| webhook given an early return for `uploading` | a session with no file ends failed |
+| signed-URL failure no longer caught | a missing file fails instead of transcribing |
+
+The ping-clock test passed its first mutation run. It aged the row 20 minutes,
+which is inside the recording TTL anyway. It now ages the row past the
+recording TTL.
+
+#### Findings — written up, not fixed
+
+Each was confirmed with a throwaway probe against the current code. None is
+pinned by a test, because a test asserting today's behaviour would lock the
+bug in. Fixing any of them is its own PR.
+
+1. **An enqueue failure after the commit is never retried** (the most
+   serious). The completed branch commits `transcribing` and *then* calls
+   `submit_transcription`. With `TRANSCRIPTION_USE_QUEUE` on and Redis
+   unreachable, that call raises, and the webhook returns 500 with the
+   UPDATE already committed. meeting-bot retries, as designed. The retry
+   sees rowcount 0 and gets `already_processed`, so nothing is ever enqueued.
+   Probe: `first: 500, second: 200 already_processed, submit attempts: 1,
+   status: transcribing`. The recording is safe, but the meeting sits for the
+   30-minute `transcribing` TTL, gets failed by the watchdog, and the user has
+   to press retry. The idempotency guard counts "row updated" as "processed",
+   which is one step too early.
+2. **A redelivered `completed` after transcription has *failed* transcribes
+   again.** The completed UPDATE excludes `transcribing` and `completed` but
+   not `failed`. If transcription fails inside the 3s/6s retry window and the
+   bot redelivers, the meeting goes `failed → transcribing` and a second job
+   is submitted. Probe: `second response: received, submitted: 2`. It needs
+   a lost-but-successful first response *and* a fast failure, so it is rare,
+   and the cost is one extra attempt. Excluding `failed` may be wrong too: a
+   late but genuine `completed` after a watchdog sweep currently recovers the
+   meeting, and would stop doing so.
+3. **`scheduled` with a NULL `scheduled_at` is never revisited.** `scheduled`
+   has no TTL, and the scheduler only picks up rows with a non-NULL
+   `scheduled_at`. `POST /meetings` writes `scheduled` (NULL `scheduled_at`)
+   in one commit and `initial_status()` in a second. If the process dies
+   between the two, or the second commit fails and so does the `failed`
+   write in its handler, the row stays `scheduled` forever. Probe: 30 days
+   old, `scheduler: 0, watchdog: 0, status: scheduled`. This is the one
+   non-terminal state with no path out. It is narrow (it needs a crash or DB
+   error between two adjacent commits), but it is real. Relatedly, closure
+   for *every* `scheduled` row depends on `CALENDAR_SCHEDULER_ENABLED`, since
+   nothing else looks at them.
+4. **Progress pings can move `uploading` backwards.** Neither ping's
+   exclusion list mentions `uploading`, so a late `recording` ping turns a
+   re-uploading meeting back into `recording`. Probe confirmed. In practice
+   this is unreachable: `uploading` only exists during retry's re-upload,
+   long after the original session's single-attempt pings. Closure still
+   holds, because `recording` has a TTL. Recorded for completeness, not
+   urgency.
 
 `pytest` is in `requirements-dev.txt`. `pytest-asyncio` is **not** needed — the
 async paths are driven with `asyncio.run(...)` directly, which keeps the async
