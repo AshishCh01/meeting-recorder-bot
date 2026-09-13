@@ -1759,7 +1759,7 @@ something to optimise away — it is the thing that makes the run mean anything.
 
 | # | Gate | Evidence |
 |---|---|---|
-| 1 | Both jobs pass on a real run against real service containers | runs `34707285275` (85s) and `34708004003` (67s) — green |
+| 1 | Both jobs pass on a real run against real service containers | **push to `main`: run `34708392463` — green.** Plus pull-request runs `34707285275` (85s), `34708004003` (67s) and `34708245941`. Both triggers exercised |
 | 2 | **With the Redis service removed, the workflow fails** | run `34707389734` — backend red; the log reads `PYTEST_REQUIRE_NO_SKIPS=1 and 51 test(s) skipped`, then all 51 nodeids. Without the guard this exact run is `166 passed, 51 skipped` and **green** |
 | 3 | A deliberately broken test fails the build | run `34708134338` — one sabotaged assertion per suite, **both** jobs red. Independently, runs `34706302175` and `34706516909` went red on the three genuine `pactl` failures |
 | 4 | No repository secret configured; no real key in the job | none configured; the "No credentials" step passes and would fail if that changed |
