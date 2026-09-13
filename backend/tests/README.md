@@ -45,8 +45,11 @@ entirely, the three Redis-backed tests in `test_bot_dispatch_queue.py` skip
 `test_bot_pool.py` that exercise the real heartbeat cache skip (the other 24
 run against Postgres alone), and 21 of the 35 in `test_rate_limit.py` skip
 (the other 14 run without it - they are the fail-open ones, which need a Redis
-that is *not* there). The scheduler, status-machine and webhook-idempotency
-tests still run. Full suite: 273 with Redis, 222 passed / 51 skipped without.
+that is *not* there), and so does the one real-Redis test in
+`test_webhook_enqueue_failure.py` (the other 8 in that file run against
+Postgres alone). The scheduler, status-machine, webhook and
+scheduled-without-time tests still run. Full suite: 311 with Redis, 259 passed
+/ 52 skipped without.
 
 **Rate limiting is off unless a test turns it on.** `conftest.py` sets
 `RATE_LIMIT_ENABLED=false`, because Phase B1's limiter is an `async def`
@@ -120,9 +123,10 @@ fails if one ever is.
 **A skip is a failure when this is set.** CI sets it; nothing else does.
 
 The reason is the numbers in the section above: with Postgres but no Redis this
-suite reports `222 passed, 51 skipped` and exits **0**. Those 51 are B1's
-atomicity gate, C3's two-hosts-two-meetings gate, C4's per-platform auth gate
-and A3's queue-durability gate — the concurrency work, and precisely the tests
+suite reports `259 passed, 52 skipped` and exits **0**. Those 52 are B1's
+atomicity gate, C3's two-hosts-two-meetings gate, C4's per-platform auth gate,
+A3's queue-durability gate and B3's real-Redis enqueue-recovery test — the
+concurrency work, and precisely the tests
 nobody re-runs by hand. A workflow that provisioned Postgres and forgot Redis
 would be green and blind to all of it, which is worse than having no CI at all:
 it converts "nobody ran the tests" into "the tests passed".
@@ -130,11 +134,11 @@ it converts "nobody ran the tests" into "the tests passed".
 The guard is a `pytest_sessionfinish` hook at the bottom of `conftest.py`. It
 lists every test that skipped and why, then sets a failing exit status. It is
 opt-in rather than always-on because locally a partial run is genuinely useful
-— run without Redis and you get the 222 tests that do not need one, plus a note
+— run without Redis and you get the 259 tests that do not need one, plus a note
 about what you missed, instead of a red suite.
 
 It refuses *any* skip, not just Redis ones. There is no legitimately
-conditional test here today (with both services: `273 passed`, zero skipped),
+conditional test here today (with both services: `311 passed`, zero skipped),
 so a new skip is a question someone should have to answer in a pull request.
 
 ## What's covered
@@ -148,8 +152,12 @@ so a new skip is a question someone should have to answer in a pull request.
 | `test_bot_dispatch_queue.py` | C2 | A meeting requested while the recorder is full reaches `queued` and joins when capacity frees; a queued meeting survives the sweep that would have killed it in `joining`, and is still swept at its own TTL; a deleted or stopped meeting is dropped rather than joined; a 409 re-queues instead of failing; exhausted waiting writes a terminal failure naming the cause; stopping a queued meeting cancels it without calling the bot, and a stop that loses the race to the dispatcher stops the bot rather than overwriting the claim; the flag off still posts synchronously, raises on a busy bot, and enqueues nothing. |
 | `test_bot_pool.py` | C3 | Two meetings dispatched at once against two single-slot recorders land one on each, read off `bot_host_id`; a recorder that stops answering freezes its cached `last_seen` rather than refreshing it with a failure, and drops out once past the TTL, while the survivor takes the next meeting on its first attempt; **the existing watchdog already sweeps a meeting whose host died** — no new sweep code, and the module mentions no host at all; stop, delete and re-upload reach the URL of the host the meeting actually landed on; an unresolvable host is a 409, never a 500, and never a call to some other recorder; a `queued` meeting cancels without the host column being resolved at all; and an empty cache after a Redis restart repopulates in one poll cycle instead of reading as "all hosts down". |
 | `test_bot_auth_health.py` | C4 | A host whose Google session has expired stops receiving Google meetings while still receiving Zoom ones — per platform, never per host, because the two identities expire independently; `unknown` (booted, first keepalive cycle not finished) and a bot that reports no health at all both count as usable, so a restart is not an outage and the backend can ship ahead of the bots; a pool with every Google session dead fails the meeting with a message naming the credential and the command that fixes it, worded distinctly from the busy case and from a mixed one; and restoring the credential brings the host back on the next heartbeat with nothing restarted. |
-| `test_meeting_status_machine.py` | B3 | The status machine closes: every non-terminal status but `scheduled` has a TTL and no status literal in `app/` is outside the vocabulary; past its TTL each of the six is failed and inside it none is, with every TTL pinned to a distinct value so a crossed mapping cannot pass; the scheduler's claim restarts the watchdog clock, and a claim that crashes mid-revalidation is still swept; late webhook pings and late failure reports never move a meeting backwards; a session with no file and a completed report with a missing file both end `failed`. Findings that are deliberately *not* pinned are in docs/scaling-plan.md B3. |
+| `test_meeting_status_machine.py` | B3 | The status machine closes: every non-terminal status but `scheduled` has a TTL and no status literal in `app/` is outside the vocabulary; past its TTL each of the six is failed and inside it none is, with every TTL pinned to a distinct value so a crossed mapping cannot pass; the scheduler's claim restarts the watchdog clock, and a claim that crashes mid-revalidation is still swept; late webhook pings and late failure reports never move a meeting backwards; a session with no file and a completed report with a missing file both end `failed`. The four findings it turned up, and how each was resolved, are in docs/scaling-plan.md B3. |
 | `test_webhook_idempotency.py` | B3 | The same `completed` payload delivered twice - sequentially or racing on a barrier - calls `submit_transcription` once and answers `already_processed`; so does one arriving after `completed`; a mismatched `user_id` is a 409 before any storage call or row write; a duplicate progress ping answers `received` and only moves `updated_at`. |
+| `test_webhook_enqueue_failure.py` | B3 finding 1 | A transcription hand-off that fails does not strand the meeting in `transcribing`: the claim is undone to `failed` with `recording_url` cleared and the webhook answers 503, the bot's retry claims it again and submits exactly one job, later deliveries stay `already_processed`, and the undo never overwrites a meeting that already moved on; concurrent deliveries around a failed hand-off still submit at most once; a real unreachable Redis followed by a real one leaves exactly one job in arq. Also pins the residual: a crash between claim and enqueue is bounded by the watchdog and recovered by Retry. |
+| `test_webhook_late_completed.py` | B3 finding 2 | A `completed` report may revive a `failed` meeting only if no completed report was ever accepted for it (`recording_url IS NULL`): redeliveries after a transcription failure or a swept `transcribing` are `already_processed` and keep their failure, while late reports for meetings the watchdog failed before any hand-off, a storage miss, or a bot dispatch wrongly failed still recover - including when two race. |
+| `test_scheduled_without_time.py` | B3 finding 3 | A `scheduled` row with no `scheduled_at` is failed by the watchdog once past the joining TTL; valid bookings are never swept, whatever their age or whether the scheduler is enabled; `POST /meetings` inserts its dispatch status directly, so a crash mid-create leaves no such row. |
+| `test_webhook_uploading_pings.py` | B3 finding 4 | No code change, pinned: a progress ping can only meet `uploading` from a still-live session during a re-upload the bot refuses, where it is the true state, and the meeting still closes on the bot's final report. |
 | `test_jwt_auth.py` | A5 | Every rejection path 401s - expired, wrong signature, wrong `aud`, wrong `iss`, `alg: none`, HS256-signed-with-the-public-key; 50 unknown-`kid` requests cost exactly one JWKS refetch; the fallback wrapper keeps an unverifiable token logged in and counts itself; the user-row lookup happens once, not per request. |
 
 `test_observability.py` needs neither Postgres nor Redis of its own, but it

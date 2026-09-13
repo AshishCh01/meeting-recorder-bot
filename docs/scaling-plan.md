@@ -28,8 +28,9 @@ to `main` and every pull request, on the Python 3.12 that `backend/Dockerfile`
 deploys on and that had never run this code before — it passes. A skip guard
 makes a missing service container a red build rather than a green
 `166 passed, 51 skipped`. **B3 is under way**: items 1 and 2 (the meeting
-status machine, webhook idempotency) have landed as tests, with four findings
-written up rather than fixed; items 3–5 are still to come. B4–B5 (cost as a
+status machine, webhook idempotency) have landed as tests, and the four findings
+they turned up have been resolved in a separate change; items 3–5 are still to
+come. B4–B5 (cost as a
 metric, structured logging) remain deferred; none of them block a deploy.
 
 Between A5 and C3, a batch of hardening landed that this plan treats as
@@ -1902,7 +1903,12 @@ rather than as a phase of its own:
 | **total before B3** | **217** | |
 | `test_meeting_status_machine.py` | 46 | **B3, item 1** |
 | `test_webhook_idempotency.py` | 10 | **B3, item 2** |
-| **total** | **273** | |
+| **total after items 1–2** | **273** | |
+| `test_webhook_late_completed.py` | 15 | B3 finding 2 |
+| `test_scheduled_without_time.py` | 12 | B3 finding 3 |
+| `test_webhook_enqueue_failure.py` | 9 | B3 finding 1 |
+| `test_webhook_uploading_pings.py` | 2 | B3 finding 4 |
+| **total** | **311** | |
 
 *(An earlier version of this table said "40 tests across A1/A3/A4". That was
 true when Phase B was written and has been stale since A5.)*
@@ -1944,7 +1950,7 @@ non-terminal status there is a real, tested way to `completed` or `failed`:
 
 | Status | Way out | Tested in |
 |---|---|---|
-| `scheduled` | scheduler claim, or the missed-window failure | `test_scheduler_claim.py` (**no TTL — finding 3**) |
+| `scheduled` | scheduler claim, or the missed-window failure; watchdog if `scheduled_at` is NULL (finding 3) | `test_scheduler_claim.py`, `test_scheduled_without_time.py` |
 | `queued` | dispatcher → `joining`/`failed`; watchdog | `test_bot_dispatch_queue.py`; watchdog here too |
 | `joining` | any webhook; watchdog | here |
 | `waiting_for_admission` | `recording`/`completed`/`failed` webhook; watchdog | here |
@@ -2017,50 +2023,144 @@ The ping-clock test passed its first mutation run. It aged the row 20 minutes,
 which is inside the recording TTL anyway. It now ages the row past the
 recording TTL.
 
-#### Findings — written up, not fixed
+#### Findings from items 1–2 — resolved
 
-Each was confirmed with a throwaway probe against the current code. None is
-pinned by a test, because a test asserting today's behaviour would lock the
-bug in. Fixing any of them is its own PR.
+Items 1–2 turned up four findings, each confirmed with a throwaway probe. They
+were fixed in their own change (`63ce042`, PR #13), not folded into the
+coverage work. Each fix was handled the same way:
 
-1. **An enqueue failure after the commit is never retried** (the most
-   serious). The completed branch commits `transcribing` and *then* calls
-   `submit_transcription`. With `TRANSCRIPTION_USE_QUEUE` on and Redis
-   unreachable, that call raises, and the webhook returns 500 with the
-   UPDATE already committed. meeting-bot retries, as designed. The retry
-   sees rowcount 0 and gets `already_processed`, so nothing is ever enqueued.
-   Probe: `first: 500, second: 200 already_processed, submit attempts: 1,
-   status: transcribing`. The recording is safe, but the meeting sits for the
-   30-minute `transcribing` TTL, gets failed by the watchdog, and the user has
-   to press retry. The idempotency guard counts "row updated" as "processed",
-   which is one step too early.
-2. **A redelivered `completed` after transcription has *failed* transcribes
-   again.** The completed UPDATE excludes `transcribing` and `completed` but
-   not `failed`. If transcription fails inside the 3s/6s retry window and the
-   bot redelivers, the meeting goes `failed → transcribing` and a second job
-   is submitted. Probe: `second response: received, submitted: 2`. It needs
-   a lost-but-successful first response *and* a fast failure, so it is rare,
-   and the cost is one extra attempt. Excluding `failed` may be wrong too: a
-   late but genuine `completed` after a watchdog sweep currently recovers the
-   meeting, and would stop doing so.
-3. **`scheduled` with a NULL `scheduled_at` is never revisited.** `scheduled`
-   has no TTL, and the scheduler only picks up rows with a non-NULL
-   `scheduled_at`. `POST /meetings` writes `scheduled` (NULL `scheduled_at`)
-   in one commit and `initial_status()` in a second. If the process dies
-   between the two, or the second commit fails and so does the `failed`
-   write in its handler, the row stays `scheduled` forever. Probe: 30 days
-   old, `scheduler: 0, watchdog: 0, status: scheduled`. This is the one
-   non-terminal state with no path out. It is narrow (it needs a crash or DB
-   error between two adjacent commits), but it is real. Relatedly, closure
-   for *every* `scheduled` row depends on `CALENDAR_SCHEDULER_ENABLED`, since
-   nothing else looks at them.
-4. **Progress pings can move `uploading` backwards.** Neither ping's
-   exclusion list mentions `uploading`, so a late `recording` ping turns a
-   re-uploading meeting back into `recording`. Probe confirmed. In practice
-   this is unreachable: `uploading` only exists during retry's re-upload,
-   long after the original session's single-attempt pings. Closure still
-   holds, because `recording` has a TTL. Recorded for completeness, not
-   urgency.
+1. Tests written first and shown failing on the old code with the real symptom.
+2. The fix implemented.
+3. Each part of the fix broken on purpose, to show a test catches it, then
+   restored.
+4. The full suite run.
+
+Backend suite **273 → 311** with both services and `PYTEST_REQUIRE_NO_SKIPS=1`,
+nothing skipped. With Postgres alone it is `259 passed, 52 skipped`; the one
+new skip is finding 1's real-Redis test. The meeting-bot suite (47) is
+unchanged, and so are the CI workflow and the rate limiter.
+
+**1. A failed transcription enqueue stranded the meeting — fixed.**
+
+- **Root cause.** In `webhooks.recording_complete`, the completed branch
+  committed its claim to `transcribing` and only then called
+  `submit_transcription`. When the enqueue raised (queue on, Redis
+  unreachable), the webhook returned 500 with the claim already committed.
+  Every retry from meeting-bot landed on `rowcount == 0` →
+  `already_processed`, so nothing was ever queued. The meeting waited out the
+  30-minute watchdog TTL.
+- **Fix.** A claim is kept only if its hand-off succeeds. On an enqueue error,
+  the same request undoes the claim: `failed`, with `recording_url` cleared
+  and an `error_message` naming the cause. The undo is guarded on
+  `transcribing`, so it never overwrites a meeting that has moved on. The
+  endpoint returns **503**, and the bot's retry claims the meeting again.
+  The claim now also clears `error_message`, so a recovered meeting doesn't
+  keep the note.
+- **Why `failed`, not the previous status.** An outage that outlasts the bot's
+  three attempts ends terminal and Retry-able straight away. Put back in
+  `recording`, the meeting would wait up to 105 minutes for the watchdog.
+- **Why no new status.** At most one transcription still holds: only one
+  request can hold the claim, and it is undone only when nothing was handed
+  off.
+- **Tests: `test_webhook_enqueue_failure.py` (9).**
+  - A successful hand-off produces exactly one job.
+  - A failed hand-off undoes the claim and answers 503.
+  - The redelivery recovers, and later deliveries stay `already_processed`.
+  - Retries running out leave a terminal meeting that Retry recovers.
+  - The undo never overwrites a finished meeting.
+  - Concurrent deliveries around a failed hand-off still produce at most one
+    job.
+  - A real unreachable Redis, followed by a real reachable one, leaves exactly
+    one job in arq.
+- **Shown failing.** 6 of 8 failed on the old code, reading `transcribing`
+  where the undo should have left `failed`. Six separate breaks of the fix
+  each turned tests red.
+
+**2. A late `completed` report could transcribe a meeting twice — fixed.**
+
+- **Root cause.** The completed claim excluded `transcribing` and `completed`
+  but not `failed`. So a redelivery after transcription had already failed
+  went `failed → transcribing` and started a second job.
+- **Rule.** A `failed` meeting can be claimed by a `completed` report only if
+  no `completed` report was ever accepted for it, i.e. `recording_url IS
+  NULL`. The claim is the only thing that sets `recording_url`, and finding
+  1's undo clears it.
+- **Still recovered:**
+  - A meeting the watchdog failed in `joining`, `waiting_for_admission`,
+    `recording` or `uploading`.
+  - A report redelivered after a "file not found in storage" failure.
+  - Finding 1's undo.
+  - A bot that did start although dispatch had written `failed`.
+- **Now blocked.** A redelivery after transcription failed, or after the
+  watchdog swept `transcribing`. It gets `already_processed`, the failure
+  message is kept, and Retry recovers the meeting.
+- **Tests: `test_webhook_late_completed.py` (15).** Each case above, plus
+  concurrent reports on both sides of the rule, counting every
+  `submit_transcription` call.
+- **Shown failing.** 6 failed on the old code.
+  - **Excluding `failed` outright** broke 14 tests: every legitimate recovery
+    and all of finding 1's recovery path. That is why the rule is narrower.
+  - **Letting finding 1's undo keep `recording_url`** broke 6 tests, which
+    shows the two fixes depend on each other.
+
+**3. `scheduled` with a NULL `scheduled_at` could sit forever — fixed.**
+
+- **Root cause.** The calendar route always sets `scheduled_at`, so the only
+  writer of such a row was `POST /meetings`. It inserted `scheduled` and
+  moved the row to its dispatch status in a second commit. A crash between
+  the two left a row the scheduler never reads and the watchdog never swept.
+- **Fix, in two parts:**
+  - `watchdog.sweep_stale_meetings` fails a `scheduled` row with no
+    `scheduled_at` once it is older than the joining TTL. The message is
+    "Never started: left 'scheduled' with no scheduled time". This also
+    cleans up rows stranded before the fix. Rows with a `scheduled_at` are
+    never touched, including with the scheduler disabled.
+  - `create_meeting` inserts the row with `initial_status()` directly, so the
+    state is no longer produced. The dispatch job still only ever reads a
+    committed `joining`/`queued` row.
+- **Tests: `test_scheduled_without_time.py` (12).** The sweep and its TTL
+  boundary; valid bookings of any age; normal joining; scheduler-disabled
+  meetings not falsely failed; a simulated crash mid-create; the dispatch
+  status the trigger sees. One item-1 test, which had aged exactly this
+  invalid row, now uses a valid booking.
+- **Shown failing.** 3 failed on the old code; four breaks of the fix each
+  turned tests red.
+
+**4. Progress pings meeting `uploading` — checked, no code change.** Tracing
+the states showed how a ping can reach `uploading`, and why it does no harm:
+
+- **Where `uploading` comes from.** It is written only by retry's re-upload,
+  on a `failed` meeting.
+- **Where pings come from.** Only a live meeting-bot session sends them.
+- **The bot's guard.** `POST /reupload` answers 409 while that meeting's
+  session is active. So a ping can meet `uploading` only in that brief window
+  (the backend failed a meeting whose bot was still running, and the user
+  pressed Retry). There the ping is the true state, and the meeting still
+  closes on the bot's final report.
+- **Why no exclusion.** Excluding `uploading` would drop that ping and show
+  the meeting as failed while it records.
+
+`test_webhook_uploading_pings.py` (2) pins this: adding `uploading` to either
+exclusion list turns it red. A comment at the ping branch in `webhooks.py`
+points to it.
+
+#### Still open — deliberately deferred
+
+Known, bounded, and not being fixed for now:
+
+1. **A crash between claim and enqueue.** If the API process dies after
+   committing `transcribing` and before enqueuing, nothing undoes the claim.
+   It is still bounded by the watchdog's `transcribing` TTL and recovered by
+   Retry, and `test_webhook_enqueue_failure.py` pins that. Closing it needs a
+   durable "hand-off pending" record, which is a state-machine change.
+2. **An enqueue that raised after Redis accepted the job.** If the reply is
+   lost, the undo plus a redelivery can queue a second transcription. It
+   needs a lost reply on a successful enqueue, so it is rare.
+3. **`POST /meetings/{id}/retry` has the same claim-then-submit shape** that
+   finding 1 fixed in the webhook. A failed enqueue there leaves the meeting
+   `transcribing` until the watchdog.
+4. **meeting-bot does not test its `/reupload` 409-while-active guard**, which
+   finding 4's reasoning relies on.
 
 `pytest` is in `requirements-dev.txt`. `pytest-asyncio` is **not** needed — the
 async paths are driven with `asyncio.run(...)` directly, which keeps the async
