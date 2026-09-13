@@ -1681,8 +1681,10 @@ and both would have bitten a 3.11 container identically:
    `dns: [8.8.8.8, 1.1.1.1]` (the Supabase-pooler DNS fix above) replaces
    Docker Desktop's resolver, which is what answers that name. A throwaway
    container on the same network resolves it to `192.168.65.254` without the
-   override and fails with it. The documented `docker compose exec ... @host.docker.internal`
-   invocation therefore errors in all 217 tests at connect time.
+   override and fails with it. The `docker compose exec ... @host.docker.internal`
+   invocation this reconciliation's brief prescribed (the repo's docs only
+   describe running the suite from the host) therefore errors in all 217 tests
+   at connect time.
 2. **Compose injects `backend/.env` and `BOT_HOSTS` as real environment
    variables.** `IGNORE_DOTENV` stops the app reading the file, but `env_file:`
    puts its keys straight into the process. Via the gateway IP the run is
@@ -1691,9 +1693,30 @@ and both would have bitten a 3.11 container identically:
    `test_retry_reupload` tests get 409 because two recorders are configured.
    The isolation guard is doing its job.
 
-So the 217 above was run in the rebuilt image with the same bind-mounted code
-but outside compose's environment (`docker run --rm` of the backend image),
-where `host.docker.internal` resolves as intended. Dockerfile.dev's own comment
+So the 217 above was first run in the rebuilt image with the same bind-mounted
+code but outside compose's environment (`docker run --rm` of the backend image),
+where `host.docker.internal` resolves as intended.
+
+**It has since also passed inside the real compose `backend` container:**
+`217 passed, 6 warnings in 11.94s` on 3.12.14, with no configuration change.
+Two things make that run isolated. The throwaway test containers are attached
+to the compose network (`docker network connect meeting-recorder-bot_meeting-net
+meetiq-test-pg`, and the same for `meetiq-test-redis`), so they resolve by name
+through Docker's embedded DNS, which the `dns:` override does not replace. And
+pytest runs under `env -i`, so it inherits nothing compose injected:
+
+```
+docker compose exec backend env -i \
+  PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 HOME=/root \
+  PYTHONUNBUFFERED=1 \
+  TEST_DATABASE_URL=postgresql://postgres:testpw@meetiq-test-pg:5432/meetiq_test \
+  TEST_REDIS_URL=redis://meetiq-test-redis:6379 PYTEST_REQUIRE_NO_SKIPS=1 \
+  python -m pytest -q -p no:cacheprovider
+```
+
+The `env -i` is there to keep the real credentials from `backend/.env` out of the
+test process, not only to make the six failures go away. During that run
+uvicorn did not reload, and the dev Redis gained no keys. Dockerfile.dev's own comment
 that `docker compose exec backend python -m pytest` "works without installing
 anything" is true of the install and not of the environment; that is left as an
 open note, not fixed here.
