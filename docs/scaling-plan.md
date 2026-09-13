@@ -27,11 +27,12 @@ and what it costs. **B2 has shipped too**: both suites now run on every push
 to `main` and every pull request, on the Python 3.12 that `backend/Dockerfile`
 deploys on and that had never run this code before — it passes. A skip guard
 makes a missing service container a red build rather than a green
-`166 passed, 51 skipped`. **B3 is under way**: items 1 and 2 (the meeting
-status machine, webhook idempotency) have landed as tests, and the four findings
-they turned up have been resolved in a separate change; items 3–5 are still to
-come. B4–B5 (cost as a
-metric, structured logging) remain deferred; none of them block a deploy.
+`166 passed, 51 skipped`. **B3 has shipped as well**: broader coverage of the
+meeting status machine, webhook idempotency, the three AI fallback ladders,
+chat reset/storage semantics and worker retry. It found and fixed five real
+bugs along the way. The worst was that transcription jobs were never retried
+at all. A few smaller ones are recorded as open. B4–B5 (cost as a metric,
+structured logging) remain deferred; none of them block a deploy.
 
 Between A5 and C3, a batch of hardening landed that this plan treats as
 prerequisites rather than phases of their own — found by testing the phases
@@ -79,7 +80,7 @@ draft was numbered as steps 1–7; those numbers still appear in conversation, s
 | ~~**A5**~~ | ~~JWTs verified locally~~ — **done, `588ceb9`** | High | Fallback wrapper, then revert |
 | **B1** | Per-user rate limiting on chat and meeting creation — **done** | Low | `RATE_LIMIT_ENABLED=false` |
 | **B2** | CI on every push and PR — **done** | None | Deleting the workflow |
-| **B3** | Broader tests — **items 1–2 done**, items 3–5 to come | None | Deleting the test files |
+| **B3** | Broader tests — **done** | Low | Reverting the individual fix commits |
 | **B4–B5** | Cost as a metric, structured logging | — | Deferred by decision |
 | ~~**C**~~ | ~~Bot pool — the recording tier~~ — **done, C1–C5** | High | Per sub-step |
 
@@ -1287,8 +1288,8 @@ Do not declare Phase A done on "the code is merged." Prove all four:
 <a id="phase-b--rate-limiting-tests-logging"></a>
 # Phase B — Rate limiting, tests, logging
 
-> **B1 (rate limiting) has shipped.** The rest of this phase is still deferred
-> by decision — it does not block a deploy, and B1 did.
+> **B1 (rate limiting), B2 (CI) and B3 (broader tests) have shipped.** B4 and
+> B5 are still deferred by decision — neither blocks a deploy.
 
 Phase B was written as one undifferentiated bucket and deferred wholesale. That
 was defensible while every item in it was a *quality* item. It stopped being
@@ -1301,7 +1302,7 @@ one item that blocked the deploy was done on its own.
 |---|---|---|
 | **B1** | Per-user rate limiting on chat and meeting creation | **done** — below |
 | **B2** | CI: run both suites automatically | **done** — below |
-| **B3** | Broaden test coverage — the status machine, webhook idempotency, the AI fallback ladders | **in progress** — items 1–2 done, below |
+| **B3** | Broaden test coverage — the status machine, webhook idempotency, the AI fallback ladders, chat resets, worker retry | **done** — below |
 | **B4** | `log_cost` → a real metric rather than a debug line | Deferred |
 | **B5** | The remaining `print()` calls → `logger.*` with structured fields | Deferred |
 
@@ -1864,9 +1865,16 @@ is what gate 3 then did.
   on a required status check is a repository setting, not a code change, and is
   the natural next tightening.
 
-## B3 — Broaden test coverage
+<a id="b3--broaden-test-coverage"></a>
+## B3 — Broaden test coverage ✅ done
 
-**This now lands with CI already under it**, which changes the phase's
+**Done in two parts.** Part 1 covered items 1–2 and fixed the four findings it
+raised. Part 2 covered items 3–5; it first fixed two worker bugs it found and
+then added the tests. Backend suite **217 → 383**, 0 skipped with both services
+and `PYTEST_REQUIRE_NO_SKIPS=1`. meeting-bot is unchanged at 47. What each part
+added, what it found, and what is deliberately left open is below.
+
+**This landed with CI already under it**, which changes the phase's
 character rather than just its safety margin. Every test B3 writes runs
 automatically from the moment it is committed — on 3.12, against real Postgres
 and real Redis — instead of protecting the repo only when someone remembers to
@@ -1891,7 +1899,7 @@ rather than as a phase of its own:
 | `test_jwt_auth.py` | 26 | A5 |
 | `test_scheduler_claim.py` | 16 | A1 |
 | `test_bot_auth_health.py` | 16 | C4 |
-| `test_transcription_queue.py` | 15 | A3 |
+| `test_transcription_queue.py` | 15 | A3 (26 after B3) |
 | `test_observability.py` | 9 | A4 |
 | `test_chat_connection_release.py` | 8 | `79551d0` |
 | `test_search_transcript_session.py` | 7 | `0460fac` |
@@ -1908,7 +1916,15 @@ rather than as a phase of its own:
 | `test_scheduled_without_time.py` | 12 | B3 finding 3 |
 | `test_webhook_enqueue_failure.py` | 9 | B3 finding 1 |
 | `test_webhook_uploading_pings.py` | 2 | B3 finding 4 |
-| **total** | **311** | |
+| **total after part 1** | **311** | |
+| `test_transcription_queue.py` | +10 | B3 part 2, worker bugs 1 and 2 |
+| **total after the worker fixes** | **321** | |
+| `test_embedding_fallback_ladder.py` | 23 | **B3, item 3** |
+| `test_chat_fallback_ladder.py` | 16 | **B3, item 3** |
+| `test_transcription_fallback_ladder.py` | 13 | **B3, item 3** |
+| `test_chat_reset_and_saving.py` | 9 | **B3, item 4** |
+| `test_transcription_queue.py` | +1 | **B3, item 5** |
+| **total** | **383** | |
 
 *(An earlier version of this table said "40 tests across A1/A3/A4". That was
 true when Phase B was written and has been stale since A5.)*
@@ -1938,8 +1954,8 @@ Highest-value targets, in order:
 
 ### Items 1 and 2 — done
 
-**B3 is not done.** Items 3–5 (the AI fallback ladders, `chat_service` reset
-semantics, worker failure and retry) are a separate part, still to come. What
+Items 3–5 (the AI fallback ladders, `chat_service` reset semantics, worker
+failure and retry) followed as part 2 — see "Part 2" below. What
 landed is tests only: no application code changed. Backend suite **217 → 273**
 with both services and `PYTEST_REQUIRE_NO_SKIPS=1`, nothing skipped. With
 Postgres alone it is `222 passed, 51 skipped`: the same 51 as before, because
@@ -2162,6 +2178,227 @@ Known, bounded, and not being fixed for now:
 4. **meeting-bot does not test its `/reupload` 409-while-active guard**, which
    finding 4's reasoning relies on.
 
+### Part 2 — items 3–5 ✅ done
+
+Starting point **321** (part 1's 311 plus the ten tests the two worker fixes
+below added), 0 skipped. Final **383** with both services and
+`PYTEST_REQUIRE_NO_SKIPS=1`, 0 skipped. With Postgres alone it is `320 passed,
+63 skipped`. The one new skip is item 5's real-worker test, which lives in the
+Redis-only `test_transcription_queue.py`; the other 61 new tests need only
+Postgres. The meeting-bot suite is 47 and unchanged.
+
+#### Two worker bugs, fixed first
+
+Reading item 5's code turned up two real bugs before any coverage was written.
+Each was fixed as its own commit, with a regression test that failed on the old
+code, then merged (PR #15):
+
+1. **Transcription jobs were never retried** (`0886974`).
+   - **Root cause.** On a non-final attempt, `transcribe_job` re-raised the
+     original exception "so arq retries". In arq 0.26, only `Retry`,
+     `RetryJob` or `CancelledError` re-run a job; any other exception fails
+     it immediately.
+   - **Impact.** Every job ran exactly once:
+     - the resume-at-indexing retry never ran;
+     - `record_terminal_failure` was unreachable;
+     - one indexing failure left a `completed` meeting with no index and no
+       note;
+     - the "retrying" log line was false.
+
+     This is why production showed `j_failed=0 j_retried=0`.
+   - **Fix.** Non-final failures raise `Retry(defer=...)`, chained to the
+     original error. The delay is the new `transcription_retry_delay_seconds`
+     (default 30).
+   - **Tests.** Six in `test_transcription_queue.py`, driving a real arq
+     worker. Two existing tests that expected the raw exception now expect
+     `Retry`.
+   - **Shown failing.** Restoring the re-raise failed 8 tests, dropping the
+     delay failed 2, and retrying on the final attempt failed 5.
+2. **`IndexingFailed` was swallowed on the Sarvam path** (`a2cd831`).
+   - **Root cause.** `raise IndexingFailed` sat inside the `try` whose
+     `except Exception` handles a Sarvam failure.
+   - **Impact.** When Gemini was down, Sarvam transcribed and indexing then
+     failed, the meeting was marked `failed`, blaming Sarvam, even though its
+     transcript was saved. The queue never retried it.
+   - **Fix.** An `except IndexingFailed: raise` clause ahead of the broad
+     handler.
+   - **Tests.** Four: the regression, a real-worker retry that resumes without
+     calling either provider again, and Sarvam success and Sarvam failure
+     unchanged.
+   - **Shown failing.** Removing the clause failed 2 tests; removing the
+     Sarvam-failure handler failed 1.
+
+Known limits of the retry fix:
+- **Job timeout.** A job killed by arq's timeout is failed without retrying
+  or writing a terminal state, so the watchdog handles it.
+- **Shutdown on the last attempt.** A worker shutdown during the last attempt
+  leaves arq refusing the re-run as "max retries exceeded", again with no
+  terminal write.
+- **Sentry.** A failure that later recovers no longer creates an event,
+  because Sentry treats `Retry` as control flow.
+- **Watchdog overlap.** The delay is fixed rather than growing, so a long
+  attempt plus retries can outlast the 30-minute `transcribing` TTL.
+- **Lost fallback note.** On the Sarvam path, exhausting the retries replaces
+  the "Transcribed via Sarvam AI fallback" note.
+
+#### Item 3 — the AI fallback ladders
+
+Three ladders share `gemini_errors.is_transient` (429, 503, 504, and httpx
+connection, timeout and dropped-connection errors). Every test fails at the
+provider call itself; `is_transient`, the retry loops and the fallback modules
+are all real. The fakes live in `tests/fake_ai_providers.py`, a helper module
+like `fake_bot_pool.py`:
+- **Gemini** is faked at `generate_content_stream`, `generate_content` and
+  `embed_content`, raising google-genai's own error types.
+- **Groq** is faked at HTTP level: a `MockTransport` on the real
+  `httpx.AsyncClient`, serving real SSE bodies.
+- **Jina** is faked at `httpx.post`.
+- **Sarvam** reuses the SDK-level fake from the Bug 2 tests.
+
+Each test checks provider call order, how many retries were used, the final
+result or error, and that nothing happened twice.
+
+- **`test_embedding_fallback_ladder.py` (23): Gemini → Jina.**
+  - *Indexing.* Each transient failure uses Gemini's four attempts (three
+    backoffs), then makes one Jina call with `task: retrieval.passage` and
+    records `embedding_provider = "jina"`. A failure that clears within the
+    retries never reaches Jina.
+  - *Non-transient errors* (400/401/404): one attempt, no Jina, and the
+    Gemini error raised with the existing index untouched.
+  - *No Jina key:* Gemini's own error after its retries, existing index
+    untouched. Jina failing too raises after its own retries.
+  - *Chat queries.* A Jina-indexed meeting is queried with Jina only
+    (`retrieval.query`). A query error that clears stays on Gemini.
+    Non-transient errors and a missing key raise without calling Jina.
+- **`test_transcription_fallback_ladder.py` (13): Gemini → Sarvam.** Only the
+  cases part 1 and Bug 2 had not covered:
+  - 429, 504, connect, timeout and dropped connection reach Sarvam after four
+    Gemini attempts, with exactly one STT job, one index and one File API
+    cleanup, and the temp file removed.
+  - 400/401/404 fail the meeting on the first attempt with
+    `Gemini Error: …`, and never call Sarvam.
+  - With no Sarvam key, the meeting fails with a specific message: overloaded
+    for 503/504, the API message for 429, a network error for connection
+    failures.
+- **`test_chat_fallback_ladder.py` (16): Gemini → Groq.**
+  - Every transient failure makes `gemini:1, gemini:2, groq:1` in that order
+    (`chat_max_retries` pinned to 2); Groq's answer is streamed and stored.
+  - A failure that clears within the retries never reaches Groq.
+  - A non-transient error or a missing Groq key makes no Groq request and
+    ends cleanly with the canned message, nothing stored and the question
+    rolled out of the session.
+  - Groq retries its own 503 and connect errors, but not a 400.
+
+#### Item 4 — chat reset and saving
+
+`test_chat_reset_and_saving.py` (9) asserts the order of events against
+provider calls through the real stream, not just the final answer:
+- **Mid-answer breaks.** When the stream breaks, `reset` reaches the client
+  *before* the retry or the Groq request. The final answer replaces the
+  partial one, both on screen and in `chat_messages`.
+- **Preamble.** A reset also clears preamble text streamed before an earlier
+  tool call.
+- **Non-streaming wrapper.** `ask_question` returns only the final answer.
+- **Both providers fail.** No row is written, the session holds nothing, and
+  the next question's prompt contains only itself. The same holds when Groq
+  dies mid-answer: its half-answer is reset, it is not retried, and nothing
+  is stored.
+- **Groq answers.** The turn is stored with exactly the tools Groq ran;
+  the tool result is shown to have reached Groq's second request. A Groq
+  answer that used no tools stores no tools.
+
+`conftest.py` now creates and truncates `chat_messages`. Before, the table did
+not exist in the test database, and chat's save path swallows storage errors,
+so "nothing was stored" would have passed for the wrong reason.
+
+#### Item 5 — worker failure and retry: gap review
+
+Most of this was already covered by the two fixes above and the existing file:
+
+| Check | Covered by |
+|---|---|
+| Every attempt fails → `record_terminal_failure` through a real worker | `test_a_real_worker_retries_up_to_max_tries_then_writes_the_terminal_state`, `test_a_real_worker_fails_a_transcript_less_meeting_after_max_tries` |
+| Both outcomes: `completed` with an indexing note / `failed` | `test_exhausted_indexing_retries_keep_the_meeting_completed`, `test_exhausted_retries_mark_a_transcript_less_meeting_failed`, and the two real-worker tests |
+| `IndexingFailed` on Gemini first run / resumed retry / Sarvam | `test_first_run_indexing_failure_…`, `test_resumed_indexing_failure_…`, `test_sarvam_fallback_indexing_failure_…` |
+| Fail once, then succeed with no second Gemini/Sarvam call | Sarvam: `test_a_real_worker_retries_a_sarvam_indexing_failure_…`. **Gemini: a gap** — the existing test pre-seeded the transcript, so attempt 1 never called Gemini |
+
+One test was added for that gap:
+`test_a_real_worker_retries_a_gemini_first_run_indexing_failure_without_transcribing_again`.
+Attempt 1 is a full Gemini first run. Attempt 2 resumes, and the download,
+upload and `generate_content` are each counted exactly once.
+
+#### Falsified
+
+Each row broke one piece of the real implementation, ran the new tests and
+restored the code. All 24 were caught:
+
+| Break | Failed |
+|---|---|
+| `is_transient` without 504 | 9 across all three ladders |
+| `is_transient` without dropped connections | 3, one per ladder |
+| Jina used on non-transient (indexing / query) | 3 / 3 |
+| Jina key check removed (indexing) | 4 |
+| Jina-embedded chunks recorded as Gemini's | 6 |
+| Jina-indexed meeting queried with Gemini | 1 |
+| Embedding retry loop gives up on the first transient error | 16 |
+| Sarvam used on non-transient | 3 |
+| Transcription retries non-transient | 3 |
+| No-key message forgets 504 | 1 |
+| Gemini File API upload never cleaned up | 13 |
+| Groq used on non-transient | 3 |
+| Groq key check removed | 4 |
+| Groq retries a 400 | 1 |
+| No reset on a mid-answer break | 5 |
+| Reset, but the fragment kept for storage | 3 |
+| Failed turn not rolled out of the session | 3 |
+| Groq half-answer not reset | 1 |
+| Groq's tools not recorded | 1 |
+| Groq retries after streaming text | 1 |
+| A failed turn stored anyway | 3 |
+| Resume check disabled (item 5) | 1 |
+
+#### Found in part 2 and left open
+
+Recorded rather than fixed. Items 1–3 were each confirmed with a throwaway
+probe against the current code and are not pinned by any test. Item 4 is
+pinned as current behavior. Item 5 was read from the code, not probed.
+
+1. **A chat query can silently use the wrong vector space.**
+   - **What happens.** For a meeting indexed by *Gemini*, a transient Gemini
+     error during a chat search makes `embed_query` fall back to Jina.
+     `search_transcript` then ranks Gemini-embedded chunks against a Jina
+     query vector and returns the results as if valid, with no error. This is
+     exactly the silent wrong-results case `embed_query`'s docstring warns
+     about.
+   - **Probe.** Four Gemini attempts, then `jina:1` with
+     `task=retrieval.query`, and matches returned.
+   - **Likely fix.** Fall back to Jina only when the meeting was indexed by
+     Jina; otherwise fail the tool.
+2. **An httpx network error outside the transient set escapes the chat
+   stream.**
+   - **What happens.** An `httpx.ReadError` (for example "connection reset by
+     peer") is not in `TRANSIENT_NETWORK_ERRORS`. Mid-stream it escapes
+     `ask_question_stream` with no reset, no retry and no Groq. The route
+     turns it into a generic error event under the partial text, and the
+     failed question stays in the in-memory session.
+   - **Probe.** The next question's prompt began with the failed question.
+3. **A Groq answer can store tools Groq never used.**
+   - **What happens.** If Gemini ran a tool and then failed, `tools_used`
+     keeps Gemini's tool when Groq answers without it. Gemini's tool results
+     are not passed to Groq, which only receives text turns.
+   - **Probe.** Groq answered with no tool calls and the stored
+     `tools_used` was `['search_by_speaker']`.
+4. **Minor, chat only: non-transient errors are retried and mislabeled.**
+   - **What happens.** The chat loop retries a 400/401/404 before deciding
+     not to fall back, unlike the other two ladders, and the user sees "high
+     load or rate limits" for it. This is pinned as current behavior in
+     `test_chat_fallback_ladder.py`.
+5. **Minor: Jina's own retries skip 504.** Jina's retry list is 429, 500, 502
+   and 503, so a 504 from Jina is not retried. This is the same kind of gap
+   `gemini_errors.py` was written to close for Gemini.
+
+Part 1's four deferred items above are still open as well.
+
 `pytest` is in `requirements-dev.txt`. `pytest-asyncio` is **not** needed — the
 async paths are driven with `asyncio.run(...)` directly, which keeps the async
 boundary explicit in each test.
@@ -2267,9 +2504,10 @@ can follow or wait indefinitely.
 
 ## What deferring the rest costs you
 
-Deferring B3–B5 is defensible — Phase A unblocks scaling and none of them do.
-(B2 is no longer among them: CI shipped, because "the tests only protect you
-when someone remembers" stopped being acceptable once there were 261 of them.)
+Deferring B4–B5 is defensible — Phase A unblocks scaling and neither does.
+(B2 and B3 are no longer among them: CI shipped, because "the tests only
+protect you when someone remembers" stopped being acceptable once there were
+261 of them, and B3's broader coverage followed it.)
 The consequence is explicit and already priced into the plan above: **A1, A3
 and every phase since carry their own tests as part of the phase.** Those are
 the gates you cannot skip, because A1 is a concurrency fix that is unobservable
