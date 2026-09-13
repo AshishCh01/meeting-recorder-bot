@@ -94,14 +94,21 @@ class FakeGeminiChat:
         self.log = log
         self.replies = []
         self.contents_seen = []
+        # Called at the start of every generate_content_stream - "while the
+        # model is answering", for tests that measure what is held meanwhile.
+        self.on_call = None
 
-    def reply(self, *items):
-        self.replies.append(items)
+    def reply(self, *items, usage=None):
+        """
+        `usage=(prompt_tokens, output_tokens)` is reported on the reply's last
+        chunk, the way Gemini streams it (cumulative for the turn).
+        """
+        self.replies.append((items, usage))
         return self
 
     def fail(self, make_error, times=1):
         for _ in range(times):
-            self.replies.append((make_error(),))
+            self.replies.append(((make_error(),), None))
         return self
 
     @property
@@ -116,14 +123,16 @@ class FakeGeminiChat:
             for c in contents
         ])
         self.log.append(f"gemini:{self.calls}")
+        if self.on_call is not None:
+            self.on_call()
         if not self.replies:
             raise AssertionError(f"unscripted Gemini call #{self.calls}")
-        items = self.replies.pop(0)
+        items, usage = self.replies.pop(0)
         if items and isinstance(items[0], BaseException):
             raise items[0]
 
         async def stream():
-            for item in items:
+            for index, item in enumerate(items):
                 if isinstance(item, BaseException):
                     raise item
                 if isinstance(item, str):
@@ -131,8 +140,12 @@ class FakeGeminiChat:
                 else:
                     _, name, args = item
                     part = types.Part.from_function_call(name=name, args=args)
+                last = index == len(items) - 1
                 yield SimpleNamespace(
-                    usage_metadata=None,
+                    usage_metadata=(
+                        SimpleNamespace(prompt_token_count=usage[0], candidates_token_count=usage[1])
+                        if usage and last else None
+                    ),
                     candidates=[SimpleNamespace(content=SimpleNamespace(parts=[part]))],
                 )
 

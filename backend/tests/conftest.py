@@ -82,7 +82,7 @@ CONFTEST_ENV_KEYS = frozenset({
 })
 
 from app.db import database  # noqa: E402
-from app.db.models import ChatMessage, Meeting, MeetingChunk, User  # noqa: E402
+from app.db.models import AiUsageEvent, ChatMessage, Meeting, MeetingChunk, User  # noqa: E402
 
 
 def _guard_engine() -> None:
@@ -112,7 +112,10 @@ def _expected_url() -> str:
 # It has to exist for that to mean anything: chat_service swallows a failed
 # save, so against a missing table "nothing was stored" would pass for the
 # wrong reason.
-_TABLES = [User.__table__, Meeting.__table__, MeetingChunk.__table__, ChatMessage.__table__]
+# ai_usage_events is here for B4: the cost tracker writes a row on every AI
+# call, and those writes are swallowed on failure - so without the table every
+# test would pass while recording nothing.
+_TABLES = [User.__table__, Meeting.__table__, MeetingChunk.__table__, ChatMessage.__table__, AiUsageEvent.__table__]
 
 
 @pytest.fixture(scope="session")
@@ -151,7 +154,7 @@ def clean_tables():
     yield
     with database.engine.begin() as conn:
         from sqlalchemy import text
-        conn.execute(text("TRUNCATE chat_messages, meeting_chunks, meetings, users RESTART IDENTITY CASCADE"))
+        conn.execute(text("TRUNCATE ai_usage_events, chat_messages, meeting_chunks, meetings, users RESTART IDENTITY CASCADE"))
 
 
 @pytest.fixture(autouse=True)
@@ -199,7 +202,7 @@ def user(db):
 # Six test files skip some or all of their tests when TEST_REDIS_URL is unset:
 # test_rate_limit, test_bot_pool, test_bot_dispatch_queue, test_bot_auth_health,
 # test_transcription_queue and test_webhook_enqueue_failure. With Postgres but no Redis this suite reports
-# `320 passed, 63 skipped` and exits **0**.
+# `349 passed, 63 skipped` and exits **0**.
 #
 # Those 63 are not filler. They are B1's atomicity gate, C3's
 # two-hosts-two-meetings gate, C4's per-platform auth gate and A3's
@@ -212,11 +215,11 @@ def user(db):
 # So CI sets PYTEST_REQUIRE_NO_SKIPS=1 and a skip becomes a failure, naming
 # every test that skipped and why. Opt-in rather than always-on, because
 # locally a partial run is genuinely useful - a developer with no Redis should
-# still get the 320 tests that do not need one, and be told what they missed
+# still get the 349 tests that do not need one, and be told what they missed
 # rather than handed a red suite.
 #
 # Deliberately "no skips at all" rather than "no *Redis* skips". This suite has
-# no legitimately-conditional test today (with both services: 383 passed, 0
+# no legitimately-conditional test today (with both services: 412 passed, 0
 # skipped), so any future skip is a question worth forcing someone to answer in
 # a pull request rather than a category to pre-approve here.
 _skipped_in_this_run: list = []

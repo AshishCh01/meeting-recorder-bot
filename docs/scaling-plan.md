@@ -31,8 +31,10 @@ makes a missing service container a red build rather than a green
 meeting status machine, webhook idempotency, the three AI fallback ladders,
 chat reset/storage semantics and worker retry. It found and fixed five real
 bugs along the way. The worst was that transcription jobs were never retried
-at all. A few smaller ones are recorded as open. B4–B5 (cost as a metric,
-structured logging) remain deferred; none of them block a deploy.
+at all. A few smaller ones are recorded as open. **B4 has shipped too**: every
+AI call now writes a queryable `ai_usage_events` row, with saved SQL for spend
+per user and cost per chat turn. B5 (structured logging) remains deferred; it
+does not block a deploy.
 
 Between A5 and C3, a batch of hardening landed that this plan treats as
 prerequisites rather than phases of their own — found by testing the phases
@@ -81,7 +83,8 @@ draft was numbered as steps 1–7; those numbers still appear in conversation, s
 | **B1** | Per-user rate limiting on chat and meeting creation — **done** | Low | `RATE_LIMIT_ENABLED=false` |
 | **B2** | CI on every push and PR — **done** | None | Deleting the workflow |
 | **B3** | Broader tests — **done** | Low | Reverting the individual fix commits |
-| **B4–B5** | Cost as a metric, structured logging | — | Deferred by decision |
+| **B4** | AI spend recorded per call and per user — **done** | Low | Reverting the commit; the table can stay, nothing else reads it |
+| **B5** | Structured logging | — | Deferred by decision |
 | ~~**C**~~ | ~~Bot pool — the recording tier~~ — **done, C1–C5** | High | Per sub-step |
 
 **The rule for every phase:** independently deployable, independently revertable,
@@ -1288,8 +1291,8 @@ Do not declare Phase A done on "the code is merged." Prove all four:
 <a id="phase-b--rate-limiting-tests-logging"></a>
 # Phase B — Rate limiting, tests, logging
 
-> **B1 (rate limiting), B2 (CI) and B3 (broader tests) have shipped.** B4 and
-> B5 are still deferred by decision — neither blocks a deploy.
+> **B1 (rate limiting), B2 (CI), B3 (broader tests) and B4 (AI spend as data)
+> have shipped.** B5 is still deferred by decision — it does not block a deploy.
 
 Phase B was written as one undifferentiated bucket and deferred wholesale. That
 was defensible while every item in it was a *quality* item. It stopped being
@@ -1303,7 +1306,7 @@ one item that blocked the deploy was done on its own.
 | **B1** | Per-user rate limiting on chat and meeting creation | **done** — below |
 | **B2** | CI: run both suites automatically | **done** — below |
 | **B3** | Broaden test coverage — the status machine, webhook idempotency, the AI fallback ladders, chat resets, worker retry | **done** — below |
-| **B4** | `log_cost` → a real metric rather than a debug line | Deferred |
+| **B4** | `log_cost` → a real metric rather than a debug line | **done** — below |
 | **B5** | The remaining `print()` calls → `logger.*` with structured fields | Deferred |
 
 ---
@@ -1924,7 +1927,10 @@ rather than as a phase of its own:
 | `test_transcription_fallback_ladder.py` | 13 | **B3, item 3** |
 | `test_chat_reset_and_saving.py` | 9 | **B3, item 4** |
 | `test_transcription_queue.py` | +1 | **B3, item 5** |
-| **total** | **383** | |
+| **total after B3** | **383** | |
+| `test_chat_stream_unhandled_errors.py` | 7 | chat stream fix, PR #17 |
+| `test_ai_usage_metrics.py` | 22 | **B4** |
+| **total** | **412** | |
 
 *(An earlier version of this table said "40 tests across A1/A3/A4". That was
 true when Phase B was written and has been stale since A5.)*
@@ -2374,14 +2380,20 @@ pinned as current behavior. Item 5 was read from the code, not probed.
      `task=retrieval.query`, and matches returned.
    - **Likely fix.** Fall back to Jina only when the meeting was indexed by
      Jina; otherwise fail the tool.
-2. **An httpx network error outside the transient set escapes the chat
-   stream.**
-   - **What happens.** An `httpx.ReadError` (for example "connection reset by
-     peer") is not in `TRANSIENT_NETWORK_ERRORS`. Mid-stream it escapes
-     `ask_question_stream` with no reset, no retry and no Groq. The route
-     turns it into a generic error event under the partial text, and the
-     failed question stays in the in-memory session.
-   - **Probe.** The next question's prompt began with the failed question.
+2. ~~**An httpx network error outside the transient set escapes the chat
+   stream.**~~ **Fixed after B3, in PR #17.**
+   - **What happened.** An `httpx.ReadError` (for example "connection reset
+     by peer") escaped `ask_question_stream` mid-answer with no reset, no
+     retry and no Groq, and the failed question stayed in the session.
+   - **Fix.**
+     - The chat retry handler catches `httpx.NetworkError`, so read and write
+       errors reset and retry like other network failures.
+     - Any other exception from the Gemini call rolls the question out of the
+       session before propagating.
+     - `gemini_errors.is_transient` is unchanged, so a persistent `ReadError`
+       is retried but does not fall back to Groq.
+   - **Tests.** `test_chat_stream_unhandled_errors.py` (7). All failed on the
+     old code; three separate breaks of the fix each turned tests red.
 3. **A Groq answer can store tools Groq never used.**
    - **What happens.** If Gemini ran a tool and then failed, `tools_used`
      keeps Gemini's tool when Groq answers without it. Gemini's tool results
@@ -2443,7 +2455,8 @@ in `os.environ`.
     `SUPABASE_URL`, and crashed at import without it. They now set the same
     placeholders the upload tests already did.
 
-## B4 — `log_cost` as a real metric
+<a id="b4--log_cost-as-a-real-metric"></a>
+## B4 — `log_cost` as a real metric ✅ done
 
 Per-user AI spend is a business number, not a debug line. B1 gives this a
 second reason to exist: the rate limit defaults above were sized from an
@@ -2457,6 +2470,155 @@ that line to `logger.*` and then immediately rewrite the same function into a
 metric — one file touched twice, the first pass discarded. Doing B4 first
 retires that `print()` as part of the work that replaces it, and B5 inherits a
 smaller sweep.
+
+### What shipped
+
+Backend suite **390 → 412**, 0 skipped with both services and
+`PYTEST_REQUIRE_NO_SKIPS=1`. Postgres only: `349 passed, 63 skipped`; all 22
+new tests need only Postgres. meeting-bot is unchanged at 47.
+
+**What was there before.** `log_cost` printed one `[cost] …` line per call:
+- no user on any of them, so per-user spend could not be computed at all;
+- Groq priced at a hard-coded `0.000000`;
+- the Sarvam fallback and chat-query embeddings (`embed_query`) not logged;
+- embedding tokens guessed at ~4 chars/token with nothing marking them as a
+  guess;
+- nothing that could be summed, only as durable as container logs.
+
+**Decisions**, taken before any code was written:
+
+| Question | Decision | Why |
+|---|---|---|
+| Where the numbers live | A Postgres table, `ai_usage_events`, plus one structured `[cost]` log line per event | Per-user spend is a query. Postgres already exists; no new service. |
+| What one row is | One row per provider call group within an operation, with a `request_id` grouping an operation's rows | A chat turn that failed on Gemini and succeeded on Groq is two rows you sum per turn |
+| Attribution | `user_id` and `meeting_id` as plain UUIDs, **no foreign keys** | Deleting a meeting or user must not erase what it cost |
+| Fallback prices | New settings, default `0`; rows always store raw units (tokens, audio seconds) | Spend can be recomputed once real rates are set |
+| Guessed tokens | `estimated = true` on embedding rows | Analysis must not treat the heuristic as exact |
+| Failed calls | Record whatever usage was reported, with `outcome` = `ok` / `fallback` / `failed`; `NULL` tokens when nothing was reported, never a guessed `0` | Paid-for failures are real spend |
+| How to read it | Saved SQL queries in `backend/sql/ai_usage_queries.sql`, run in the Supabase SQL editor. No dashboard | No data yet to design one around; an admin page needs an admin concept the app does not have |
+| Rate limits | Unchanged | B4 collects data; re-sizing the caps from it is a later, separate change |
+
+**The table.** Migration `c7e3a5b9d2f1`.
+- **Columns:** `id`, `created_at`, `request_id`, `operation`, `provider`,
+  `model`, `user_id`, `meeting_id`, `input_tokens`, `output_tokens`,
+  `audio_seconds`, `usd` (numeric 12,6), `estimated`, `outcome`.
+- **Indexes:** on `(user_id, created_at)` and on `meeting_id`.
+- **Row-level security:** enabled with **no policies**, so Supabase's anon
+  and authenticated roles cannot read it at all. The backend's owner
+  connection and the SQL editor bypass RLS, as for every other table.
+
+The migration was checked outside the test suite: `alembic heads` shows the
+single head, and the rendered upgrade and downgrade SQL were both applied to a
+scratch database (RLS on, zero policies, table removed on downgrade).
+
+**Recording: `cost_tracker.record_usage`.** It writes the log line and the
+row, never raises, and follows one rule about connections. The pool has no
+overflow and a 3s checkout timeout, and a worker job already holds a session,
+so a cost write that opened a second connection mid-transcription could block
+and then fail exactly under load. Instead:
+- **Transcription and indexing** pass their own session. The row is added
+  inside a savepoint and committed with the caller's work. A failed insert
+  rolls back only the savepoint, never the transcript or the chunks.
+- **Chat and query embeddings** hold no session. They get a short one of
+  their own; chat calls it through `asyncio.to_thread`.
+
+`log_cost` and its `print()` are gone.
+
+**Call sites.**
+
+| Operation | Provider rows | Units | Attribution |
+|---|---|---|---|
+| `chat` | Gemini: one row per turn, tokens summed across tool iterations, `ok` or `failed` on every exit (including the unexpected-error path). Groq: one row whenever the fallback runs, `fallback` or `failed`, same `request_id` | reported tokens, `NULL` if none | `user_id` from the request |
+| `transcription` | Gemini (`ok`) or Sarvam (`fallback`) | Gemini tokens + audio seconds; Sarvam audio seconds only | the meeting's owner |
+| `embedding` (indexing) | Gemini (`ok`) or Jina (`fallback`) | estimated tokens | the meeting's owner |
+| `query_embedding` (chat search) — new | Gemini or Jina, `ok` or `fallback` | estimated tokens | `search_transcript` now passes `meeting_id`/`user_id` |
+
+The old `[cost] meeting_total` line is replaced by the `cost_per_meeting`
+query, which also counts chat and search.
+
+**Tests: `test_ai_usage_metrics.py` (22).**
+- *The recorder.* The row and log line are correct, with unset fields left
+  off the line. Recording never raises when the table is genuinely unusable
+  (renamed away mid-test, not mocked). A staged row persists only with the
+  caller's commit. A failed staged insert does not poison the caller's
+  transaction.
+- *Chat.* Tokens are summed across tool iterations. A Groq fallback turn gives
+  two rows under one `request_id` with Groq priced from its rates. Both
+  providers failing gives two `failed` rows with `NULL` tokens. A failure
+  after a paid tool turn still records the tokens spent, and so does the
+  unexpected-error path. Each turn gets its own `request_id`. Chat still
+  answers and stores its exchange with the table unusable. No pooled
+  connection is held while the model answers.
+- *Transcription.* Gemini records transcription and embedding rows, and
+  Sarvam records audio seconds with no Gemini transcription row. Both are
+  checked with a tripwire proving no connection of its own is opened. A
+  meeting still transcribes and indexes with the table unusable, and the
+  transcription row survives an indexing failure. A Jina indexing fallback
+  is recorded as Jina.
+- *Chat search.* A query embedding row for Gemini- and Jina-indexed meetings,
+  attributed to the meeting; a failed query embedding records nothing.
+- *The saved queries.* Every query in `ai_usage_queries.sql` runs against
+  seeded rows and returns the right totals, percentiles, per-meeting splits
+  and outcome counts, including the 7- and 30-day windows.
+
+Existing tests changed only where the interface did: the `embed_query` stub in
+`test_search_transcript_session.py` accepts the new attribution arguments, and
+the Gemini chat fake can report usage.
+
+**Falsified.** 14 breaks, all caught:
+
+| Break | Failed |
+|---|---|
+| Rows never stored (log line only) | 16 |
+| Staged insert without a savepoint | 2 |
+| Staged callers given a connection of their own | 3 |
+| Own-session insert failure not swallowed | 2 |
+| Unreported chat tokens stored as `0` | 2 |
+| Groq priced at a hard-coded `0` again | 1 |
+| One `request_id` shared by every turn | 1 |
+| No row for a failed Gemini turn | 3 |
+| Sarvam fallback not recorded | 1 |
+| Transcription row not attributed to the owner | 1 |
+| Embedding tokens not flagged as estimated | 1 |
+| Jina query recorded as Gemini | 1 |
+| Chat search not attributed | 2 |
+| The turn query splitting a turn by provider | 1 |
+
+### The saved queries
+
+All four live in [`backend/sql/ai_usage_queries.sql`](../backend/sql/ai_usage_queries.sql).
+Paste one into the Supabase SQL editor and run it.
+
+| Query | Answers |
+|---|---|
+| `spend_per_user_per_day` | Daily spend and call count per user, last 30 days |
+| `chat_turn_cost_percentiles` | Median, 95th percentile and max cost of one chat turn per day — the number the chat rate limit should be sized from |
+| `cost_per_meeting` | Total cost per meeting, split into transcription, embedding, chat and search |
+| `spend_and_fallbacks_by_provider` | Calls, `ok`/`fallback`/`failed` counts and spend per operation and provider, last 7 days |
+
+`usd` uses the rate configured when the row was written. If a rate was wrong
+or still `0`, replace `SUM(usd)` with the stored units times the correct rate.
+
+### Known limits
+
+- **Fallback prices are 0 until set.** `GROQ_INPUT_COST_PER_MTOK`,
+  `GROQ_OUTPUT_COST_PER_MTOK`, `JINA_EMBEDDING_COST_PER_MTOK` and
+  `SARVAM_COST_PER_AUDIO_HOUR` all default to `0`; the units are recorded
+  either way.
+- **Sarvam's analysis tokens are not captured.** The fallback module does not
+  return the usage of its chat-model call, so a Sarvam row carries audio
+  seconds only.
+- **Embedding and query tokens are estimates** (`estimated = true`). Gemini's
+  embedding API reports no usage, and Jina's reported usage is not read.
+- **An indexing attempt that fails loses its own row**, which rolls back with
+  the index it paid for. The transcription row, committed earlier, survives.
+- **A failed Gemini transcription records nothing.** Its retries report no
+  usage; only the successful provider's row exists.
+- **Recording adds one small insert per chat turn** before `done`, in a
+  thread. If the pool were saturated, that insert waits up to the 3s checkout
+  timeout and is then dropped with a warning — the answer has already been
+  streamed.
+- **No dashboard and no rate-limit changes**, by decision.
 
 ## B5 — `print()` → `logger.*`
 
@@ -2478,8 +2640,9 @@ is checked by something other than the author.
 
 **The count, re-measured by B2: 44, not the 45 this plan carried from A4.** By
 AST, not by `grep print(` — which reports 46, two of them a docstring in
-`observability.py` and a shell one-liner in a `config.py` comment. B4 retires
-one more (`cost_tracker`), leaving **43**.
+`observability.py` and a shell one-liner in a `config.py` comment. B4 retired
+one more (`cost_tracker`), so **43** remain; the table below is the count
+before B4.
 
 Re-counting also corrected the *shape*, which matters more than the number.
 This is not "a diff across every file in `app/services/`": it is one file plus
@@ -2504,10 +2667,11 @@ can follow or wait indefinitely.
 
 ## What deferring the rest costs you
 
-Deferring B4–B5 is defensible — Phase A unblocks scaling and neither does.
-(B2 and B3 are no longer among them: CI shipped, because "the tests only
+Deferring B5 is defensible — Phase A unblocks scaling and B5 does not.
+(B2, B3 and B4 are no longer deferred: CI shipped, because "the tests only
 protect you when someone remembers" stopped being acceptable once there were
-261 of them, and B3's broader coverage followed it.)
+261 of them; B3's broader coverage followed it; and B4 turned AI spend into
+data.)
 The consequence is explicit and already priced into the plan above: **A1, A3
 and every phase since carry their own tests as part of the phase.** Those are
 the gates you cannot skip, because A1 is a concurrency fix that is unobservable

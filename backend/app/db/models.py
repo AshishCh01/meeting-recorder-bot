@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import BigInteger, Column, String, Integer, DateTime, ForeignKey, Index, Text
+from sqlalchemy import BigInteger, Boolean, Column, Float, String, Integer, DateTime, ForeignKey, Index, Numeric, Text
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -135,4 +135,50 @@ class ChatMessage(Base):
         # The only access path there is: one meeting's thread, for its
         # owner, in insertion order.
         Index("ix_chat_messages_meeting_user", "meeting_id", "user_id", "id"),
+    )
+
+
+class AiUsageEvent(Base):
+    """
+    One paid (or potentially paid) call to an AI provider - Phase B4.
+
+    What app/services/cost_tracker.record_usage writes, and what the saved SQL
+    queries in docs/scaling-plan.md B4 read. One row per provider call group
+    within an operation, so a chat turn that failed on Gemini and was answered
+    by Groq is two rows sharing a request_id.
+
+    user_id and meeting_id are deliberately plain UUIDs with no foreign keys:
+    deleting a meeting or a user must not erase what it cost. The raw units
+    (tokens, audio seconds) are the source of truth; usd is what the configured
+    rate made of them at the time, and can be recomputed from the units if a
+    rate was wrong or still 0.
+    """
+    __tablename__ = "ai_usage_events"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # Groups the rows of one operation - one chat turn, one transcription.
+    request_id = Column(UUID(as_uuid=True), nullable=True)
+    # "chat", "transcription", "embedding" (indexing) or "query_embedding".
+    operation = Column(String, nullable=False)
+    # "gemini", "groq", "sarvam" or "jina".
+    provider = Column(String, nullable=False)
+    model = Column(String, nullable=True)
+    user_id = Column(UUID(as_uuid=True), nullable=True)
+    meeting_id = Column(UUID(as_uuid=True), nullable=True)
+    # NULL means the provider reported nothing - never a guessed zero.
+    input_tokens = Column(Integer, nullable=True)
+    output_tokens = Column(Integer, nullable=True)
+    audio_seconds = Column(Float, nullable=True)
+    usd = Column(Numeric(12, 6), nullable=False, server_default="0")
+    # True when the token count is a heuristic (embeddings: ~4 chars/token)
+    # rather than a number the provider returned.
+    estimated = Column(Boolean, nullable=False, server_default="false")
+    # "ok" (the primary provider produced the result), "fallback" (a fallback
+    # provider did) or "failed" (usage was spent but produced no result).
+    outcome = Column(String, nullable=False)
+
+    __table_args__ = (
+        Index("ix_ai_usage_events_user_created", "user_id", "created_at"),
+        Index("ix_ai_usage_events_meeting", "meeting_id"),
     )

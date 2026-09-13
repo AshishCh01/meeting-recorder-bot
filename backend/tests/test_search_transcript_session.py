@@ -74,7 +74,7 @@ def ctx(meeting_id, user_id):
 def fake_embed(monkeypatch):
     calls = []
 
-    def embed(query, provider="gemini"):
+    def embed(query, provider="gemini", **attribution):  # meeting_id/user_id: B4 usage attribution
         calls.append({"query": query, "provider": provider, "checked_out": engine.pool.checkedout()})
         return vec(1.0)
 

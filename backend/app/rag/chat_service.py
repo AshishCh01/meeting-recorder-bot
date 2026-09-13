@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 from collections import OrderedDict
 import httpx
 from google import genai
@@ -9,7 +10,7 @@ from app.db.database import SessionLocal
 from app.db.models import ChatMessage
 from app.rag.tools import get_meeting_summary, get_action_items, search_by_speaker, search_transcript
 from app.rag.chat_fallback_groq import gemini_history_to_openai, run_groq_chat_stream
-from app.services.cost_tracker import gemini_generation_cost, log_cost
+from app.services.cost_tracker import gemini_generation_cost, groq_generation_cost, record_usage
 from app.services.gemini_errors import is_transient
 
 INSTRUCTION = """
@@ -324,20 +325,35 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
             except Exception as e:
                 print(f"[chat] could not store thread for meeting {meeting_id}: {e}")
 
-        def _log_chat_cost():
-            cost = gemini_generation_cost(prompt_tokens_total, output_tokens_total)
-            log_cost(
-                "chat",
-                meeting=meeting_id,
-                in_tok=prompt_tokens_total,
-                out_tok=output_tokens_total,
-                tool_calls=len(tools_used),
-                usd=f"{cost:.6f}",
+        # Groups this turn's usage rows - a Gemini row, and a Groq row if the
+        # fallback ran - so cost per chat turn is one GROUP BY (Phase B4).
+        request_id = uuid.uuid4()
+
+        async def _record_gemini_usage(outcome: str):
+            """
+            One ai_usage_events row for everything Gemini consumed this turn,
+            across every tool iteration. Off the event loop, and never raises
+            (see cost_tracker.record_usage). Token counts are None rather than
+            0 when no attempt ever reported usage.
+            """
+            reported = prompt_tokens_total > 0 or output_tokens_total > 0
+            await asyncio.to_thread(
+                record_usage,
+                operation="chat",
+                provider="gemini",
+                model=settings.rag_agent_model,
+                outcome=outcome,
+                request_id=request_id,
+                user_id=user_id,
+                meeting_id=meeting_id,
+                input_tokens=prompt_tokens_total if reported else None,
+                output_tokens=output_tokens_total if reported else None,
+                usd=gemini_generation_cost(prompt_tokens_total, output_tokens_total),
             )
 
         while True:
             if loop_count >= MAX_TOOL_ITERATIONS:
-                _log_chat_cost()
+                await _record_gemini_usage("failed")
                 _rollback_history()
                 yield {"type": "delta", "text": "I'm having trouble finding the exact information you requested. Could you try rephrasing your question?"}
                 yield {"type": "done", "session_id": sid, "tools_used": tools_used}
@@ -402,6 +418,7 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                         # question in history, and the next question was sent
                         # to the model behind it.
                         _rollback_history()
+                        await _record_gemini_usage("failed")
                         raise
 
                     # Log it: without this the failure is invisible, since every
@@ -435,7 +452,7 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                         answer_parts.clear()
 
                     if attempt == chat_max_retries - 1:
-                        _log_chat_cost()
+                        await _record_gemini_usage("failed")
 
                         # Retries are spent, so Gemini is genuinely down rather
                         # than briefly busy: hand the question to Groq instead
@@ -447,6 +464,7 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                             fallback_text = ""
                             fallback_streamed = False
                             fallback_exhausted = False
+                            groq_final = None
                             try:
                                 async for event in run_groq_chat_stream(
                                     messages=gemini_history_to_openai(history),
@@ -455,19 +473,10 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                                     max_tool_iterations=MAX_TOOL_ITERATIONS,
                                 ):
                                     if event["type"] == "final":
+                                        groq_final = event
                                         fallback_text = event["text"]
                                         fallback_exhausted = event.get("exhausted", False)
                                         tools_used.extend(event["tools_used"])
-                                        log_cost(
-                                            "chat_fallback",
-                                            meeting=meeting_id,
-                                            provider="groq",
-                                            model=settings.groq_chat_model,
-                                            in_tok=event["prompt_tokens"],
-                                            out_tok=event["output_tokens"],
-                                            tool_calls=len(event["tools_used"]),
-                                            usd="0.000000",
-                                        )
                                     else:
                                         if event["type"] == "delta":
                                             fallback_streamed = True
@@ -475,6 +484,23 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                                         yield event
                             except Exception as groq_err:
                                 print(f"[chat] Groq fallback also failed: {groq_err}")
+
+                            # One row for the fallback, whatever happened. A
+                            # Groq failure that never reached its final event
+                            # reported no usage, so its token counts stay None.
+                            await asyncio.to_thread(
+                                record_usage,
+                                operation="chat",
+                                provider="groq",
+                                model=settings.groq_chat_model,
+                                outcome="fallback" if fallback_text.strip() else "failed",
+                                request_id=request_id,
+                                user_id=user_id,
+                                meeting_id=meeting_id,
+                                input_tokens=groq_final["prompt_tokens"] if groq_final else None,
+                                output_tokens=groq_final["output_tokens"] if groq_final else None,
+                                usd=groq_generation_cost(groq_final["prompt_tokens"], groq_final["output_tokens"]) if groq_final else 0.0,
+                            )
 
                             if fallback_text.strip():
                                 # Record the answer in Gemini's own history
@@ -517,7 +543,7 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
             output_tokens_total += turn_output_tokens
 
             if not text_acc and not function_calls:
-                _log_chat_cost()
+                await _record_gemini_usage("failed")
                 _rollback_history()
                 yield {"type": "error", "message": "No response was returned by the model."}
                 return
@@ -582,7 +608,7 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                 continue
 
             # No function calls, meaning the text streamed above was the final answer
-            _log_chat_cost()
+            await _record_gemini_usage("ok")
             await _persist_exchange()
             yield {"type": "done", "session_id": sid, "tools_used": tools_used}
             return
