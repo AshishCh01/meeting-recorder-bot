@@ -741,6 +741,60 @@ def test_a_real_worker_retries_a_sarvam_indexing_failure_without_transcribing_ag
     assert chunk_count(meeting.id) > 0
 
 
+def test_a_real_worker_retries_a_gemini_first_run_indexing_failure_without_transcribing_again(db, user, full_pipeline, monkeypatch):
+    """
+    B3 item 5's gap. The Gemini real-worker retry test in Gate 5 starts from a
+    meeting that already has a transcript, so its attempt 1 never called Gemini
+    and "the retry did not call Gemini again" was never shown. Here attempt 1
+    is a full first run - download, File API upload, generate_content - that
+    fails at indexing; attempt 2 must resume on the stored transcript. Gemini
+    is counted at client.models.generate_content, under the real retry wrapper.
+    """
+    monkeypatch.setattr(settings, "transcription_max_tries", 3)
+    counts = {"download": 0, "upload": 0, "generate": 0}
+
+    class _CountingStorage:
+        def from_(self, bucket):
+            return self
+
+        def download(self, path):
+            counts["download"] += 1
+            return b"fake audio bytes"
+
+    monkeypatch.setattr(transcription_service, "supabase", type("C", (), {"storage": _CountingStorage()})())
+    uploaded = _FakeUploadedFile()
+
+    def upload(**kwargs):
+        counts["upload"] += 1
+        return uploaded
+
+    monkeypatch.setattr(transcription_service.client.files, "upload", upload)
+
+    def generate_content(**kwargs):
+        counts["generate"] += 1
+        return full_pipeline
+
+    monkeypatch.setattr(transcription_service, "_call_gemini_with_retry", _REAL_CALL_GEMINI_WITH_RETRY)
+    monkeypatch.setattr(transcription_service.client.models, "generate_content", generate_content)
+
+    meeting = make_meeting(db, user.id, status="transcribing")
+    embed_calls = _flaky_embeddings(monkeypatch, fail_times=1)
+    run = _RealWorkerRun(monkeypatch)
+
+    run.enqueue_and_drain(str(meeting.id))
+
+    assert (run.complete, run.failed, run.retried) == (1, 0, 1)
+    assert counts == {"download": 1, "upload": 1, "generate": 1}, f"attempt 2 repeated first-run work: {counts}"
+    assert len(embed_calls) == 2, "attempt 2 did not re-run indexing"
+    assert run.terminal_calls == []
+    row = reread(meeting.id)
+    assert row.status == "completed"
+    assert row.transcript == TRANSCRIPT
+    assert row.embedding_provider == "gemini"
+    assert row.error_message is None
+    assert chunk_count(meeting.id) > 0
+
+
 def test_first_run_success_transcribes_and_indexes(db, user, full_pipeline, stub_embeddings):
     """The ordinary path still works with the resume check in front of it."""
     meeting = make_meeting(db, user.id, status="transcribing")

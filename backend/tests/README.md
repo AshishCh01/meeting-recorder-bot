@@ -16,8 +16,11 @@ before creating the schema, which fails loudly on a plain `postgres` image.
 
 `conftest.py` reads `TEST_DATABASE_URL` and refuses to run without it, so a
 stray `pytest` can never point the suite at the real `DATABASE_URL` in
-`backend/.env`. It creates and drops `users`, `meetings` and `meeting_chunks`,
-and truncates them between tests — use a throwaway database.
+`backend/.env`. It creates and drops `users`, `meetings`, `meeting_chunks` and
+`chat_messages`, and truncates them between tests — use a throwaway database.
+(`chat_messages` is there for B3's chat tests. Chat's save path swallows
+storage errors, so without the table "nothing was stored" would pass for the
+wrong reason.)
 
 **The suite never reads `backend/.env`.** `conftest.py` sets `IGNORE_DOTENV=1`
 before any `app.*` import, and both routes a `.env` has into the process honour
@@ -39,17 +42,17 @@ this and fails with setting names only, never values.
   renders both operands of a failed assert, and `repr(settings)` contains every
   key it holds.
 
-`TEST_REDIS_URL` is optional: without it, `test_transcription_queue.py` skips
-entirely, the three Redis-backed tests in `test_bot_dispatch_queue.py` skip
+`TEST_REDIS_URL` is optional: without it, `test_transcription_queue.py` (26)
+skips entirely, the three Redis-backed tests in `test_bot_dispatch_queue.py` skip
 (the other 29 in that file run against Postgres alone), the seven tests in
 `test_bot_pool.py` that exercise the real heartbeat cache skip (the other 24
 run against Postgres alone), and 21 of the 35 in `test_rate_limit.py` skip
 (the other 14 run without it - they are the fail-open ones, which need a Redis
 that is *not* there), and so does the one real-Redis test in
 `test_webhook_enqueue_failure.py` (the other 8 in that file run against
-Postgres alone). The scheduler, status-machine, webhook and
-scheduled-without-time tests still run. Full suite: 311 with Redis, 259 passed
-/ 52 skipped without.
+Postgres alone). The scheduler, status-machine, webhook,
+scheduled-without-time, fallback-ladder and chat reset/saving tests still run.
+Full suite: 383 with Redis, 320 passed / 63 skipped without.
 
 **Rate limiting is off unless a test turns it on.** `conftest.py` sets
 `RATE_LIMIT_ENABLED=false`, because Phase B1's limiter is an `async def`
@@ -73,6 +76,20 @@ deliberate — the *dispatcher's* tests fake the registry so they need only
 Postgres, while anything that says "cache" uses the real Redis one, because a
 fake of a cache proves nothing about the cache. The Redis database is **flushed** around
 every test in that module, so point it at a throwaway too.
+
+`tests/fake_ai_providers.py` is the same kind of helper, for B3's AI tests.
+Each fake replaces only the provider call itself:
+- Gemini's `generate_content_stream`, `generate_content` and `embed_content`,
+  raising google-genai's own `ClientError`/`ServerError`;
+- Groq over HTTP, through a `MockTransport` on the real `httpx.AsyncClient`,
+  serving real SSE;
+- Jina's `httpx.post`.
+
+`gemini_errors.is_transient`, the retry loops and the fallback modules all run
+for real; never fake `is_transient` itself. Every fake writes to one shared
+call log, so provider order and stream-event order are asserted together.
+`install_fast_sleeps` skips the backoff sleeps but records them, so the
+backoff count stays assertable.
 
 ## Running
 
@@ -123,9 +140,10 @@ fails if one ever is.
 **A skip is a failure when this is set.** CI sets it; nothing else does.
 
 The reason is the numbers in the section above: with Postgres but no Redis this
-suite reports `259 passed, 52 skipped` and exits **0**. Those 52 are B1's
+suite reports `320 passed, 63 skipped` and exits **0**. Those 63 are B1's
 atomicity gate, C3's two-hosts-two-meetings gate, C4's per-platform auth gate,
-A3's queue-durability gate and B3's real-Redis enqueue-recovery test — the
+A3's queue-durability gate, and B3's real-Redis enqueue-recovery and
+real-worker retry tests — the
 concurrency work, and precisely the tests
 nobody re-runs by hand. A workflow that provisioned Postgres and forgot Redis
 would be green and blind to all of it, which is worse than having no CI at all:
@@ -134,11 +152,11 @@ it converts "nobody ran the tests" into "the tests passed".
 The guard is a `pytest_sessionfinish` hook at the bottom of `conftest.py`. It
 lists every test that skipped and why, then sets a failing exit status. It is
 opt-in rather than always-on because locally a partial run is genuinely useful
-— run without Redis and you get the 259 tests that do not need one, plus a note
+— run without Redis and you get the 320 tests that do not need one, plus a note
 about what you missed, instead of a red suite.
 
 It refuses *any* skip, not just Redis ones. There is no legitimately
-conditional test here today (with both services: `311 passed`, zero skipped),
+conditional test here today (with both services: `383 passed`, zero skipped),
 so a new skip is a question someone should have to answer in a pull request.
 
 ## What's covered
@@ -147,7 +165,11 @@ so a new skip is a question someone should have to answer in a pull request.
 |---|---|---|
 | `test_env_isolation.py` | B | No `Settings` field differs from its code default unless `conftest.py` or the runner's own environment set it, and never a credential; no key appears in `os.environ` that neither set. Failed on the old code listing 10 settings and 12 environment variables that came from `backend/.env`. |
 | `test_scheduler_claim.py` | A1 | Two replicas sweeping the same due meeting dispatch exactly one bot; the missed-window and calendar-revalidation paths still behave with the claim moved ahead of them. |
-| `test_transcription_queue.py` | A3 | A queued job survives with no worker running; a re-index interrupted between its delete and insert keeps the meeting's chunks; a retry over an existing transcript never calls Gemini; exhausted retries write a terminal state. |
+| `test_transcription_queue.py` | A3, B3 | A queued job survives with no worker running; a re-index interrupted between its delete and insert keeps the meeting's chunks; a retry over an existing transcript never calls Gemini; exhausted retries write a terminal state. **B3:** retries actually happen in a real arq worker - a failed attempt is retried and resumes at indexing, every attempt failing runs `transcription_max_tries` times and ends in `record_terminal_failure`, the retry is deferred by `transcription_retry_delay_seconds`, and the retry log lines match real attempts (all failed on the old code, which re-raised a plain exception arq does not retry); on the Sarvam path an indexing failure raises `IndexingFailed` and keeps the meeting `completed` instead of failing it, and a real-worker retry resumes without calling Gemini or Sarvam again; a Gemini first run that fails at indexing is retried without a second download, upload or `generate_content`. |
+| `test_embedding_fallback_ladder.py` | B3 | Gemini → Jina, for indexing and for chat queries. After Gemini's 4 attempts, 429/503/504 and connection, timeout and dropped-connection errors each make one Jina call with the right task type (`retrieval.passage` / `retrieval.query`) and record `embedding_provider="jina"`; a failure that clears within the retries stays on Gemini; 400/401/404 get one attempt and no Jina; with no Jina key the Gemini error is raised; in both failure cases the existing index is untouched; a Jina-indexed meeting is queried with Jina only. |
+| `test_transcription_fallback_ladder.py` | B3 | Gemini → Sarvam, the cases the queue file does not already cover: 429, 504 and connection errors reach Sarvam after 4 Gemini attempts with exactly one STT job, index and File API cleanup and the temp file removed; 400/401/404 fail the meeting on the first attempt without Sarvam; with no Sarvam key each transient failure fails the meeting with its specific message. |
+| `test_chat_fallback_ladder.py` | B3 | Gemini → Groq through the real `ask_question_stream`: each transient failure is `gemini:1, gemini:2, groq:1` and the Groq answer is streamed and stored; a failure that clears never reaches Groq; a non-transient error or a missing Groq key makes no Groq request and ends cleanly with nothing stored and the question rolled back; Groq retries its own 503/connect errors but not a 400. |
+| `test_chat_reset_and_saving.py` | B3 | A mid-answer break sends `reset` before the retry or the Groq request, and the final answer replaces the partial one on screen and in `chat_messages` - including preamble from an earlier tool turn, and through the non-streaming wrapper; when Gemini and Groq both fail (or Groq dies mid-answer) nothing is stored, the session is empty and the next prompt holds only the next question; a Groq answer is stored with exactly the tools Groq ran. |
 | `test_observability.py` | A4 | Sentry is disabled and harmless with no `SENTRY_DSN`; a request that raises inside a route produces an event with no Supabase JWT anywhere in it - header, frame locals or exception message; `meeting_id`/`user_id` ride along on transcription events. |
 | `test_bot_dispatch_queue.py` | C2 | A meeting requested while the recorder is full reaches `queued` and joins when capacity frees; a queued meeting survives the sweep that would have killed it in `joining`, and is still swept at its own TTL; a deleted or stopped meeting is dropped rather than joined; a 409 re-queues instead of failing; exhausted waiting writes a terminal failure naming the cause; stopping a queued meeting cancels it without calling the bot, and a stop that loses the race to the dispatcher stops the bot rather than overwriting the claim; the flag off still posts synchronously, raises on a busy bot, and enqueues nothing. |
 | `test_bot_pool.py` | C3 | Two meetings dispatched at once against two single-slot recorders land one on each, read off `bot_host_id`; a recorder that stops answering freezes its cached `last_seen` rather than refreshing it with a failure, and drops out once past the TTL, while the survivor takes the next meeting on its first attempt; **the existing watchdog already sweeps a meeting whose host died** — no new sweep code, and the module mentions no host at all; stop, delete and re-upload reach the URL of the host the meeting actually landed on; an unresolvable host is a 409, never a 500, and never a call to some other recorder; a `queued` meeting cancels without the host column being resolved at all; and an empty cache after a Redis restart repopulates in one poll cycle instead of reading as "all hosts down". |
