@@ -33,8 +33,10 @@ chat reset/storage semantics and worker retry. It found and fixed five real
 bugs along the way. The worst was that transcription jobs were never retried
 at all. A few smaller ones are recorded as open. **B4 has shipped too**: every
 AI call now writes a queryable `ai_usage_events` row, with saved SQL for spend
-per user and cost per chat turn. B5 (structured logging) remains deferred; it
-does not block a deploy.
+per user and cost per chat turn. **B5 (structured logging) is under way**: part
+1 converted `transcription_service.py`, the file with 26 of the 44 `print()`
+calls, and added `meeting_id`/`user_id` fields to its log lines; part 2 (the
+remaining 18) is still to come. It does not block a deploy.
 
 Between A5 and C3, a batch of hardening landed that this plan treats as
 prerequisites rather than phases of their own — found by testing the phases
@@ -84,7 +86,7 @@ draft was numbered as steps 1–7; those numbers still appear in conversation, s
 | **B2** | CI on every push and PR — **done** | None | Deleting the workflow |
 | **B3** | Broader tests — **done** | Low | Reverting the individual fix commits |
 | **B4** | AI spend recorded per call and per user — **done** | Low | Reverting the commit; the table can stay, nothing else reads it |
-| **B5** | Structured logging | — | Deferred by decision |
+| **B5** | Structured logging — **part 1 done** (`transcription_service.py`), part 2 to come | None | Reverting the commit |
 | ~~**C**~~ | ~~Bot pool — the recording tier~~ — **done, C1–C5** | High | Per sub-step |
 
 **The rule for every phase:** independently deployable, independently revertable,
@@ -1292,7 +1294,8 @@ Do not declare Phase A done on "the code is merged." Prove all four:
 # Phase B — Rate limiting, tests, logging
 
 > **B1 (rate limiting), B2 (CI), B3 (broader tests) and B4 (AI spend as data)
-> have shipped.** B5 is still deferred by decision — it does not block a deploy.
+> have shipped.** B5 is in progress: part 1 is done, part 2 is still to come.
+> It does not block a deploy.
 
 Phase B was written as one undifferentiated bucket and deferred wholesale. That
 was defensible while every item in it was a *quality* item. It stopped being
@@ -1307,7 +1310,7 @@ one item that blocked the deploy was done on its own.
 | **B2** | CI: run both suites automatically | **done** — below |
 | **B3** | Broaden test coverage — the status machine, webhook idempotency, the AI fallback ladders, chat resets, worker retry | **done** — below |
 | **B4** | `log_cost` → a real metric rather than a debug line | **done** — below |
-| **B5** | The remaining `print()` calls → `logger.*` with structured fields | Deferred |
+| **B5** | The remaining `print()` calls → `logger.*` with structured fields | **in progress** — part 1 done, below |
 
 ---
 
@@ -1930,7 +1933,9 @@ rather than as a phase of its own:
 | **total after B3** | **383** | |
 | `test_chat_stream_unhandled_errors.py` | 7 | chat stream fix, PR #17 |
 | `test_ai_usage_metrics.py` | 22 | **B4** |
-| **total** | **412** | |
+| **total after B4** | **412** | |
+| `test_structured_logging.py` | 16 | **B5, part 1** |
+| **total** | **428** | |
 
 *(An earlier version of this table said "40 tests across A1/A3/A4". That was
 true when Phase B was written and has been stale since A5.)*
@@ -2641,8 +2646,9 @@ is checked by something other than the author.
 **The count, re-measured by B2: 44, not the 45 this plan carried from A4.** By
 AST, not by `grep print(` — which reports 46, two of them a docstring in
 `observability.py` and a shell one-liner in a `config.py` comment. B4 retired
-one more (`cost_tracker`), so **43** remain; the table below is the count
-before B4.
+one more (`cost_tracker`), and B3 part 1's finding 1 fix added one (the
+hand-off undo in `webhooks.py`), so **44** remained when B5 started - re-counted
+by AST on `main`. The table below is the count before B4.
 
 Re-counting also corrected the *shape*, which matters more than the number.
 This is not "a diff across every file in `app/services/`": it is one file plus
@@ -2664,6 +2670,94 @@ least useful kind. That makes this splittable in a way the plan previously
 assumed it was not: `transcription_service.py` alone is a coherent, reviewable
 change that delivers most of the value, and the remaining 18 across nine files
 can follow or wait indefinitely.
+
+### Part 1 — the fields, and `transcription_service.py` ✅ done
+
+Backend suite **412 → 428**, 0 skipped with both services and
+`PYTEST_REQUIRE_NO_SKIPS=1`. Postgres only: `365 passed, 63 skipped`; all 16
+new tests need only Postgres. `print()` calls in `backend/app`, counted by AST:
+**44 → 18**.
+
+**Decisions**, taken before starting:
+
+| Question | Decision | Why |
+|---|---|---|
+| Log format | Plain text, with the fields appended as ` meeting_id=… user_id=…` | Logs are read with `docker compose logs`; JSON output can be added later in one place without touching a call site |
+| How fields are attached | Context variables, set once where the meeting is known | Every line underneath gets the fields, including from helpers that were never told which meeting they are on |
+| Levels | Progress `info`; degraded-but-working paths (retries, fallbacks, cleanup failures) `warning`; failures `error`, with the traceback where there is one | — |
+| Split | Two PRs: this one (`transcription_service.py` plus the shared setup), then the remaining 18 calls | As this section recommended |
+
+**The shared setup**, in `observability.py`:
+- **Context variables.** `log_context(meeting_id=…, user_id=…)` binds the
+  fields for a block. `set_log_context(user_id=…)` adds one once it becomes
+  known.
+- **Restoring on exit.** On exit, `log_context` puts both fields back to what
+  they were, including anything set inside it. That matters because the
+  executor transcription path runs on a `ThreadPoolExecutor`, which reuses
+  threads and does not copy context: without the restore, the next meeting on
+  that thread would log under the previous one's IDs. asyncio tasks and
+  `asyncio.to_thread` copy context, so arq jobs and requests stay isolated
+  either way.
+- **The filter.** `LogContextFilter`, attached to the root handler by
+  `configure_logging`, fills in the fields; an explicit `extra=` still wins.
+  The format gains `%(log_fields)s`, which is empty when neither field is set.
+
+**`transcription_service.py`.**
+- **Conversion.** All 26 `print()` calls became `logger.*`; the meeting ID is
+  no longer interpolated into messages, since it is a field.
+- **Where the fields are bound:**
+  - `transcribe_recording` is now a thin wrapper that binds the meeting.
+  - The owner is added once the row is read. That lookup used to run only when
+    Sentry was enabled; it now runs every time, as one indexed read.
+  - `record_terminal_failure`, the executor's done-callback and the "queued"
+    line bind their own, because they run outside `transcribe_recording`.
+- **Failure lines.** Failures inside `except` blocks use `logger.exception`,
+  and the executor crash passes the exception's traceback explicitly.
+
+**Tests: `test_structured_logging.py` (16).**
+- *The fields.* They are rendered by the real format, and absent outside a
+  context; `extra=` wins; restore works when nested, for values set inside,
+  and when the block raises. `configure_logging` installs the filter once,
+  checked through the real root handler.
+- *Isolation.* A reused executor thread does not inherit the previous task's
+  fields; concurrent asyncio tasks keep their own. Two real transcriptions on
+  one pool thread leave nothing behind.
+- *transcription_service.* Every line of a real run carries the meeting, and
+  the owner once read, all at INFO. A rejected Gemini request logs an ERROR
+  with both fields. The Sarvam fallback logs warnings (one per backoff) and no
+  error. An unexpected failure keeps its traceback. The worker's
+  terminal-failure lines, the executor's crash line and the queued line all
+  carry the fields.
+- *Guard.* No `print()` is left in `transcription_service.py`, by AST.
+- *Leak check.* Every test fails if it leaves log context behind.
+
+One existing test changed: the transcription ladder fixture no longer patches
+`sentry_enabled`, which the module no longer uses.
+
+**Falsified.** 11 breaks, all caught:
+- the filter not attached by `configure_logging`;
+- `log_context` never restoring, or restoring only the meeting;
+- the context overriding an explicit `extra=`;
+- `transcribe_recording` binding no meeting;
+- the owner never added;
+- an unexpected failure or the executor crash logged without its traceback;
+- the Sarvam fallback logged as an error;
+- `record_terminal_failure` binding no fields;
+- a `print()` coming back.
+
+**Part 2, still to come:** the remaining **18** calls.
+
+| File | Calls |
+|---|---|
+| `rag/chat_service.py` | 5 |
+| `api/meetings.py` | 3 |
+| `services/embedding_service.py` | 3 |
+| `api/webhooks.py` | 2 |
+| `services/transcription_fallback_sarvam.py` | 2 |
+| `api/chat.py`, `rag/chat_fallback_groq.py`, `services/embedding_fallback_jina.py` | 1 each |
+
+It adds the same fields to the chat and webhook paths, and widens the AST
+guard to all of `backend/app`.
 
 ## What deferring the rest costs you
 

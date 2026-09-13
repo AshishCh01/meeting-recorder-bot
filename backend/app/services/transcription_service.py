@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import tempfile
 import os
 import subprocess
@@ -15,7 +16,7 @@ from google import genai
 from google.genai import types, errors
 
 from app.config import settings
-from app.observability import sentry_enabled, set_meeting_context
+from app.observability import log_context, set_log_context, set_meeting_context
 from app.db.supabase import supabase
 from app.db.database import SessionLocal
 from app.db.models import Meeting
@@ -25,6 +26,11 @@ from app.services.cost_tracker import gemini_generation_cost, record_usage, sarv
 from app.services.gemini_errors import TRANSIENT_EXCEPTIONS, error_code_str, is_transient
 
 client = genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOptions(timeout=90_000))
+
+# Every line logged while a meeting is being transcribed carries its
+# meeting_id and user_id as fields (Phase B5) - bound once in
+# transcribe_recording and record_terminal_failure, not repeated per call.
+logger = logging.getLogger(__name__)
 
 
 class IndexingFailed(Exception):
@@ -162,7 +168,7 @@ def _is_audio_silent(file_path: str) -> bool:
         
         if mean_match:
             mean_vol = float(mean_match.group(1))
-            print(f"[transcription] Audio mean volume: {mean_vol} dB")
+            logger.info("[transcription] audio mean volume: %s dB", mean_vol)
             # -65.0 dB or lower is generally pure digital silence or baseline static
             if mean_vol < -65.0: 
                 return True
@@ -171,7 +177,7 @@ def _is_audio_silent(file_path: str) -> bool:
             
         return False
     except Exception as e:
-        print(f"[transcription] Warning: Silence detection failed ({e}). Proceeding to transcription.")
+        logger.warning("[transcription] silence detection failed (%s) - proceeding to transcription", e)
         return False
 
 
@@ -190,7 +196,7 @@ def _get_audio_duration_seconds(file_path: str) -> Optional[float]:
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         return float(result.stdout.strip())
     except Exception as e:
-        print(f"[transcription] Warning: could not determine audio duration ({e})")
+        logger.warning("[transcription] could not determine audio duration (%s)", e)
         return None
 
 
@@ -214,7 +220,10 @@ def _call_gemini_with_retry(contents, config, max_retries=4):
             if not retriable or attempt == max_retries - 1:
                 raise
             delay = (2 ** attempt) + random.uniform(0, 1)
-            print(f"[transcription] Gemini {code_str}, retrying in {delay:.1f}s (attempt {attempt+1}/{max_retries})")
+            logger.warning(
+                "[transcription] Gemini %s, retrying in %.1fs (attempt %s/%s)",
+                code_str, delay, attempt + 1, max_retries,
+            )
             time.sleep(delay)
 
 
@@ -223,18 +232,28 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
     Downloads the recording from Supabase Storage, sends it to Gemini
     for transcription and analysis, and writes the result to the meeting row.
     Returns None if the download fails (already marked failed in DB).
+
+    Every line logged underneath carries this meeting_id, and user_id once the
+    row is read (Phase B5). log_context puts both back on the way out: on the
+    executor path this runs on a reused pool thread, and the next meeting
+    must not inherit this one's fields.
     """
-    print(f"[transcription] Starting for meeting {meeting_id}, path: {storage_path}")
+    with log_context(meeting_id=meeting_id):
+        return _transcribe_recording(meeting_id, storage_path)
+
+
+def _transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
+    logger.info("[transcription] starting, path: %s", storage_path)
 
     db = SessionLocal()
     try:
-        # Phase A4: attach the meeting and its owner to anything Sentry captures
-        # from here on. Guarded on sentry_enabled() so the extra lookup only
-        # happens where it buys something - with no SENTRY_DSN this is one
-        # boolean and no query.
-        if sentry_enabled():
-            owner_id = db.query(Meeting.user_id).filter(Meeting.id == meeting_id).scalar()
-            set_meeting_context(meeting_id, owner_id)
+        # Attach the meeting's owner to every log line from here on (B5), and
+        # to anything Sentry captures (A4; a no-op with no SENTRY_DSN). This
+        # lookup used to run only when Sentry was enabled; the log field now
+        # needs it either way, and it is one indexed read.
+        owner_id = db.query(Meeting.user_id).filter(Meeting.id == meeting_id).scalar()
+        set_log_context(user_id=owner_id)
+        set_meeting_context(meeting_id, owner_id)
 
         resumed = _resume_if_work_already_done(db, meeting_id)
         if resumed is not _NOT_RESUMABLE:
@@ -253,14 +272,14 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
             tmp.write(file_bytes)
             tmp_path = tmp.name
 
-        print(f"[transcription] Downloaded to temp file: {tmp_path}")
+        logger.info("[transcription] downloaded to temp file: %s", tmp_path)
         audio_duration_sec = _get_audio_duration_seconds(tmp_path)
 
         uploaded_file = None
         try:
             # Phase 1, Step 3: Silence Detection
             if _is_audio_silent(tmp_path):
-                print("[transcription] Audio is completely silent. Skipping Gemini API to prevent hallucinations.")
+                logger.info("[transcription] audio is completely silent - skipping Gemini to prevent hallucinations")
 
                 meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
                 date_str = meeting.created_at.strftime("%b %d, %Y") if meeting and meeting.created_at else time.strftime("%b %d, %Y")
@@ -283,7 +302,7 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
 
                 return silent_result
 
-            print("[transcription] Uploading to Gemini File API...")
+            logger.info("[transcription] uploading to Gemini File API")
             uploaded_file = client.files.upload(
                 file=tmp_path,
                 config=types.UploadFileConfig(mime_type="audio/mp4")
@@ -292,7 +311,7 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
             if uploaded_file.uri is None:
                 raise ValueError("Gemini File API returned no URI after upload")
 
-            print(f"[transcription] Uploaded. URI: {uploaded_file.uri}. Waiting for processing...")
+            logger.info("[transcription] uploaded, URI: %s - waiting for processing", uploaded_file.uri)
 
             start_time = time.time()
             while True:
@@ -306,10 +325,10 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
                 elif state_name == "FAILED":
                     raise ValueError(f"Gemini File API failed to process the audio file: {uploaded_file.name}")
                 
-                print(f"[transcription] File state is {state_name}. Waiting 2 seconds...")
+                logger.info("[transcription] file state is %s - waiting 2 seconds", state_name)
                 time.sleep(2)
 
-            print("[transcription] File is ACTIVE. Sending to Gemini for analysis...")
+            logger.info("[transcription] file is ACTIVE - sending to Gemini for analysis")
             response = _call_gemini_with_retry(
                 contents=[
                     PROMPT,
@@ -328,7 +347,7 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
                 raise ValueError("Gemini returned an empty response — no text content")
 
             result = json.loads(response.text)
-            print("[transcription] Gemini response parsed successfully")
+            logger.info("[transcription] Gemini response parsed successfully")
 
             usage = response.usage_metadata
             prompt_tokens = (usage.prompt_token_count or 0) if usage else 0
@@ -378,13 +397,13 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
 
         except TRANSIENT_EXCEPTIONS as e:
             code_str = error_code_str(e)
-            print(f"[transcription] Gemini API Error: {code_str}")
+            logger.warning("[transcription] Gemini API error: %s", code_str)
 
             is_retriable = is_transient(e)
             if is_retriable and settings.sarvam_api_key:
                 # Retries already exhausted inside _call_gemini_with_retry -
                 # Gemini is genuinely unavailable right now, switch providers.
-                print(f"[transcription] Gemini {code_str} persisted after retries, falling back to Sarvam AI...")
+                logger.warning("[transcription] Gemini %s persisted after retries, falling back to Sarvam AI", code_str)
                 try:
                     result = transcribe_with_sarvam_fallback(tmp_path)
                     meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
@@ -423,7 +442,7 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
                     # path; the `finally` cleanup still runs.
                     raise
                 except Exception as fallback_err:
-                    print(f"[transcription] Sarvam AI fallback also failed: {fallback_err}")
+                    logger.exception("[transcription] Sarvam AI fallback also failed: %s", fallback_err)
                     _mark_failed(
                         db, meeting_id,
                         f"Gemini {code_str} and Sarvam AI fallback both failed: {fallback_err}"
@@ -441,7 +460,7 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
             _mark_failed(db, meeting_id, msg)
             
         except Exception as e:
-            print(f"[transcription] ERROR: {e}")
+            logger.exception("[transcription] failed: %s", e)
             _mark_failed(db, meeting_id, f"Transcription failed: {str(e)}")
             # Removed the `raise` keyword here so the background task exits cleanly
 
@@ -450,14 +469,14 @@ def transcribe_recording(meeting_id: str, storage_path: str) -> Optional[dict]:
             if uploaded_file and hasattr(uploaded_file, 'name') and uploaded_file.name:
                 try:
                     client.files.delete(name=uploaded_file.name)
-                    print(f"[transcription] Cleaned up Gemini storage file: {uploaded_file.name}")
+                    logger.info("[transcription] cleaned up Gemini storage file: %s", uploaded_file.name)
                 except Exception as cleanup_err:
-                    print(f"[transcription] Warning: Failed to clean up Gemini file: {cleanup_err}")
+                    logger.warning("[transcription] failed to clean up Gemini file: %s", cleanup_err)
 
             # Clean up local temp file
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
-                print(f"[transcription] Temp file cleaned up: {tmp_path}")
+                logger.info("[transcription] temp file cleaned up: %s", tmp_path)
     finally:
         db.close()
 
@@ -488,10 +507,10 @@ def _resume_if_work_already_done(db, meeting_id: str):
         return _NOT_RESUMABLE
 
     if meeting.status == "completed" and meeting.embedding_provider:
-        print(f"[transcription] meeting {meeting_id} is already transcribed and indexed - nothing to do")
+        logger.info("[transcription] already transcribed and indexed - nothing to do")
         return meeting.transcript
 
-    print(f"[transcription] meeting {meeting_id} already has a transcript - resuming at indexing")
+    logger.info("[transcription] already has a transcript - resuming at indexing")
     transcript = meeting.transcript
     try:
         index_transcript(db, meeting_id, transcript)
@@ -505,7 +524,7 @@ def _resume_if_work_already_done(db, meeting_id: str):
 
 
 def _mark_failed(db, meeting_id: str, message: str) -> None:
-    print(f"[transcription] Marking failed: {message}")
+    logger.error("[transcription] marking failed: %s", message)
     meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
     if meeting:
         meeting.status = "failed"
@@ -531,22 +550,26 @@ def record_terminal_failure(meeting_id: str, exc: BaseException) -> None:
         SELECT id FROM meetings WHERE status = 'completed'
                                   AND embedding_provider IS NULL;
     """
-    db = SessionLocal()
-    try:
-        meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
-        if meeting is None:
-            return
-        if meeting.transcript:
-            meeting.error_message = f"Transcript ready, but RAG indexing failed: {exc}"
-            print(f"[transcription] meeting {meeting_id} kept as completed; indexing gave up: {exc}")
+    # Called from the worker after transcribe_recording has returned, so the
+    # fields that function bound are already gone - bind them again here.
+    with log_context(meeting_id=meeting_id):
+        db = SessionLocal()
+        try:
+            meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+            if meeting is None:
+                return
+            set_log_context(user_id=meeting.user_id)
+            if meeting.transcript:
+                meeting.error_message = f"Transcript ready, but RAG indexing failed: {exc}"
+                logger.warning("[transcription] kept as completed; indexing gave up: %s", exc)
+                db.commit()
+                return
+            meeting.status = "failed"
+            meeting.error_message = f"Transcription failed after repeated attempts: {exc}"
+            logger.error("[transcription] marked failed after exhausted retries: %s", exc)
             db.commit()
-            return
-        meeting.status = "failed"
-        meeting.error_message = f"Transcription failed after repeated attempts: {exc}"
-        print(f"[transcription] meeting {meeting_id} marked failed after exhausted retries: {exc}")
-        db.commit()
-    finally:
-        db.close()
+        finally:
+            db.close()
 
 
 async def _enqueue(meeting_id: str, storage_path: str):
@@ -600,7 +623,11 @@ def _submit_to_executor(meeting_id: str, storage_path: str):
         exc = f.exception()
         if exc is None:
             return
-        print(f"[transcription] Unhandled exception in background task for meeting {meeting_id}: {exc}")
+        with log_context(meeting_id=meeting_id):
+            logger.error(
+                "[transcription] unhandled exception in background task: %s", exc,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
         record_terminal_failure(meeting_id, exc)
 
     future.add_done_callback(_on_done)
@@ -617,6 +644,7 @@ def submit_transcription(meeting_id: str, storage_path: str):
     """
     if settings.transcription_use_queue:
         job = _run_blocking(_enqueue(meeting_id, storage_path))
-        print(f"[transcription] queued meeting {meeting_id} as job {getattr(job, 'job_id', None)}")
+        with log_context(meeting_id=meeting_id):
+            logger.info("[transcription] queued as job %s", getattr(job, "job_id", None))
         return job
     return _submit_to_executor(meeting_id, storage_path)

@@ -70,7 +70,6 @@ def ladder(monkeypatch):
             return b"fake audio bytes"
 
     monkeypatch.setattr(transcription_service, "supabase", type("C", (), {"storage": _Storage()})())
-    monkeypatch.setattr(transcription_service, "sentry_enabled", lambda: False)
     monkeypatch.setattr(transcription_service, "_is_audio_silent", lambda path: False)
 
     def duration(path):
