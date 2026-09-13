@@ -130,6 +130,23 @@ class DummyToolContext:
     def __init__(self, meeting_id: str, user_id: str):
         self.state = {"meeting_id": meeting_id, "user_id": user_id}
 
+# What the streaming loop below retries - and, if streamed text is already on
+# screen, resets for. httpx.NetworkError rather than just ConnectError: it also
+# covers ReadError and WriteError (a connection reset or broken pipe while the
+# answer is streaming), which used to escape the loop mid-answer with no reset,
+# no retry and the question left in the session.
+#
+# Only which failures are *retried*. Whether a failure that outlasts the
+# retries falls back to Groq is still gemini_errors.is_transient's decision,
+# shared with transcription and embedding, and ReadError is not in it.
+_RETRYABLE_STREAM_ERRORS = (
+    errors.APIError,
+    httpx.NetworkError,
+    httpx.TimeoutException,
+    httpx.RemoteProtocolError,
+)
+
+
 def _session_id(meeting_id: str, session_id: str | None) -> str:
     return session_id or f"meeting-{meeting_id}"
 
@@ -376,7 +393,17 @@ async def ask_question_stream(meeting_id: str, question: str, session_id: str | 
                                 answer_parts.append(part.text)
                                 yield {"type": "delta", "text": part.text}
                     break  # Success!
-                except (errors.APIError, httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
+                except Exception as e:
+                    if not isinstance(e, _RETRYABLE_STREAM_ERRORS):
+                        # Not a provider or network failure this loop knows how
+                        # to retry. Let it reach the route, which reports it as
+                        # an error event - but roll the question out of the
+                        # session first. Escaping without this left the failed
+                        # question in history, and the next question was sent
+                        # to the model behind it.
+                        _rollback_history()
+                        raise
+
                     # Log it: without this the failure is invisible, since every
                     # exit below replaces the error with a generic user-facing
                     # message. A non-transient fault (e.g. a 400 from malformed
