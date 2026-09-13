@@ -27,7 +27,7 @@ here re-derives a state diagram - it tests the places the status is written:
 Closure, status by status, and where each exit is tested:
 
   scheduled             scheduler claim / missed window     test_scheduler_claim.py
-                        (no TTL - see the finding in docs/scaling-plan.md B3)
+                        watchdog, only if scheduled_at is NULL  test_scheduled_without_time.py
   queued                dispatcher -> joining / failed      test_bot_dispatch_queue.py
                         watchdog                            here, and test_bot_dispatch_queue.py
   joining               webhook, watchdog                   here
@@ -243,7 +243,14 @@ def test_a_meeting_inside_its_ttl_is_left_alone(db, user, distinct_ttls, status)
 
 @pytest.mark.parametrize("status", ["scheduled", *TERMINAL])
 def test_the_watchdog_never_touches_scheduled_or_terminal_meetings(db, user, distinct_ttls, status):
-    ancient = make_meeting(db, user.id, status=status)
+    """
+    A *valid* scheduled row, with a time to wait for. One with no scheduled_at
+    is swept - test_scheduled_without_time.py.
+    """
+    ancient = make_meeting(
+        db, user.id, status=status,
+        scheduled_at=datetime.now(timezone.utc) + timedelta(days=7) if status == "scheduled" else None,
+    )
     age_meeting(ancient.id, minutes=60 * 24 * 30)
 
     assert watchdog.sweep_stale_meetings(db) == 0

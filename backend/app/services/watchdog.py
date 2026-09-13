@@ -37,6 +37,43 @@ def _ttl_minutes_for(status: str) -> int:
 _NON_TERMINAL_STATUSES = ("queued", "joining", "waiting_for_admission", "recording", "uploading", "transcribing")
 
 
+def _sweep_scheduled_without_a_time(db: Session, now: datetime) -> int:
+    """
+    "scheduled" has no TTL, deliberately - a meeting booked for next week is
+    supposed to wait, and the scheduler is its way out. But the scheduler only
+    reads rows with a scheduled_at, so a "scheduled" row without one is waiting
+    for nothing. Calendar bookings always carry a time; the only row that ever
+    lacked one was POST /meetings' insert, a moment before it moved to its
+    dispatch status - and a crash between the two left it there for good.
+
+    Such a row was always about to be dispatched, so it gets the joining TTL.
+    Rows with a scheduled_at are left entirely to the scheduler, including when
+    CALENDAR_SCHEDULER_ENABLED is off.
+    """
+    ttl_minutes = settings.watchdog_joining_ttl_minutes
+    result = db.execute(
+        update(Meeting)
+        .where(
+            Meeting.status == "scheduled",
+            Meeting.scheduled_at.is_(None),
+            Meeting.updated_at < now - timedelta(minutes=ttl_minutes),
+        )
+        .values(
+            status="failed",
+            error_message=(
+                f"Never started: left 'scheduled' with no scheduled time (no update for over "
+                f"{ttl_minutes} minutes) - swept by watchdog"
+            ),
+        )
+    )
+    if result.rowcount:
+        logger.warning(
+            "[watchdog] swept %d meeting(s) stuck in 'scheduled' with no scheduled_at past the %d-minute TTL",
+            result.rowcount, ttl_minutes,
+        )
+    return result.rowcount
+
+
 def sweep_stale_meetings(db: Session) -> int:
     """
     Fails any meeting that's been sitting in a non-terminal status
@@ -78,6 +115,8 @@ def sweep_stale_meetings(db: Session) -> int:
                 result.rowcount, status, ttl_minutes,
             )
         total += result.rowcount
+
+    total += _sweep_scheduled_without_a_time(db, now)
 
     if total:
         db.commit()

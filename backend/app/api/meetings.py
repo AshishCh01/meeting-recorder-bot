@@ -76,26 +76,27 @@ def create_meeting(
     except ValueError as e:
         raise HTTPException(400, str(e))
 
+    # "joining" pre-C2, "queued" once BOT_DISPATCH_USE_QUEUE is on - the bot has
+    # not been contacted yet on the queued path, and parking the meeting in
+    # "joining" while it waits would have the watchdog sweep it after 10
+    # minutes. bot_service owns that choice; see initial_status.
+    #
+    # Written in the insert itself, and committed before the trigger, so the
+    # dispatch job can never read this row before it says "queued". It used to
+    # be inserted as "scheduled" and moved on in a second commit; a crash
+    # between the two left a "scheduled" row with no scheduled_at, which the
+    # scheduler never reads (docs/scaling-plan.md, B3 finding 3).
     meeting = Meeting(
         user_id=user_id,
         meeting_url=meeting_url,
         platform=platform,
-        status="scheduled"
+        status=initial_status(),
     )
     db.add(meeting)
     db.commit()
     db.refresh(meeting)
 
     try:
-        # "joining" pre-C2, "queued" once BOT_DISPATCH_USE_QUEUE is on - the
-        # bot has not been contacted yet on the queued path, and parking the
-        # meeting in "joining" while it waits would have the watchdog sweep it
-        # after 10 minutes. bot_service owns that choice; see initial_status.
-        #
-        # Committed before the trigger either way, so the dispatch job can
-        # never read this row before it says "queued".
-        meeting.status = initial_status()
-        db.commit()
         db_user = db.query(User).filter(User.id == user_id).first()
         trigger_bot_join(platform, meeting_url, str(meeting.id), user_id, db_user.bot_display_name)
     except Exception as e:
