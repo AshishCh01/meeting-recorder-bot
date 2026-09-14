@@ -59,3 +59,16 @@ zoom-auth.json
 # Linux container, no reason to ship them in the image.
 generate-auth.cjs
 generate-zoom-auth.cjs
+
+# Per-host credential directories (auth/bot-a, auth/bot-b, ...). The
+# auth.json / zoom-auth.json rules above are context-root-relative and do
+# NOT match auth/bot-a/auth.json, so without this the live Google and Zoom
+# session cookies are copied into an image layer - the same leak those
+# rules were written to close.
+auth/
+
+# Recordings kept on the host after a failed upload. Not needed to build the
+# image, and a real recording left in a local checkout would otherwise be
+# baked into a layer.
+recordings/
+recordings-2/

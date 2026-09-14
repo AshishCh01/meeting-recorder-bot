@@ -127,7 +127,7 @@ services:
     # adds its own shared-memory usage -- bumped to 4gb to cover testing at
     # MAX_CONCURRENT_MEETINGS=2. Scale further (or add per-container memory
     # limits) before raising the cap past that.
-    shm_size: '4gb'
+    shm_size: '2gb'
     depends_on:
       - backend
     networks:
@@ -173,7 +173,7 @@ services:
       # bot-b's credentials, not bot-a's. This one line is the whole of C4's
       # per-host identity at the compose level.
       - ./meeting-bot/auth/bot-b:/app/auth
-    shm_size: '4gb'
+    shm_size: '2gb'
     depends_on:
       - backend
     networks:
