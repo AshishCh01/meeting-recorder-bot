@@ -44,7 +44,10 @@ if that ever changes (new collaborators, visibility toggled, fork/transfer).
 - Nothing has a `restart:` policy, so a crashed container just stays down.
 - `meeting-bot`'s port `3000` is published to the host — harmless locally,
   unnecessary exposure on a server.
-- `shm_size: 2gb` was sized for one concurrent meeting only.
+- `shm_size` has to be sized deliberately rather than left at Docker's 64MB
+  default — Chromium needs it for video/audio stream buffers. The deployed
+  value is `shm_size: 2gb`, which covers one concurrent meeting; see step 5
+  for how to scale it with `MAX_CONCURRENT_MEETINGS`.
 
 Both files now describe **five** services, not three: `backend`, `frontend` and
 `meeting-bot`, plus `redis` and `worker` from
@@ -183,24 +186,63 @@ Use an SSH deploy key or HTTPS PAT if the repo is private.
 ## 5. Getting `.env` files and auth state onto the instance securely
 
 Five files need to exist on the instance, none of them tracked in git:
-`backend/.env`, `meeting-bot/.env`, `frontend/.env`, plus
-`meeting-bot/auth.json` and `meeting-bot/zoom-auth.json`.
+`backend/.env`, `meeting-bot/.env`, `frontend/.env`, plus the recorder's two
+session files, `meeting-bot/auth/bot-a/auth.json` and
+`meeting-bot/auth/bot-a/zoom-auth.json`.
 
-From your local machine (not the instance), over SSH:
+**On the auth directory layout.** Credentials live one directory per recorder,
+named after the host id it serves (`docs/scaling-plan.md` Phase C4), not as two
+loose files at the `meeting-bot/` root:
+
+```
+meeting-bot/auth/
+  bot-a/
+    auth.json        # Google session for host bot-a
+    zoom-auth.json   # Zoom session for host bot-a
+```
+
+A single-instance deployment — which is what this guide sets up — uses `bot-a`
+only. See "Deploying a second recorder" below before adding `bot-b`.
+`meeting-bot/auth/` and everything under it is gitignored except its
+`README.md`, so none of this arrives with `git clone` in step 4.
+
+> **Check the compose mount before you deploy.** `docker-compose.prod.yml`
+> still carries the pre-C4 single-file mounts
+> (`./meeting-bot/auth.json:/app/auth.json` and the Zoom equivalent), which do
+> not match the layout above. Point `meeting-bot`'s volume at the directory
+> (`./meeting-bot/auth/bot-a:/app/auth`) and set `AUTH_STATE_PATH=/app/auth/auth.json`
+> and `ZOOM_AUTH_STATE_PATH=/app/auth/zoom-auth.json`, as `docker-compose.yml`
+> already does. Two reasons it has to be a directory mount, not two file
+> mounts: a missing host file makes Docker silently create a *directory* at
+> `/app/auth.json`, and `AuthKeepAlive` replaces these files on rotation —
+> a single-file bind mount does not carry the new inode back to the host, so
+> the container re-reads stale cookies after a restart. That compose edit is
+> not made by this guide.
+
+First create the directory on the instance — `scp` will not create it for you,
+and without it the two auth transfers below fail:
 
 ```bash
-scp -i /path/to/your-key.pem backend/.env            admin@<elastic-ip>:~/meeting-recorder-bot/backend/.env
-scp -i /path/to/your-key.pem meeting-bot/.env        admin@<elastic-ip>:~/meeting-recorder-bot/meeting-bot/.env
-scp -i /path/to/your-key.pem frontend/.env           admin@<elastic-ip>:~/meeting-recorder-bot/frontend/.env
-scp -i /path/to/your-key.pem meeting-bot/auth.json   admin@<elastic-ip>:~/meeting-recorder-bot/meeting-bot/auth.json
-scp -i /path/to/your-key.pem meeting-bot/zoom-auth.json admin@<elastic-ip>:~/meeting-recorder-bot/meeting-bot/zoom-auth.json
+ssh -i /path/to/your-key.pem admin@<elastic-ip> 'mkdir -p ~/meeting-recorder-bot/meeting-bot/auth/bot-a'
+```
+
+Then, from your local machine (not the instance), over SSH:
+
+```bash
+scp -i /path/to/your-key.pem backend/.env  admin@<elastic-ip>:~/meeting-recorder-bot/backend/.env
+scp -i /path/to/your-key.pem meeting-bot/.env admin@<elastic-ip>:~/meeting-recorder-bot/meeting-bot/.env
+scp -i /path/to/your-key.pem frontend/.env admin@<elastic-ip>:~/meeting-recorder-bot/frontend/.env
+scp -i /path/to/your-key.pem meeting-bot/auth/bot-a/auth.json admin@<elastic-ip>:~/meeting-recorder-bot/meeting-bot/auth/bot-a/auth.json
+scp -i /path/to/your-key.pem meeting-bot/auth/bot-a/zoom-auth.json admin@<elastic-ip>:~/meeting-recorder-bot/meeting-bot/auth/bot-a/zoom-auth.json
 ```
 
 Then on the instance, lock down permissions (these hold real secrets —
 Supabase service-role key, bearer tokens, Google/Zoom session cookies):
 
 ```bash
-chmod 600 backend/.env meeting-bot/.env frontend/.env meeting-bot/auth.json meeting-bot/zoom-auth.json
+chmod 600 backend/.env meeting-bot/.env frontend/.env
+chmod 700 meeting-bot/auth meeting-bot/auth/bot-a
+chmod 600 meeting-bot/auth/bot-a/auth.json meeting-bot/auth/bot-a/zoom-auth.json
 ```
 
 Before starting anything, update the values that were `localhost`-shaped for
@@ -216,15 +258,60 @@ local dev and now need the instance's real address:
   (`http://<elastic-ip-or-domain>:8000`).
 - `meeting-bot/.env`: `BACKEND_WEBHOOK_URL` stays `http://backend:8000/...`
   for the same internal-DNS reason. Set `MAX_CONCURRENT_MEETINGS` to whatever
-  N you sized the instance for in step 2, and update
-  `docker-compose.prod.yml`'s `shm_size` to match (~2gb × N as a starting
-  point, then verify against real usage).
+  N you sized the instance for in step 2, and keep
+  `docker-compose.prod.yml`'s `shm_size` in step with it. The documented
+  baseline is:
+
+  ```yaml
+  shm_size: 2gb
+  ```
+
+  which covers `MAX_CONCURRENT_MEETINGS=1`. Budget ~2gb per concurrent
+  meeting as a starting point (so ~2gb × N), then verify against real usage
+  with `docker stats` rather than trusting the formula.
 
 (One-time only, not a recurring re-transfer: once the instance's
 `meeting-bot` container is running, its own `AuthKeepAlive` job takes over
-refreshing `auth.json`/`zoom-auth.json` in place — see
+refreshing `meeting-bot/auth/bot-a/auth.json` and
+`meeting-bot/auth/bot-a/zoom-auth.json` in place — see
 `docs/auth-keepalive-runbook.md`. You only need to scp fresh copies again if
 the runbook's `ALERT` fires.)
+
+### Deploying a second recorder (`bot-b`)
+
+Out of scope for this guide's single-instance, single-recorder setup, but
+documented here so the layout is not a surprise later. A second recorder is a
+second container off the same image (`docs/scaling-plan.md` Phase C3/C4) with
+its own credential directory:
+
+```
+meeting-bot/auth/
+  bot-b/
+    auth.json        # a DIFFERENT Google account from bot-a's
+    zoom-auth.json   # a DIFFERENT Zoom account from bot-a's
+```
+
+Transferred and permissioned exactly like `bot-a` above, substituting `bot-b`
+in every path:
+
+```bash
+ssh -i /path/to/your-key.pem admin@<elastic-ip> 'mkdir -p ~/meeting-recorder-bot/meeting-bot/auth/bot-b'
+scp -i /path/to/your-key.pem meeting-bot/auth/bot-b/auth.json admin@<elastic-ip>:~/meeting-recorder-bot/meeting-bot/auth/bot-b/auth.json
+scp -i /path/to/your-key.pem meeting-bot/auth/bot-b/zoom-auth.json admin@<elastic-ip>:~/meeting-recorder-bot/meeting-bot/auth/bot-b/zoom-auth.json
+```
+
+**The two accounts must be different.** Two hosts sharing one Google login
+means two concurrent sessions rotating the same short-lived cookies against
+each other, and Google's rotation cookies expire within roughly 10–60 minutes
+of being issued — which is the failure Phase C4 exists to remove. Generate
+each set with `meeting-bot/generate-auth.cjs` / `generate-zoom-auth.cjs`,
+pointed at the target path via `AUTH_STATE_PATH` / `ZOOM_AUTH_STATE_PATH`;
+`meeting-bot/auth/README.md` has the commands.
+
+Note that `docker-compose.prod.yml` as it stands defines one `meeting-bot`
+service, so adding `bot-b` is a compose change (a second service plus
+`BOT_HOSTS` on `backend` and `worker`), not just a file transfer. That change
+is deliberately not made here.
 
 ## 6. Security group rules
 
