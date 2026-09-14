@@ -28,7 +28,7 @@ step and no chance of the two disagreeing. Run from `meeting-bot/`, on a
 machine with a desktop — they open a real Chrome window for you to sign in:
 
 ```bash
-AUTH_STATE_PATH=auth/bot-a/auth.json           node generate-auth.cjs
+$env:AUTH_STATE_PATH=auth/bot-a/auth.json           node generate-auth.cjs
 ZOOM_AUTH_STATE_PATH=auth/bot-a/zoom-auth.json node generate-zoom-auth.cjs
 
 AUTH_STATE_PATH=auth/bot-b/auth.json           node generate-auth.cjs
