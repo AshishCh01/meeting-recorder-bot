@@ -25,8 +25,11 @@ async function resolveOutputPath(platform) {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   console.log('[0] Will write the captured session to:', outputPath);
 
-  const userDataDir = 'C:\\chrome-bot-profile'; // copied from default Chrome dir — Chrome refuses CDP debugging on the real default profile path
-  const profileDir = 'Profile 1'; // bot account: bmeeting53@gmail.com
+  
+   // const userDataDir = 'C:\\chrome-bot-profile'; // copied from default Chrome dir — Chrome refuses CDP debugging on the real default profile path
+   // const profileDir = 'Profile 1'; // bot account: bmeeting53@gmail.com
+   const userDataDir = 'C:\\chrome-bot-b-profile'; 
+   const profileDir = 'Default'; // bot account: ashishch010101@gmail.com
 
   console.log('[1] Launching Chrome with profile:', profileDir);
 
