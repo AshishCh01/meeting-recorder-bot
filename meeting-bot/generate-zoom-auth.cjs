@@ -35,7 +35,9 @@ async function resolveOutputPath(platform) {
   // vice versa) if both scripts are ever run against the same profile.
   const userDataDir = 'C:\\chrome-bot-profile-zoom';
   const profileDir = 'Profile 1'; // bot's dedicated Zoom account
-
+  
+  // const userDataDir = 'C:\\chrome-bot-b-profile';
+  // const profileDir = 'Default'; // bot account: ashishch010101@gmail.com
   console.log('[1] Launching Chrome with profile:', profileDir);
 
   let context;
