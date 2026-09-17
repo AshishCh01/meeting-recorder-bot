@@ -20,11 +20,30 @@ RUN useradd --create-home --shell /bin/bash botuser
 
 WORKDIR /app
 
-# Copy package configurations and install Node modules
+# Copy package configurations and install Node modules.
+#
+# npm ci, not npm install: package-lock.json is committed and this is the
+# image that ships, so the build must install the resolved tree rather than
+# re-resolve ranges at build time and quietly ship a version nobody tested.
+# CI already runs `npm ci` for the same reason - this makes the deployed
+# image and the tested tree the same tree.
+#
+# PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD is a guard, not a fix: the pinned playwright
+# ships no postinstall script, so today this install downloads no browsers and
+# the flag changes nothing - measured, not assumed (the image has no
+# ms-playwright cache with or without it). It is here because the bot never
+# wants them if a future version brings that postinstall back: BrowserManager.js
+# opens Chrome with `channel: 'chrome'`, which resolves to the
+# google-chrome-stable installed from apt above, and Playwright's own bundled
+# Chromium would be ~400MB of layer nothing launches. Scoped to this RUN rather
+# than a file-level ENV so it cannot change behaviour for anything that later
+# shells out to playwright inside the running container.
 COPY package*.json ./
-RUN npm install
+RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci
 
-# Install Playwright OS-level dependencies for Chromium
+# Install Playwright OS-level dependencies for Chromium. Still needed with the
+# browser download skipped: this installs the shared libraries Chrome itself
+# links against, not the bundled browser binaries.
 RUN npx playwright install-deps chromium
 
 # Copy application source code
