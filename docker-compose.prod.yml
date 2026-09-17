@@ -103,16 +103,29 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      # Compose substitutes these from the shell environment at `docker
-      # compose build` time (not from frontend/.env's env_file - that only
-      # injects runtime env into a container, which doesn't apply here since
-      # nginx doesn't need these; Vite bakes them into the JS bundle at
-      # build time instead). See docs/aws-ec2-deploy.md for how to source them
-      # from frontend/.env into the shell before building.
+      # Vite bakes these into the JS bundle at build time, so they have to be
+      # build args - frontend/.env as an `env_file:` would only inject runtime
+      # env into the container, which nginx has no use for. Compose fills them
+      # by interpolation, from the root .env beside this file or from the
+      # shell; see .env.example.
+      #
+      # `:?` rather than a bare ${VAR}: unset, these used to interpolate to an
+      # empty string with nothing but a warning, and the build would happily
+      # bake VITE_API_URL="" into the bundle. That ships a frontend whose API
+      # calls resolve against its own origin - it builds clean, starts clean,
+      # and every request 404s through nginx's SPA fallback, so the first
+      # signal is a blank page in a browser. Failing the build is the cheaper
+      # end of that trade.
+      #
+      # Note this fires when Compose *parses* the file, not when it builds -
+      # `up`, `ps`, `logs` and `down` all refuse too, including the systemd
+      # unit's `up -d` on reboot. That is why the values belong in the root
+      # .env, which Compose loads automatically, rather than in a shell that
+      # only exists while someone is typing into it.
       args:
-        VITE_API_URL: ${VITE_API_URL}
-        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
-        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
+        VITE_API_URL: ${VITE_API_URL:?set it in the root .env - see .env.example}
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL:?set it in the root .env - see .env.example}
+        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY:?set it in the root .env - see .env.example}
     restart: unless-stopped
     ports:
       - "80:80"
