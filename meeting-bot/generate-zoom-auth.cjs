@@ -8,36 +8,68 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 
-// Phase C4: write to the path the *runtime* will read, not a hardcoded
-// filename in the current directory. Before this, generating bot-b's
-// credentials meant running this script and then remembering to move
-// zoom-auth.json into meeting-bot/auth/bot-b/ by hand - a step with no error
-// message when you skipped it, which silently left bot-b on bot-a's
-// identity. Imported from BrowserManager rather than reimplemented so the
-// generator and the bot can never disagree about where the file lives; a
-// dynamic import is how a .cjs reaches an ES module.
+// Phase C4: both halves of a host's identity come from the command, and
+// neither has a default.
 //
-//   ZOOM_AUTH_STATE_PATH=auth/bot-b/zoom-auth.json node generate-zoom-auth.cjs
+//   ZOOM_USER_DATA_DIR / ZOOM_PROFILE_DIR  which account is captured
+//   ZOOM_AUTH_STATE_PATH                   which host's file is written
 //
-// With nothing set it resolves to meeting-bot/zoom-auth.json exactly as before.
+// Same change, same reasoning as generate-auth.cjs - see the comment there for
+// why a default identity had to go. Keep the user-data directory separate from
+// the Google one (chrome-bot-profile-zoom, not chrome-bot-profile) so this
+// session's cookies stay Zoom-only and don't get mixed into auth.json, or
+// vice versa, if both scripts are ever pointed at one profile.
+//
+// Both resolvers are imported rather than reimplemented so the generator and
+// the bot can never disagree about where the file lives; a dynamic import is
+// how a .cjs reaches an ES module.
 async function resolveOutputPath(platform) {
   const { resolveAuthStatePath } = await import('./src/core/BrowserManager.js');
   return resolveAuthStatePath(platform);
 }
 
-(async () => {
-  const outputPath = await resolveOutputPath('zoom');
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  console.log('[0] Will write the captured session to:', outputPath);
+async function resolveProfile(platform) {
+  const { resolveChromeProfile } = await import('./src/core/ChromeProfile.js');
+  return resolveChromeProfile(platform);
+}
 
-  // Separate profile dir from generate-auth.cjs's chrome-bot-profile, so this
-  // session's cookies stay Zoom-only and don't get mixed into auth.json (or
-  // vice versa) if both scripts are ever run against the same profile.
-  const userDataDir = 'C:\\chrome-bot-profile-zoom';
-  const profileDir = 'Profile 1'; // bot's dedicated Zoom account
-  
-  // const userDataDir = 'C:\\chrome-bot-b-profile';
-  // const profileDir = 'Default'; // bot account: ashishch010101@gmail.com
+const DRY_RUN = process.argv.includes('--dry-run');
+
+(async () => {
+  let userDataDir;
+  let profileDir;
+  try {
+    ({ userDataDir, profileDir } = await resolveProfile('zoom'));
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
+
+  const outputPath = await resolveOutputPath('zoom');
+
+  console.log('[0] Zoom session capture');
+  console.log('    Chrome user-data dir:', userDataDir);
+  console.log('    Chrome profile      :', profileDir);
+  console.log('    Writing session to  :', outputPath);
+
+  if (DRY_RUN) {
+    console.log('');
+    console.log('[dry-run] Configuration is valid. Chrome was not launched and no');
+    console.log('[dry-run] file was written. Drop --dry-run to capture for real.');
+    return;
+  }
+
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+
+  if (!fs.existsSync(userDataDir)) {
+    console.log('');
+    console.log('    WARNING: that user-data directory does not exist yet. Chrome will');
+    console.log('    create an empty profile and you will be signing in from scratch.');
+    console.log('    If you meant to reuse an existing profile, stop now (Ctrl+C) and');
+    console.log('    check the path.');
+  }
+
+  console.log('');
   console.log('[1] Launching Chrome with profile:', profileDir);
 
   let context;
@@ -84,6 +116,14 @@ async function resolveOutputPath(platform) {
   console.log('==> Once logged in (you see the Zoom account dashboard), also open a new tab');
   console.log('    to https://app.zoom.us so its session cookie gets set too - that\'s the');
   console.log('    domain ZoomBot actually joins meetings through.');
+  console.log('');
+  // See generate-auth.cjs: the last point at which a wrong identity is still
+  // free to fix, since storageState captures whichever account is signed in
+  // and the cookie check below only proves a zoom.us session exists.
+  console.log('==> CHECK THE ACCOUNT before continuing. Whichever Zoom account is');
+  console.log('==> signed into that window is what gets written to:');
+  console.log('==>   ', outputPath);
+  console.log('==> If that pairing is wrong, press Ctrl+C - nothing has been written yet.');
   console.log('');
   console.log('==> IMPORTANT: click on THIS TERMINAL WINDOW first, then press Enter.');
 
