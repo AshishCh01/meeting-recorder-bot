@@ -1,18 +1,20 @@
 # Deploying to AWS — single EC2 instance
 
-Architecture: one EC2 instance running `backend`, `meeting-bot`, and
-`frontend` via Docker Compose, same shape as local dev. No ECS, no
-autoscaling group.
+Architecture: one EC2 instance running `backend`, `worker`, `redis`, two
+recorders (`meeting-bot` and `meeting-bot-2`) and `frontend` via Docker
+Compose, same shape as local dev. No ECS, no autoscaling group.
 
-**Why a single instance, and what would change that.** `meeting-bot` keeps its
-`activeMeetings` session map and `AuthKeepAlive` job in process memory, so it
-needs exactly one long-lived process — that constraint is real and is what
-Phase C of `docs/scaling-plan.md` addresses. The `backend` no longer has that
-constraint (chat history is persisted in `chat_messages` and rehydrates into
-any process; the scheduler claims rows atomically), but running it on more
-than one instance needs a load balancer and the Phase A2 sweep-loop
-configuration, neither of which this guide sets up. Start here; see
-`docs/scaling-plan.md` before scaling out.
+**Why a single instance, and what would change that.** Each recorder keeps its
+`activeMeetings` session map and `AuthKeepAlive` job in process memory, so each
+needs exactly one long-lived process — that constraint is real, and Phase C of
+`docs/scaling-plan.md` is what makes a *pool* of such processes workable: two
+containers, two credential sets, and a `BOT_HOSTS` registry the backend
+dispatches against. It scales the recorders across containers on one host, not
+across hosts. The `backend` no longer has that constraint (chat history is
+persisted in `chat_messages` and rehydrates into any process; the scheduler
+claims rows atomically), but running it on more than one instance needs a load
+balancer and the Phase A2 sweep-loop configuration, neither of which this guide
+sets up. Start here; see `docs/scaling-plan.md` before scaling out.
 
 *Ported from the previous Google Cloud guide — the sizing formula, systemd
 unit, and redeploy steps are unchanged, only the provider-specific commands
@@ -42,21 +44,37 @@ if that ever changes (new collaborators, visibility toggled, fork/transfer).
   built once from a specific commit, not a dev server watching a
   live-mounted filesystem.
 - Nothing has a `restart:` policy, so a crashed container just stays down.
-- `meeting-bot`'s port `3000` is published to the host — harmless locally,
-  unnecessary exposure on a server.
+- The recorders' ports (`3000`, `3001`) are published to the host — harmless
+  locally, unnecessary exposure on a server. Neither is published in the prod
+  file; the backend reaches both over the internal `meeting-net` bridge.
 - `shm_size` has to be sized deliberately rather than left at Docker's 64MB
   default — Chromium needs it for video/audio stream buffers. The deployed
-  value is `shm_size: 2gb`, which covers one concurrent meeting; see step 5
-  for how to scale it with `MAX_CONCURRENT_MEETINGS`.
+  value is `shm_size: 2gb` **per recorder**, which covers one concurrent
+  meeting each; see step 5 for how to scale it with `MAX_CONCURRENT_MEETINGS`.
 
-Both files now describe **five** services, not three: `backend`, `frontend` and
+Both files now describe **six** services, not three: `backend`, `frontend` and
 `meeting-bot`, plus `redis` and `worker` from
-[docs/scaling-plan.md](scaling-plan.md) Phase A3. `worker` is not a fourth image
-to build - it is the backend image running `arq app.worker.WorkerSettings`
-instead of uvicorn, so it rebuilds and redeploys in lockstep with `backend`.
-Redis is where queued transcription jobs live; `--appendonly yes` plus the
-`redis-data` volume are what let a queued job survive a Redis restart, which is
-the whole point of moving transcription off the in-process thread pool.
+[docs/scaling-plan.md](scaling-plan.md) Phase A3, plus a second recorder
+`meeting-bot-2` from Phase C3. `worker` is not a fourth image to build - it is
+the backend image running `arq app.worker.WorkerSettings` instead of uvicorn, so
+it rebuilds and redeploys in lockstep with `backend`. Nor is `meeting-bot-2` a
+fifth: it is the same recorder image as `meeting-bot`, pointed at a different
+credential directory, so the two also rebuild together. Redis is where queued
+transcription jobs live; `--appendonly yes` plus the `redis-data` volume are
+what let a queued job survive a Redis restart, which is the whole point of
+moving transcription off the in-process thread pool.
+
+**Two recorders, one pool.** `backend` and `worker` both carry a `BOT_HOSTS`
+list naming `bot-a=http://meeting-bot:3000` and
+`bot-b=http://meeting-bot-2:3000`, and each recorder is pinned to
+`MAX_CONCURRENT_MEETINGS=1`. That pinning is what makes the guarantee legible:
+two meetings dispatched at once *must* land on different hosts, because neither
+host can take both. The list has to be identical on both services — `backend`
+resolves a meeting's `bot_host_id` against it for stop/delete/re-upload, while
+`worker` runs both the heartbeat that fills the registry cache and the
+dispatcher that reads it. Drop `BOT_HOSTS` entirely and `bot_registry` falls
+back to a pool of one built from `MEETING_BOT_URL`, which silently drops
+`meeting-bot-2` out of rotation rather than failing.
 
 `docker-compose.prod.yml` is a **standalone** prod file — not an override
 merged with `docker-compose.yml`, deliberately, since Compose's merge rules
@@ -76,12 +94,19 @@ different host directory (`./recordings`) than meeting-bot's own mount
 Per-meeting cost (measured): **~780MB RAM, ~1.3 vCPU** per concurrent
 recording (headed Chromium + ffmpeg + its PulseAudio sink).
 
-Baseline (OS + Docker + idle `backend`/`frontend`/`meeting-bot` with no
+Baseline (OS + Docker + idle `backend`/`frontend`/both recorders with no
 active recording, plus headroom for `AuthKeepAlive`'s periodic Chrome
 launches) is an estimate — budget **~1.5GB RAM / ~1 vCPU** for it and verify
 with `docker stats` once real traffic is flowing. EC2 lets you stop → change
 instance type → start without recreating the instance, so adjusting later is
 cheap (the Elastic IP and EBS volume survive).
+
+**N is the pool's total, not one recorder's.** With `meeting-bot` and
+`meeting-bot-2` both pinned to `MAX_CONCURRENT_MEETINGS=1`, the stack records
+**two** meetings at once, so `N = 2` in the formula below even though no single
+container exceeds one. A second idle recorder costs little beyond its own
+`AuthKeepAlive` Chrome launches, which the baseline already covers; what it
+adds is the second concurrent *recording*, and that is the term that matters.
 
 **Redis and the worker** both sit in that baseline, and neither moves it much.
 Redis holds `(meeting_id, storage_path)` tuples and job metadata - kilobytes,
@@ -103,10 +128,14 @@ RAM  ≈ (1.5 + 0.78 × N) × 1.3   GB
 vCPU ≈ (1   + 1.3  × N) × 1.3
 ```
 
-| N (MAX_CONCURRENT_MEETINGS) | RAM needed | vCPU needed | Suggested instance |
+| N (total concurrent meetings) | RAM needed | vCPU needed | Suggested instance |
 |---|---|---|---|
-| 2 | ~4GB | ~4.7 | `c6a.2xlarge` (8 vCPU / 16GB) |
+| 2 — **this stack as configured** | ~4GB | ~4.7 | `c6a.2xlarge` (8 vCPU / 16GB) |
 | 5 | ~7GB | ~9.75 | `c6a.4xlarge` (16 vCPU / 32GB) |
+
+The first row is what two recorders at `MAX_CONCURRENT_MEETINGS=1` produce, so
+`c6a.2xlarge` is the starting point for this guide — not something smaller
+sized against a single recorder.
 
 > **Do not use a `t3`/`t4g` burstable instance.** This workload is sustained
 > CPU (Chromium plus ffmpeg encoding, for the whole length of a meeting), not
@@ -185,46 +214,59 @@ Use an SSH deploy key or HTTPS PAT if the repo is private.
 
 ## 5. Getting `.env` files and auth state onto the instance securely
 
-Five files need to exist on the instance, none of them tracked in git:
-`backend/.env`, `meeting-bot/.env`, `frontend/.env`, plus the recorder's two
-session files, `meeting-bot/auth/bot-a/auth.json` and
-`meeting-bot/auth/bot-a/zoom-auth.json`.
+Eight files need to exist on the instance, none of them tracked in git:
+`backend/.env`, `meeting-bot/.env`, `frontend/.env`, the root `.env`, plus two
+session files for **each** recorder — `meeting-bot/auth/bot-a/auth.json` and
+`zoom-auth.json`, and the same pair under `bot-b`.
 
 **On the auth directory layout.** Credentials live one directory per recorder,
-named after the host id it serves (`docs/scaling-plan.md` Phase C4), not as two
-loose files at the `meeting-bot/` root:
+named after the host id it serves in `BOT_HOSTS` (`docs/scaling-plan.md` Phase
+C4), not as loose files at the `meeting-bot/` root:
 
 ```
 meeting-bot/auth/
   bot-a/
     auth.json        # Google session for host bot-a
     zoom-auth.json   # Zoom session for host bot-a
+  bot-b/
+    auth.json        # a DIFFERENT Google account
+    zoom-auth.json   # a DIFFERENT Zoom account
 ```
 
-A single-instance deployment — which is what this guide sets up — uses `bot-a`
-only. See "Deploying a second recorder" below before adding `bot-b`.
 `meeting-bot/auth/` and everything under it is gitignored except its
-`README.md`, so none of this arrives with `git clone` in step 4.
+`README.md`, so none of this arrives with `git clone` in step 4. The accounts
+under `bot-b` must be different accounts, not copies — see "Two recorders, two
+identities" below, which is the single most common way to get this wrong.
 
-> **Check the compose mount before you deploy.** `docker-compose.prod.yml`
-> still carries the pre-C4 single-file mounts
-> (`./meeting-bot/auth.json:/app/auth.json` and the Zoom equivalent), which do
-> not match the layout above. Point `meeting-bot`'s volume at the directory
-> (`./meeting-bot/auth/bot-a:/app/auth`) and set `AUTH_STATE_PATH=/app/auth/auth.json`
-> and `ZOOM_AUTH_STATE_PATH=/app/auth/zoom-auth.json`, as `docker-compose.yml`
-> already does. Two reasons it has to be a directory mount, not two file
-> mounts: a missing host file makes Docker silently create a *directory* at
-> `/app/auth.json`, and `AuthKeepAlive` replaces these files on rotation —
-> a single-file bind mount does not carry the new inode back to the host, so
-> the container re-reads stale cookies after a restart. That compose edit is
-> not made by this guide.
-
-First create the directory on the instance — `scp` will not create it for you,
-and without it the two auth transfers below fail:
+**The root `.env` is not optional.** `docker-compose.prod.yml` marks the three
+`VITE_*` build args required (`${VITE_API_URL:?...}`), and Compose resolves
+those when it *parses* the file — so without them `up`, `ps`, `logs` and `down`
+all refuse, not just `build`. That includes the systemd unit's `up -d` after a
+reboot, when nobody is around to have sourced a shell, which is exactly why the
+values live in a file Compose loads automatically rather than in an exported
+variable. Copy `.env.example` and fill it in:
 
 ```bash
-ssh -i /path/to/your-key.pem admin@<elastic-ip> 'mkdir -p ~/meeting-recorder-bot/meeting-bot/auth/bot-a'
+scp -i /path/to/your-key.pem .env.example admin@<elastic-ip>:~/meeting-recorder-bot/.env.example
 ```
+
+Then on the instance, `cp .env.example .env` and set `VITE_API_URL` to the
+instance's real address (see the value list further down). These three are
+compiled into the public JS bundle by Vite and are not secrets; they are
+gitignored all the same.
+
+First create the directories on the instance — `scp` will not create them for
+you, and without them the four auth transfers below fail:
+
+```bash
+ssh -i /path/to/your-key.pem admin@<elastic-ip> \
+  'mkdir -p ~/meeting-recorder-bot/meeting-bot/auth/bot-a ~/meeting-recorder-bot/meeting-bot/auth/bot-b ~/meeting-recorder-bot/meeting-bot/recordings-2'
+```
+
+`recordings-2` is `meeting-bot-2`'s own output directory. It ships with a
+`.gitkeep` so `git clone` creates it, but creating it here too is harmless and
+covers a checkout that predates it — a missing host directory would otherwise
+be created by Docker as root and leave the container unable to write to it.
 
 Then, from your local machine (not the instance), over SSH:
 
@@ -234,15 +276,17 @@ scp -i /path/to/your-key.pem meeting-bot/.env admin@<elastic-ip>:~/meeting-recor
 scp -i /path/to/your-key.pem frontend/.env admin@<elastic-ip>:~/meeting-recorder-bot/frontend/.env
 scp -i /path/to/your-key.pem meeting-bot/auth/bot-a/auth.json admin@<elastic-ip>:~/meeting-recorder-bot/meeting-bot/auth/bot-a/auth.json
 scp -i /path/to/your-key.pem meeting-bot/auth/bot-a/zoom-auth.json admin@<elastic-ip>:~/meeting-recorder-bot/meeting-bot/auth/bot-a/zoom-auth.json
+scp -i /path/to/your-key.pem meeting-bot/auth/bot-b/auth.json admin@<elastic-ip>:~/meeting-recorder-bot/meeting-bot/auth/bot-b/auth.json
+scp -i /path/to/your-key.pem meeting-bot/auth/bot-b/zoom-auth.json admin@<elastic-ip>:~/meeting-recorder-bot/meeting-bot/auth/bot-b/zoom-auth.json
 ```
 
 Then on the instance, lock down permissions (these hold real secrets —
 Supabase service-role key, bearer tokens, Google/Zoom session cookies):
 
 ```bash
-chmod 600 backend/.env meeting-bot/.env frontend/.env
-chmod 700 meeting-bot/auth meeting-bot/auth/bot-a
-chmod 600 meeting-bot/auth/bot-a/auth.json meeting-bot/auth/bot-a/zoom-auth.json
+chmod 600 backend/.env meeting-bot/.env frontend/.env .env
+chmod 700 meeting-bot/auth meeting-bot/auth/bot-a meeting-bot/auth/bot-b
+chmod 600 meeting-bot/auth/bot-*/auth.json meeting-bot/auth/bot-*/zoom-auth.json
 ```
 
 Before starting anything, update the values that were `localhost`-shaped for
@@ -256,62 +300,68 @@ local dev and now need the instance's real address:
   internal service-name DNS, unrelated to the instance's public address.
 - `frontend/.env`: `VITE_API_URL` → the backend's real public URL
   (`http://<elastic-ip-or-domain>:8000`).
+- The root `.env`: the same three `VITE_*` values as `frontend/.env`. Two files
+  because a Vite dev server and a Compose build read their configuration from
+  different places, and Compose cannot interpolate from `frontend/.env`. Keep
+  them in step — if they disagree, the deployed bundle follows the root `.env`.
 - `meeting-bot/.env`: `BACKEND_WEBHOOK_URL` stays `http://backend:8000/...`
-  for the same internal-DNS reason. Set `MAX_CONCURRENT_MEETINGS` to whatever
-  N you sized the instance for in step 2, and keep
-  `docker-compose.prod.yml`'s `shm_size` in step with it. The documented
-  baseline is:
+  for the same internal-DNS reason. `MAX_CONCURRENT_MEETINGS` here is the
+  fallback only — `docker-compose.prod.yml` pins it to `1` on both recorders
+  via `environment:`, which outranks `env_file:`, precisely because the two
+  containers share this one file and could not otherwise be told apart. To
+  raise the pool's capacity, raise the pinned values and each recorder's
+  `shm_size` together. The documented baseline is:
 
   ```yaml
   shm_size: 2gb
   ```
 
-  which covers `MAX_CONCURRENT_MEETINGS=1`. Budget ~2gb per concurrent
-  meeting as a starting point (so ~2gb × N), then verify against real usage
-  with `docker stats` rather than trusting the formula.
+  per recorder, covering `MAX_CONCURRENT_MEETINGS=1` each. Budget ~2gb per
+  concurrent meeting, then verify against real usage with `docker stats`
+  rather than trusting the formula.
 
-(One-time only, not a recurring re-transfer: once the instance's
-`meeting-bot` container is running, its own `AuthKeepAlive` job takes over
-refreshing `meeting-bot/auth/bot-a/auth.json` and
-`meeting-bot/auth/bot-a/zoom-auth.json` in place — see
-`docs/auth-keepalive-runbook.md`. You only need to scp fresh copies again if
+(One-time only, not a recurring re-transfer: once a recorder is running, its
+own `AuthKeepAlive` job takes over refreshing that host's `auth.json` and
+`zoom-auth.json` in place — see `docs/auth-keepalive-runbook.md`. Each recorder
+refreshes only its own directory. You only need to scp fresh copies again if
 the runbook's `ALERT` fires.)
 
-### Deploying a second recorder (`bot-b`)
+### Two recorders, two identities
 
-Out of scope for this guide's single-instance, single-recorder setup, but
-documented here so the layout is not a surprise later. A second recorder is a
-second container off the same image (`docs/scaling-plan.md` Phase C3/C4) with
-its own credential directory:
+`docker-compose.prod.yml` runs both recorders, and the transfers above already
+cover both. What this section exists for is the one thing a file transfer
+cannot enforce: **`bot-b` must hold different accounts from `bot-a`, not
+copies.**
 
-```
-meeting-bot/auth/
-  bot-b/
-    auth.json        # a DIFFERENT Google account from bot-a's
-    zoom-auth.json   # a DIFFERENT Zoom account from bot-a's
-```
+Two hosts sharing one Google login means two concurrent sessions rotating the
+same short-lived cookies against each other, and Google's rotation cookies
+expire within roughly 10–60 minutes of being issued. The symptom is not a clean
+failure — it is both recorders' sessions dying at unpredictable intervals, each
+one looking like an unrelated expiry. That is the failure Phase C4 exists to
+remove, and copying `bot-a/` to `bot-b/` reintroduces all of it while looking
+like a working deployment.
 
-Transferred and permissioned exactly like `bot-a` above, substituting `bot-b`
-in every path:
+Generate each set on a desktop machine with `meeting-bot/generate-auth.cjs` and
+`generate-zoom-auth.cjs`. Both scripts take the Chrome profile *and* the output
+path as environment variables, so one command names the account and the file it
+writes; there is nothing to uncomment. `meeting-bot/auth/README.md` has all
+four commands for bash and PowerShell, and `--dry-run` prints the pairing a
+command resolves to without launching Chrome.
+
+> **Do not start `meeting-bot-2` before both of its files exist.** A recorder
+> whose credentials are missing does not get skipped: `AuthHealth` reports
+> `unknown` until its first keepalive cycle lands, `bot_registry.usable_for`
+> treats `unknown` as usable, and the backend dispatches meetings the host
+> cannot join. A half-populated `bot-b` is worse than no `bot-b` — it looks
+> healthy and shreds meetings. If `bot-b`'s credentials are not ready, start
+> the stack without it (`docker compose -f docker-compose.prod.yml up -d
+> --scale meeting-bot-2=0`) and bring it up once they are.
+
+Once both are running, confirm the pool sees two hosts rather than one:
 
 ```bash
-ssh -i /path/to/your-key.pem admin@<elastic-ip> 'mkdir -p ~/meeting-recorder-bot/meeting-bot/auth/bot-b'
-scp -i /path/to/your-key.pem meeting-bot/auth/bot-b/auth.json admin@<elastic-ip>:~/meeting-recorder-bot/meeting-bot/auth/bot-b/auth.json
-scp -i /path/to/your-key.pem meeting-bot/auth/bot-b/zoom-auth.json admin@<elastic-ip>:~/meeting-recorder-bot/meeting-bot/auth/bot-b/zoom-auth.json
+docker compose -f docker-compose.prod.yml logs worker | grep -i 'bot-a\|bot-b'
 ```
-
-**The two accounts must be different.** Two hosts sharing one Google login
-means two concurrent sessions rotating the same short-lived cookies against
-each other, and Google's rotation cookies expire within roughly 10–60 minutes
-of being issued — which is the failure Phase C4 exists to remove. Generate
-each set with `meeting-bot/generate-auth.cjs` / `generate-zoom-auth.cjs`,
-pointed at the target path via `AUTH_STATE_PATH` / `ZOOM_AUTH_STATE_PATH`;
-`meeting-bot/auth/README.md` has the commands.
-
-Note that `docker-compose.prod.yml` as it stands defines one `meeting-bot`
-service, so adding `bot-b` is a compose change (a second service plus
-`BOT_HOSTS` on `backend` and `worker`), not just a file transfer. That change
-is deliberately not made here.
 
 ## 6. Security group rules
 
@@ -321,7 +371,7 @@ EC2 security groups deny all inbound by default — open only what's needed.
 |---|---|---|
 | 80 (frontend) | End users' browsers | Yes — `0.0.0.0/0` |
 | 8000 (backend) | End users' browsers call it *directly* — `VITE_API_URL` is baked into the frontend bundle at build time, so the browser does not go through nginx for API calls | Yes — `0.0.0.0/0` |
-| 3000 (meeting-bot) | Only `backend`, over the internal `meeting-net` Docker bridge | **No** — not published to the host at all in `docker-compose.prod.yml`, so there is nothing to open |
+| 3000 (both recorders) | Only `backend` and `worker`, over the internal `meeting-net` Docker bridge — `meeting-bot` and `meeting-bot-2` each listen on 3000 inside their own container, which is what `BOT_HOSTS` addresses | **No** — neither is published to the host in `docker-compose.prod.yml`, so there is nothing to open. Adding the second recorder opens no new port |
 | 22 (SSH) | You | **Restrict to your own IP**, not `0.0.0.0/0`. Better still, use AWS Systems Manager Session Manager and open nothing — it needs the SSM agent (preinstalled on Amazon Linux, an extra install on Debian) and an instance profile with `AmazonSSMManagedInstanceCore` |
 
 Outbound can stay at the default allow-all — the stack needs to reach
@@ -349,7 +399,7 @@ gives you one clean `systemctl` handle for start/stop/status:
 ```bash
 sudo tee /etc/systemd/system/meeting-recorder.service > /dev/null <<'EOF'
 [Unit]
-Description=meeting-recorder-bot (backend + meeting-bot + frontend)
+Description=meeting-recorder-bot (backend + worker + 2 recorders + frontend)
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
@@ -367,8 +417,15 @@ WantedBy=multi-user.target
 EOF
 ```
 
-`WorkingDirectory` assumes the Debian AMI's `admin` user — change it to
-`/home/ubuntu/...` on an Ubuntu AMI. Then:
+`WorkingDirectory` is doing more work than it looks. Besides locating
+`docker-compose.prod.yml`, it is the directory Compose loads the root `.env`
+from — and because the `VITE_*` build args are marked required, a unit that
+started somewhere else would fail at file-parse time with
+`required variable VITE_API_URL is missing a value`, on every boot, with no
+containers started. If you relocate the checkout, move `.env` with it.
+
+It assumes the Debian AMI's `admin` user — change it to `/home/ubuntu/...` on
+an Ubuntu AMI. Then:
 
 ```bash
 sudo systemctl daemon-reload
@@ -388,22 +445,29 @@ Watch specifically for `[AuthKeepAlive] ALERT` (see
 `meeting-bot` for join/recording failures.
 
 **Redeploy after pulling new code** — rebuild and recreate only what changed,
-to avoid unnecessary downtime on unaffected services:
+to avoid unnecessary downtime on unaffected services. For a recorder change,
+note that both recorders run the *same image*, so one build covers them and
+both need recreating or you are running two different versions of the bot:
 ```bash
 git pull
 docker compose -f docker-compose.prod.yml build meeting-bot
-docker compose -f docker-compose.prod.yml up -d meeting-bot
+docker compose -f docker-compose.prod.yml up -d meeting-bot meeting-bot-2
 ```
-For a frontend change, the build-arg substitution needs the vars in your
-shell first (Compose reads `${VITE_API_URL}` etc. from the shell environment
-at `build` time, not from `frontend/.env`'s `env_file:`, which only injects
-runtime env into a container — nginx doesn't need these, Vite bakes them into
-the JS bundle at build time instead):
+Recreating them together briefly leaves the pool with no free host. If that
+matters, do them one at a time — `up -d meeting-bot`, wait for it to report
+healthy on `/capacity`, then `up -d meeting-bot-2` — and the other host keeps
+taking meetings throughout.
+
+A frontend change needs no shell preparation: Compose reads the three `VITE_*`
+values from the root `.env` automatically (it is also why every other command
+here works at all — see step 5).
 ```bash
-set -a; source frontend/.env; set +a
 docker compose -f docker-compose.prod.yml build frontend
 docker compose -f docker-compose.prod.yml up -d frontend
 ```
+If you change `VITE_API_URL`, edit the root `.env` and rebuild — the value is
+compiled into the bundle, so `up -d` alone will keep serving the old one.
+
 Or rebuild everything at once:
 `docker compose -f docker-compose.prod.yml up -d --build`.
 
