@@ -8,6 +8,15 @@ services:
       - "8000:8000"
     env_file:
       - ./backend/.env
+    environment:
+      # The bot pool (docs/scaling-plan.md Phase C3). These are compose service
+      # names, so the list is topology and belongs here rather than in a
+      # hand-edited .env; `environment:` outranks `env_file:`. The backend needs
+      # it for stop/delete/re-upload, which resolve a meeting's bot_host_id
+      # against this list. Leave it out and bot_registry builds a pool of one
+      # from MEETING_BOT_URL - which is the C3 revert, and silently drops
+      # meeting-bot-2 out of rotation rather than failing.
+      BOT_HOSTS: "bot-a=http://meeting-bot:3000,bot-b=http://meeting-bot-2:3000"
     networks:
       - meeting-net
 
@@ -52,6 +61,12 @@ services:
       # Not the backend's 3s. No user is waiting on a job, and a job that gives
       # up on a pool wait burns one of its arq retries for nothing.
       DB_POOL_TIMEOUT_SECONDS: "30"
+      # The same list as the backend's, and it has to be character-for-character
+      # identical: this container runs both the heartbeat loop that fills the
+      # registry cache and the dispatcher that reads it, so a host missing here
+      # is a host that never receives a meeting - with no error anywhere, just
+      # one recorder sitting idle while the other queues.
+      BOT_HOSTS: "bot-a=http://meeting-bot:3000,bot-b=http://meeting-bot-2:3000"
     depends_on:
       - redis
     networks:
@@ -75,6 +90,11 @@ services:
     env_file:
       - ./meeting-bot/.env
     environment:
+      # Pinned rather than left to meeting-bot/.env, which both recorders share
+      # and therefore cannot use to tell them apart. Both at 1 is also what
+      # makes the C3 gate legible: two meetings dispatched at once *must* land
+      # on different hosts, because neither host can take both.
+      MAX_CONCURRENT_MEETINGS: "1"
       # This host's own identity (docs/scaling-plan.md Phase C4).
       # Container-side paths, pointing into the directory mounted
       # below - BrowserManager and AuthKeepAlive both resolve through
@@ -90,9 +110,56 @@ services:
       # read it. A missing host file would also make Docker create a
       # *directory* at /app/auth.json and fail the join confusingly.
       - ./meeting-bot/auth/bot-a:/app/auth
-    # Sized for MAX_CONCURRENT_MEETINGS=2 (~2gb per concurrent meeting, see
-    # docs/aws-ec2-deploy.md's VM sizing section for the formula). Update this
-    # alongside MAX_CONCURRENT_MEETINGS in meeting-bot/.env if you raise it.
+    # ~2gb per concurrent meeting (see docs/aws-ec2-deploy.md's VM sizing
+    # section for the formula), so this covers MAX_CONCURRENT_MEETINGS=1 above.
+    # Raise both together. Note each recorder gets its own 2gb, so the pair
+    # below reserves 4gb of /dev/shm across the stack.
+    shm_size: '2gb'
+    depends_on:
+      - backend
+    networks:
+      - meeting-net
+
+  meeting-bot-2:
+    # The second recorder (docs/scaling-plan.md Phase C3). Same image, same
+    # code - "a second bot" is a second container, not a second build, so it
+    # rebuilds and redeploys in lockstep with meeting-bot above.
+    #
+    # As of C4 it also has its own identity: auth/bot-b instead of auth/bot-a,
+    # selected purely by the mount below. That is what makes this a second
+    # *recorder* rather than a second process contending for one login - two
+    # hosts sharing a credential means two concurrent sessions rotating the
+    # same short-lived cookies against each other, and Google's rotation
+    # cookies expire within roughly 10-60 minutes of being issued.
+    build:
+      context: ./meeting-bot
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # No published port, same as meeting-bot: the backend reaches this over
+    # meeting-net at http://meeting-bot-2:3000, which is the URL BOT_HOSTS
+    # gives for bot-b. Nothing outside the stack calls it. (docker-compose.yml
+    # publishes 3001 for local debugging; a VM has no reason to.)
+    env_file:
+      - ./meeting-bot/.env
+    environment:
+      MAX_CONCURRENT_MEETINGS: "1"
+      # Identical container-side paths to meeting-bot's, pointing at a
+      # different host directory. The container never knows which host it is;
+      # the mount below is the whole of its identity.
+      AUTH_STATE_PATH: /app/auth/auth.json
+      ZOOM_AUTH_STATE_PATH: /app/auth/zoom-auth.json
+    volumes:
+      # Its own recordings directory. A recording kept after a failed upload
+      # lives on the host that made it, and POST /reupload finds it by id on
+      # local disk - sharing one directory would let the wrong host answer for
+      # a file, which is exactly the confusion bot_host_id exists to remove.
+      - ./meeting-bot/recordings-2:/app/recordings
+      # bot-b's credentials, not bot-a's. This one line is the whole of C4's
+      # per-host identity at the compose level. Both files must exist before
+      # this service is started: AuthHealth reports `unknown` until the first
+      # keepalive cycle lands, and bot_registry.usable_for treats unknown as
+      # usable, so a half-populated bot-b is dispatched meetings it cannot join.
+      - ./meeting-bot/auth/bot-b:/app/auth
     shm_size: '2gb'
     depends_on:
       - backend
