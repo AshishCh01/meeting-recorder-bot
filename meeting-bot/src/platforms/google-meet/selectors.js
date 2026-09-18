@@ -41,6 +41,36 @@ export const GOOGLE_MEET_SELECTORS = {
     `button:has-text("Join")${NOT_JOIN_DECOYS}, [role="button"]:has-text("Join")${NOT_JOIN_DECOYS}`,
   ],
 
+  // Mic/camera toggles, used by ensureToggledOff(). Meet labels the control
+  // by the action it performs, so "Turn off ..." means the device is
+  // currently ON. The same labels are used on the pre-join screen and in the
+  // call. Tier 1 matches the accessible name if the label moves into text;
+  // tier 2 keys off Meet's data-is-muted attribute and survives a rewording.
+  micToggle: {
+    onState: [
+      '[aria-label^="Turn off microphone" i]',
+      'role=button[name=/turn off microphone/i]',
+      '[data-is-muted="false"][aria-label*="microphone" i]',
+    ],
+    offState: [
+      '[aria-label^="Turn on microphone" i]',
+      'role=button[name=/turn on microphone/i]',
+      '[data-is-muted="true"][aria-label*="microphone" i]',
+    ],
+  },
+  cameraToggle: {
+    onState: [
+      '[aria-label^="Turn off camera" i]',
+      'role=button[name=/turn off camera/i]',
+      '[data-is-muted="false"][aria-label*="camera" i]',
+    ],
+    offState: [
+      '[aria-label^="Turn on camera" i]',
+      'role=button[name=/turn on camera/i]',
+      '[data-is-muted="true"][aria-label*="camera" i]',
+    ],
+  },
+
   // Deliberately narrower than the Zoom equivalent: leave/end-call controls
   // only, because those exist exclusively once actually in the call. Zoom's
   // list also keys off mic/camera buttons, but Meet renders those on the

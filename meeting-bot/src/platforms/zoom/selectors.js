@@ -43,6 +43,37 @@ export const ZOOM_SELECTORS = {
     'button[type="submit"], input[type="submit"]',
   ],
 
+  // Mic/video toggles, used by ensureToggledOff(). Zoom labels the control by
+  // the action it performs: "Mute" means the mic is currently ON. In the call
+  // the labels read "mute my microphone" / "stop my video"; the preview page
+  // uses the shorter "Mute" / "Stop Video". Starts-with matching keeps
+  // "mute" from also matching "unmute". The role= tier catches a control
+  // that carries the wording as text instead of an aria-label.
+  micToggle: {
+    onState: [
+      'button[aria-label^="mute my microphone" i]',
+      'button[aria-label^="mute" i]:not([aria-label*="all" i])',
+      'role=button[name=/^mute\\b(?!.*all)/i]',
+    ],
+    offState: [
+      'button[aria-label^="unmute my microphone" i]',
+      'button[aria-label^="unmute" i]:not([aria-label*="all" i])',
+      'role=button[name=/^unmute\\b(?!.*all)/i]',
+    ],
+  },
+  videoToggle: {
+    onState: [
+      'button[aria-label^="stop my video" i]',
+      'button[aria-label^="stop video" i]',
+      'role=button[name=/^stop (my )?video/i]',
+    ],
+    offState: [
+      'button[aria-label^="start my video" i]',
+      'button[aria-label^="start video" i]',
+      'role=button[name=/^start (my )?video/i]',
+    ],
+  },
+
   inCallIndicators: [
     'button[aria-label*="leave" i]',
     'button[aria-label*="end" i]',
