@@ -81,6 +81,36 @@ export async function persistStorageState(context, path) {
   return next;
 }
 
+// --use-fake-device-for-media-stream on its own feeds Chrome's built-in test
+// devices: a green frame with a spinning pie and frame counter, and a beep
+// every second. The bot turns its mic and camera off before joining, but if
+// that click ever misses (Meet/Zoom relabel their buttons), the call would
+// see and hear that test pattern until the host mutes it. Pointing the fake
+// devices at these files instead means a missed mute sends silence and a
+// plain dark frame. Chrome loops both files.
+//
+// Chrome fails the fake capture outright if a file is missing, so each flag
+// is only added when its file actually exists - a missing asset falls back
+// to the built-in test device rather than breaking every join.
+const FAKE_MEDIA_DIR = path.join(__dirname, '..', '..', 'assets');
+const FAKE_AUDIO_FILE = path.join(FAKE_MEDIA_DIR, 'silence.wav');
+const FAKE_VIDEO_FILE = path.join(FAKE_MEDIA_DIR, 'blank.y4m');
+
+export function fakeMediaArgs() {
+  const args = ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'];
+  if (fs.existsSync(FAKE_AUDIO_FILE)) {
+    args.push(`--use-file-for-fake-audio-capture=${FAKE_AUDIO_FILE}`);
+  } else {
+    console.warn(`[BrowserManager] ${FAKE_AUDIO_FILE} missing - bot mic falls back to Chrome's test beep`);
+  }
+  if (fs.existsSync(FAKE_VIDEO_FILE)) {
+    args.push(`--use-file-for-fake-video-capture=${FAKE_VIDEO_FILE}`);
+  } else {
+    console.warn(`[BrowserManager] ${FAKE_VIDEO_FILE} missing - bot camera falls back to Chrome's test pattern`);
+  }
+  return args;
+}
+
 export class BrowserManager {
   // pulseSink: from AudioSink.provision() — when set (Linux only), Chrome's
   // own PulseAudio client reads PULSE_SINK and sends this process's audio
@@ -96,8 +126,7 @@ export class BrowserManager {
       channel: 'chrome',
       env: pulseSink ? { ...process.env, PULSE_SINK: pulseSink } : undefined,
       args: [
-        '--use-fake-ui-for-media-stream',
-        '--use-fake-device-for-media-stream',
+        ...fakeMediaArgs(),
         '--disable-blink-features=AutomationControlled',
         // Docker/Linux specific flags below:
         '--no-sandbox',

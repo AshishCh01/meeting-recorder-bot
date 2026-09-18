@@ -1,6 +1,6 @@
 import { MeetingBot } from '../../core/MeetingBot.js';
 import { BrowserManager, resolveAuthStatePath, debugScreenshot, persistStorageState } from '../../core/BrowserManager.js';
-import { findFirstVisible } from '../../core/resilientLocator.js';
+import { findFirstVisible, ensureToggledOff } from '../../core/resilientLocator.js';
 import { ZOOM_SELECTORS } from './selectors.js';
 import { isAdmitted, hasMeetingEnded, isBotBlocked } from './detector.js';
 
@@ -194,6 +194,9 @@ export class ZoomBot extends MeetingBot {
       console.log('[ZoomBot] Could not fill name field — check zoom-step2.png for what is on screen');
     }
 
+    // The preview controls sit in the same frame as the name field.
+    await this.turnOffMicAndVideo(formFrame, 'pre-join');
+
     await debugScreenshot(this.page, 'zoom-step3.png');
     console.log('[ZoomBot] Step 3 saved. Clicking Join...');
 
@@ -218,6 +221,19 @@ export class ZoomBot extends MeetingBot {
     console.log('[ZoomBot] Step 4 saved after clicking Join');
   }
 
+  // Chrome's fake devices are live, so without this the call hears/sees
+  // them until the host mutes the bot. Runs on the preview page, and again
+  // once admitted - the in-call toolbar is where Zoom reliably labels these
+  // controls, and ensureToggledOff() never clicks a device that is already
+  // off, so the second pass is a no-op when the first one worked.
+  async turnOffMicAndVideo(scope, stage, timeout = 5000) {
+    // Sequential on purpose: Playwright clicks share one mouse, and two
+    // concurrent clicks interleave their moves so one of them is lost.
+    const mic = await ensureToggledOff(scope, ZOOM_SELECTORS.micToggle, { timeout, label: 'microphone' });
+    const video = await ensureToggledOff(scope, ZOOM_SELECTORS.videoToggle, { timeout, label: 'video' });
+    console.log(`[ZoomBot] ${stage}: microphone ${mic}, video ${video}`);
+  }
+
   async waitForAdmission(timeoutMs = 300000) {
     console.log('[ZoomBot] Waiting to be admitted...');
     const start = Date.now();
@@ -235,6 +251,7 @@ export class ZoomBot extends MeetingBot {
       }
       if (await isAdmitted(this.page)) {
         console.log('[ZoomBot] Admitted into the meeting');
+        await this.turnOffMicAndVideo(this.page, 'in-call', 3000);
         return true;
       }
       await this.page.waitForTimeout(2000);

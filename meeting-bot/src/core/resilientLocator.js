@@ -39,3 +39,42 @@ export async function findFirstVisible(page, selectors, { timeout = 10000, label
     await page.waitForTimeout(pollMs);
   }
 }
+
+/**
+ * Makes sure a mic/camera toggle ends up in its "off" state, clicking it
+ * at most once.
+ *
+ * `onState` matches the control while the device is ON (e.g. "Turn off
+ * microphone"), `offState` while it is OFF (e.g. "Turn on microphone").
+ * Checking offState first means an already-muted device is never clicked -
+ * these are toggles, so a blind click would turn it back on.
+ *
+ * Never throws: a missed mute is not worth failing the join over, since the
+ * fake devices are already pointed at silence and a blank frame (see
+ * fakeMediaArgs() in BrowserManager.js). Returns what happened so the caller
+ * can log it: 'already-off' | 'turned-off' | 'unconfirmed' | 'not-found'.
+ */
+export async function ensureToggledOff(page, { onState, offState }, { timeout = 5000, label = 'toggle' } = {}) {
+  const deadline = Date.now() + timeout;
+
+  for (;;) {
+    if (await findFirstVisible(page, offState, { timeout: 0, label: `${label} (off)` })) {
+      return 'already-off';
+    }
+
+    const button = await findFirstVisible(page, onState, { timeout: 0, label: `${label} (on)` });
+    if (button) {
+      try {
+        await button.click({ timeout: 5000 });
+      } catch (err) {
+        console.log(`[ensureToggledOff] ${label}: click failed:`, err.message);
+        return 'unconfirmed';
+      }
+      const confirmed = await findFirstVisible(page, offState, { timeout: 3000, label: `${label} (off)`, pollMs: 250 });
+      return confirmed ? 'turned-off' : 'unconfirmed';
+    }
+
+    if (Date.now() >= deadline) return 'not-found';
+    await page.waitForTimeout(500);
+  }
+}

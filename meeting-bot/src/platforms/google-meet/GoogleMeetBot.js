@@ -2,7 +2,7 @@
 
 import { MeetingBot } from '../../core/MeetingBot.js';
 import { BrowserManager, resolveAuthStatePath, debugScreenshot, persistStorageState } from '../../core/BrowserManager.js';
-import { findFirstVisible } from '../../core/resilientLocator.js';
+import { findFirstVisible, ensureToggledOff } from '../../core/resilientLocator.js';
 import { GOOGLE_MEET_SELECTORS } from './selectors.js';
 import {
   isAdmitted,
@@ -105,6 +105,8 @@ export class GoogleMeetBot extends MeetingBot {
       console.log('[GoogleMeetBot] No name input required or visible, proceeding to join...');
     }
 
+    await this.turnOffMicAndCamera('pre-join');
+
     await debugScreenshot(this.page, 'google-meet-prejoin.png');
 
     // Locate and click the join button
@@ -127,6 +129,19 @@ export class GoogleMeetBot extends MeetingBot {
     await debugScreenshot(this.page, 'google-meet-after-join-click.png');
   }
 
+  // Chrome's fake devices are live, so without this the call hears/sees
+  // them until the host mutes the bot. Runs on the pre-join screen, and
+  // again once admitted in case the pre-join click missed or Meet reset the
+  // state on entry - ensureToggledOff() never clicks a device that is
+  // already off, so the second pass is a no-op when the first one worked.
+  async turnOffMicAndCamera(stage, timeout = 5000) {
+    // Sequential on purpose: Playwright clicks share one mouse, and two
+    // concurrent clicks interleave their moves so one of them is lost.
+    const mic = await ensureToggledOff(this.page, GOOGLE_MEET_SELECTORS.micToggle, { timeout, label: 'microphone' });
+    const camera = await ensureToggledOff(this.page, GOOGLE_MEET_SELECTORS.cameraToggle, { timeout, label: 'camera' });
+    console.log(`[GoogleMeetBot] ${stage}: microphone ${mic}, camera ${camera}`);
+  }
+
   async waitForAdmission(timeoutMs = 300000) {
     const start = Date.now();
     let consecutiveHits = 0;
@@ -142,6 +157,7 @@ export class GoogleMeetBot extends MeetingBot {
         if (consecutiveHits >= REQUIRED_HITS) {
           console.log('[GoogleMeetBot] Admission confirmed. Waiting for UI to settle...');
           await this.page.waitForTimeout(3000); // let Meet's post-admission transition/reload finish before polling begins
+          await this.turnOffMicAndCamera('in-call', 3000);
           return true;
         }
       } else {
