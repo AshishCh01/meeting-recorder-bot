@@ -58,10 +58,18 @@ class RecordingCompleteWebhook(BaseModel):
 
 
 class UserSettingsUpdate(BaseModel):
-    bot_display_name: str = Field(min_length=1, max_length=50)
+    """
+    A partial update: only the fields present in the request body change, so
+    the settings page can save one section without resending the other.
+    """
+    bot_display_name: Optional[str] = Field(default=None, min_length=1, max_length=50)
+    # What Ask AI should know about the user and how they want answers.
+    # Blank or null clears it. app/ask_ai/agent/instruction.py caps it again.
+    ask_ai_instructions: Optional[str] = Field(default=None, max_length=1000)
 
 
 class UserSettings(BaseModel):
     id: str
     email: str
     bot_display_name: str
+    ask_ai_instructions: Optional[str] = None

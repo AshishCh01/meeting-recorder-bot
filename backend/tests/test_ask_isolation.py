@@ -96,3 +96,66 @@ def test_details_return_the_whole_summary(db, two_users):
     assert result["summary"] == long_summary, "details are not clipped like list_meetings' summaries"
     assert result["key_points"] == ["One", "Two"]
     assert set(result) == {"id", "title", "date", "platform", "duration_minutes", "summary", "key_points", "conclusion"}
+
+
+# ---------------------------------------------------------------------------
+# The chat routes (Phase 5)
+# ---------------------------------------------------------------------------
+
+from app.api import ask as ask_api  # noqa: E402
+from app.ask_ai.agent import history  # noqa: E402
+
+from tests.ask_ai_fixtures import api  # noqa: E402,F401 - fixture
+
+
+@pytest.fixture
+def theirs(api, monkeypatch):
+    """`other` owns a chat with an exchange in it; streams must never start for anyone else."""
+    chat = history.get_or_create_empty_conversation(api.other_id)
+    history.save_exchange(chat.id, api.other_id, "Their question", "Their answer", [])
+
+    async def must_not_stream(*args, **kwargs):
+        raise AssertionError("a stream started for a chat the caller doesn't own")
+        yield  # an async generator
+
+    monkeypatch.setattr(ask_api, "ask_stream", must_not_stream)
+    return str(chat.id)
+
+
+@pytest.mark.parametrize("method, path, body", [
+    ("get", "/ask/conversations/{id}/messages", None),
+    ("post", "/ask/conversations/{id}/stream", {"question": "What did they say?"}),
+    ("patch", "/ask/conversations/{id}", {"title": "Mine now"}),
+    ("delete", "/ask/conversations/{id}", None),
+])
+def test_another_users_chat_is_a_404_exactly_like_a_missing_one(api, theirs, method, path, body):
+    def call(conversation_id):
+        kwargs = {"headers": api.me}
+        if body is not None:
+            kwargs["json"] = body
+        return getattr(api.client, method)(path.format(id=conversation_id), **kwargs)
+
+    stolen = call(theirs)
+    missing = call(uuid.uuid4())
+
+    assert stolen.status_code == missing.status_code == 404
+    assert stolen.json() == missing.json() == {"detail": "Chat not found"}
+    # And nothing happened to it.
+    chat = history.get_owned_conversation(theirs, api.other_id)
+    assert chat is not None and chat.title == "New chat"
+    assert len(history.load_messages(theirs, api.other_id)) == 2
+
+
+def test_another_users_chats_are_never_listed(api, theirs):
+    assert api.client.get("/ask/conversations", headers=api.me).json() == []
+    assert [c["id"] for c in api.client.get("/ask/conversations", headers=api.other).json()] == [theirs]
+
+
+def test_delete_all_deletes_only_the_callers_chats(api, theirs):
+    mine = history.get_or_create_empty_conversation(api.user_id)
+
+    response = api.client.delete("/ask/conversations", headers=api.me)
+
+    assert response.json() == {"status": "deleted", "count": 1}
+    assert history.get_owned_conversation(mine.id, api.user_id) is None
+    assert history.get_owned_conversation(theirs, api.other_id) is not None

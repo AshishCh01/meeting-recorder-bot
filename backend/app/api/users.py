@@ -16,7 +16,16 @@ def get_my_settings(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(404, "User not found")
-    return UserSettings(id=str(user.id), email=user.email, bot_display_name=user.bot_display_name)
+    return _settings_out(user)
+
+
+def _settings_out(user: User) -> UserSettings:
+    return UserSettings(
+        id=str(user.id),
+        email=user.email,
+        bot_display_name=user.bot_display_name,
+        ask_ai_instructions=user.ask_ai_instructions,
+    )
 
 
 @router.patch("/me", response_model=UserSettings)
@@ -29,7 +38,14 @@ def update_my_settings(
     if not user:
         raise HTTPException(404, "User not found")
 
-    user.bot_display_name = payload.bot_display_name.strip()
+    # Only what the body actually contains - a field left out is untouched.
+    sent = payload.model_fields_set
+    if "bot_display_name" in sent:
+        if payload.bot_display_name is None:
+            raise HTTPException(422, "bot_display_name cannot be null")
+        user.bot_display_name = payload.bot_display_name.strip()
+    if "ask_ai_instructions" in sent:
+        user.ask_ai_instructions = (payload.ask_ai_instructions or "").strip() or None
     db.commit()
     db.refresh(user)
-    return UserSettings(id=str(user.id), email=user.email, bot_display_name=user.bot_display_name)
+    return _settings_out(user)
