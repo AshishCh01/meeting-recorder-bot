@@ -161,6 +161,24 @@ def _embed_documents(texts: list[str]) -> tuple[list[list[float]], str]:
         raise
 
 
+def embed_documents_with_provider(texts: list[str], provider: str) -> list[list[float]]:
+    """
+    Embeds documents with exactly `provider` - no fallback. For vectors that
+    must share a space with ones already stored, such as the Ask AI backfill
+    adding a summary vector next to a meeting's existing chunks: falling
+    back to the other provider there would produce a vector that silently
+    matches nothing. Raises if that provider fails, so the caller can stop
+    and retry later.
+    """
+    if not texts:
+        return []
+    if provider == JINA_PROVIDER:
+        return embed_documents_with_jina(texts)
+    if provider == GEMINI_PROVIDER:
+        return [e.values for e in _call_gemini_embed_with_retry(texts).embeddings]
+    raise ValueError(f"unknown embedding provider {provider!r}")
+
+
 def embed_query(query: str, provider: str = GEMINI_PROVIDER, *, meeting_id=None, user_id=None) -> list[float]:
     """
     Embeds a chat query. `provider` MUST match whichever model indexed
@@ -220,6 +238,30 @@ def _record_query_usage(query: str, provider: str, outcome: str, meeting_id, use
     )
 
 
+def summary_document(transcript: dict) -> str:
+    """
+    The text a meeting's summary_embedding is made from: its title, summary
+    and key points. Ask AI ranks whole meetings by topic against this, then
+    searches the chunks of the best ones. Shared by index_transcript and the
+    Ask AI backfill, so a meeting embedded either way gets the same vector.
+
+    Returns "" when the transcript has none of the three - there is nothing
+    to rank the meeting on, and the caller should leave the vector NULL.
+    """
+    title = (transcript.get("title") or "").strip()
+    summary = (transcript.get("summary") or "").strip()
+    key_points = [p.strip() for p in (transcript.get("key_points") or []) if isinstance(p, str) and p.strip()]
+
+    parts = []
+    if title:
+        parts.append(title)
+    if summary:
+        parts.append(summary)
+    if key_points:
+        parts.append("\n".join(f"- {p}" for p in key_points))
+    return "\n\n".join(parts)
+
+
 def index_transcript(db: Session, meeting_id: str, transcript: dict) -> float:
     """
     Chunks the `conversation` array of a completed transcript, embeds each
@@ -228,6 +270,12 @@ def index_transcript(db: Session, meeting_id: str, transcript: dict) -> float:
     cleared first). Also records which provider embedded the chunks on
     the Meeting row, so embed_query can use a matching model later even
     if Gemini and Jina alternate between re-indexing runs.
+
+    The meeting's summary_embedding (see summary_document) is embedded in
+    the same call, as one extra document at the end of the batch. So it is
+    always from the same provider as the chunks - embedding_provider
+    describes both - and it is committed with them, so the two can't
+    disagree.
 
     Returns the estimated USD cost of this indexing run (0.0 if there was
     nothing to embed), so callers can fold it into a per-meeting total.
@@ -240,12 +288,18 @@ def index_transcript(db: Session, meeting_id: str, transcript: dict) -> float:
     if not chunks:
         return 0.0
 
-    embeddings, provider = _embed_documents([c["content"] for c in chunks])
+    texts = [c["content"] for c in chunks]
+    summary_text = summary_document(transcript)
+    if summary_text:
+        texts.append(summary_text)
+
+    embeddings, provider = _embed_documents(texts)
+    summary_embedding = embeddings[len(chunks)] if summary_text else None
 
     # The Gemini embed API doesn't return usage_metadata, so we estimate
     # token count with the same ~4-chars-per-token heuristic used for
     # chunking above - and store it flagged as an estimate.
-    token_estimate = estimate_tokens(sum(len(c["content"]) for c in chunks))
+    token_estimate = estimate_tokens(sum(len(t) for t in texts))
     cost = _embedding_cost(provider, token_estimate)
     owner_id = db.query(Meeting.user_id).filter(Meeting.id == meeting_id).scalar()
     # Staged in this session, not written on a connection of its own: this
@@ -298,6 +352,9 @@ def index_transcript(db: Session, meeting_id: str, transcript: dict) -> float:
     meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
     if meeting:
         meeting.embedding_provider = provider
+        # Written even when None: a re-index by the other provider must not
+        # leave behind a summary vector from the old one's space.
+        meeting.summary_embedding = summary_embedding
 
     db.commit()
     return cost

@@ -322,8 +322,11 @@ def test_a_gemini_transcription_records_transcription_and_embedding_rows(db, use
 
     assert (embedding.operation, embedding.provider, embedding.outcome) == ("embedding", "gemini", "ok")
     assert embedding.estimated is True
+    # The chunks plus the meeting's summary document (Ask AI), which is
+    # embedded in the same call and paid for in the same row.
     expected_tokens = cost_tracker.estimate_tokens(
         sum(len(c["content"]) for c in embedding_service._build_chunks(TRANSCRIPT["conversation"]))
+        + len(embedding_service.summary_document(TRANSCRIPT))
     )
     assert embedding.input_tokens == expected_tokens
     assert embedding.usd == usd(expected_tokens / 1e6 * 0.15)
