@@ -17,10 +17,13 @@ before creating the schema, which fails loudly on a plain `postgres` image.
 `conftest.py` reads `TEST_DATABASE_URL` and refuses to run without it, so a
 stray `pytest` can never point the suite at the real `DATABASE_URL` in
 `backend/.env`. It creates and drops `users`, `meetings`, `meeting_chunks`,
-`chat_messages` and `ai_usage_events`, and truncates them between tests — use a
-throwaway database. The last two exist for B3's chat tests and B4's usage
-tests. Both code paths swallow storage errors on purpose, so without the
-tables "nothing was stored" would pass for the wrong reason.
+`chat_messages`, `ai_usage_events`, `ask_ai_conversations` and
+`ask_ai_messages`, and truncates them between tests — use a throwaway
+database. `chat_messages` and `ai_usage_events` exist for B3's chat tests and
+B4's usage tests: both code paths swallow storage errors on purpose, so
+without the tables "nothing was stored" would pass for the wrong reason. The
+two Ask AI tables are there because Ask AI's one-empty-chat rule is a partial
+unique index, which only a real table can enforce.
 
 **The suite never reads `backend/.env`.** `conftest.py` sets `IGNORE_DOTENV=1`
 before any `app.*` import, and both routes a `.env` has into the process honour
@@ -50,10 +53,12 @@ run against Postgres alone), and 21 of the 35 in `test_rate_limit.py` skip
 (the other 14 run without it - they are the fail-open ones, which need a Redis
 that is *not* there), and so does the one real-Redis test in
 `test_webhook_enqueue_failure.py` (the other 8 in that file run against
-Postgres alone). The scheduler, status-machine, webhook,
+Postgres alone), and the five rate-limit tests in `test_ask_api.py` (the other
+20 run against Postgres alone). The scheduler, status-machine, webhook,
 scheduled-without-time, fallback-ladder and chat reset/saving tests still run.
 The chat stream-error, AI-usage and structured-logging tests need only
-Postgres too. Full suite: 438 with Redis, 375 passed / 63 skipped without.
+Postgres too, as do the rest of the Ask AI tests. Full suite: 628 with Redis,
+560 passed / 68 skipped without.
 
 **Rate limiting is off unless a test turns it on.** `conftest.py` sets
 `RATE_LIMIT_ENABLED=false`, because Phase B1's limiter is an `async def`
@@ -141,7 +146,7 @@ fails if one ever is.
 **A skip is a failure when this is set.** CI sets it; nothing else does.
 
 The reason is the numbers in the section above: with Postgres but no Redis this
-suite reports `375 passed, 63 skipped` and exits **0**. Those 63 are B1's
+suite reports `560 passed, 68 skipped` and exits **0**. Those 68 are B1's
 atomicity gate, C3's two-hosts-two-meetings gate, C4's per-platform auth gate,
 A3's queue-durability gate, and B3's real-Redis enqueue-recovery and
 real-worker retry tests — the
@@ -153,11 +158,11 @@ it converts "nobody ran the tests" into "the tests passed".
 The guard is a `pytest_sessionfinish` hook at the bottom of `conftest.py`. It
 lists every test that skipped and why, then sets a failing exit status. It is
 opt-in rather than always-on because locally a partial run is genuinely useful
-— run without Redis and you get the 375 tests that do not need one, plus a note
+— run without Redis and you get the 560 tests that do not need one, plus a note
 about what you missed, instead of a red suite.
 
 It refuses *any* skip, not just Redis ones. There is no legitimately
-conditional test here today (with both services: `438 passed`, zero skipped),
+conditional test here today (with both services: `628 passed`, zero skipped),
 so a new skip is a question someone should have to answer in a pull request.
 
 ## What's covered
@@ -185,6 +190,18 @@ so a new skip is a question someone should have to answer in a pull request.
 | `test_scheduled_without_time.py` | B3 finding 3 | A `scheduled` row with no `scheduled_at` is failed by the watchdog once past the joining TTL; valid bookings are never swept, whatever their age or whether the scheduler is enabled; `POST /meetings` inserts its dispatch status directly, so a crash mid-create leaves no such row. |
 | `test_webhook_uploading_pings.py` | B3 finding 4 | No code change, pinned: a progress ping can only meet `uploading` from a still-live session during a re-upload the bot refuses, where it is the true state, and the meeting still closes on the bot's final report. |
 | `test_jwt_auth.py` | A5 | Every rejection path 401s - expired, wrong signature, wrong `aud`, wrong `iss`, `alg: none`, HS256-signed-with-the-public-key; 50 unknown-`kid` requests cost exactly one JWKS refetch; the fallback wrapper keeps an unverifiable token logged in and counts itself; the user-row lookup happens once, not per request. |
+| `test_session_cache.py` | Ask AI 0 | `LRUSessionCache.evict()` drops one session, is a no-op for a missing key, and a later `get_session` for that key starts empty. |
+| `test_ask_schema.py` | Ask AI 1 | Postgres enforces what the feature leans on: at most one empty chat per user (the partial unique index, including as an `ON CONFLICT` target), server defaults a raw insert relies on, `ON DELETE CASCADE` from users and chats, and the meeting-date expression index being usable. |
+| `test_ask_summary_embedding.py` | Ask AI 2 | `index_transcript` embeds the summary document in the same call and commit as the chunks, so it always shares their provider (Jina included) and a re-index clears a stale one; the backfill embeds each meeting with its own provider and never falls back, pages past meetings it can't embed, is idempotent, records one usage row per meeting, and never overwrites a meeting re-indexed while it runs. |
+| `test_ask_dates.py` | Ask AI 3 | Local YYYY-MM-DD ranges become the right UTC instants (single day, range, swapped, lone end date, month and year boundaries, a 25-hour DST day); invalid dates are notes; a 23:30 IST meeting lands on the user's day; `meeting_date_expr()` can use the Phase 1 index. |
+| `test_ask_list_meetings.py` | Ask AI 3 | `list_meetings` picks `detailed` / `compact` / `titles` at every boundary (1, 20, 21, 100, 101, 300) and truncates past 300 with the right `total_count`; 50 August meetings all come back; only the user's completed meetings; newest first; literal title search; empty-range notes name the range. |
+| `test_ask_search.py` | Ask AI 3 | `find_meetings_by_topic` and `search_across_meetings` rank exactly, embed the query once per provider and rank each provider's vectors against its own, merge the top 10 by distance, cap an unranged search at 200 meetings, hold no pooled connection during embedding, turn a provider failure into a note, and never let the shared ivfflat index serve the passage ranking. |
+| `test_ask_tool_schemas.py` | Ask AI 3 | Every schema in `ASK_AI_TOOLS` matches its tool's parameters and required arguments, and none lets the model pass a user or timezone. |
+| `test_ask_isolation.py` | Ask AI 3, 5 | No tool reaches another user's meetings, and another user's meeting id reads exactly like a missing or malformed one; another user's chat is the same 404 as a missing one on read, stream, rename and delete, and is left untouched; delete-all deletes only the caller's chats. |
+| `test_ask_conversations.py` | Ask AI 4, 5 | New chat reuses the one empty chat (also under 8 racing threads); empty chats are never listed; listing pages by `last_message_at`; an exchange and `last_message_at` commit together, and saving into a deleted or unowned chat stores nothing; the model's thread is the last N turns; delete cascades and evicts the cached session; every route needs a login. |
+| `test_ask_titles.py` | Ask AI 4 | Titles are cleaned (quotes, labels, markdown, newlines) and capped at 60; Gemini → Groq (a plain completion, no tool list) → the question cut to 50; usage recorded as `ask_ai_title` under one `request_id`. |
+| `test_ask_stream.py` | Ask AI 4, 7 | One turn through the real agent loop: `tool`, `delta`, then `title` before `done` on the first answered question only; no title for an answer that isn't stored, and a slow one never holds up `done`; Gemini gets the Ask AI declarations and instruction; custom instructions follow the rules and are capped; the Groq fallback gets Ask AI's tools and suffix and can run them; `ask_ai` usage rows with no meeting; history reloads after eviction, separate chats stay separate, and closing the stream releases the session lock; every log line carries the user. |
+| `test_ask_api.py` | Ask AI 5, 7 | The stream route end to end (SSE headers and events), no pooled connection held while answering or during the limiter's Redis call, timezone fallback to UTC, question validation, errors as an `error` event; the `ask-ai` rate limit refuses before streaming with its own budget; concurrent New chat requests share one chat; `/users/me` saves custom instructions without touching the bot name and vice versa. |
 
 `test_observability.py` needs neither Postgres nor Redis of its own, but it
 lives in the same suite so `conftest.py`'s `TEST_DATABASE_URL` interlock still
