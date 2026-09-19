@@ -96,3 +96,44 @@ def toward(axis: int, similarity: float) -> list[float]:
     vector[axis] = similarity
     vector[_SPARE_AXIS] = (1.0 - similarity ** 2) ** 0.5
     return vector
+
+
+class FakeGeminiTitle:
+    """
+    client.aio.models.generate_content - the non-streaming call that names a
+    chat. Kept apart from FakeGeminiChat's generate_content_stream, so a title
+    written concurrently with an answer never takes one of the answer's
+    scripted replies.
+    """
+
+    def __init__(self):
+        self.replies = []
+        self.prompts = []
+
+    def reply(self, text, usage=(20, 5)):
+        self.replies.append(("text", text, usage))
+        return self
+
+    def fail(self, error):
+        self.replies.append(("raise", error, None))
+        return self
+
+    async def generate_content(self, model, contents, config=None):
+        from types import SimpleNamespace
+
+        self.prompts.append(contents)
+        if not self.replies:
+            raise AssertionError("unscripted Gemini title call")
+        kind, value, usage = self.replies.pop(0)
+        if kind == "raise":
+            raise value
+        return SimpleNamespace(
+            text=value,
+            usage_metadata=SimpleNamespace(prompt_token_count=usage[0], candidates_token_count=usage[1]),
+        )
+
+    def install(self, monkeypatch):
+        from app.rag import agent_runner
+
+        monkeypatch.setattr(agent_runner.client.aio.models, "generate_content", self.generate_content)
+        return self
