@@ -43,6 +43,22 @@ class Settings(BaseSettings):
     chunk_overlap_tokens: int = 50
     retrieval_top_k: int = 6
 
+    # Ask AI tools (app/ask_ai/tools/). list_meetings picks how much detail to
+    # return per meeting from how many match: up to ask_ai_detailed_limit
+    # get a summary each, up to ask_ai_compact_limit get their first key
+    # points, up to ask_ai_titles_limit get a title and date, and beyond that
+    # the most recent ask_ai_titles_limit are returned, marked truncated. So
+    # "what was discussed in August?" covers every meeting in the month
+    # rather than an arbitrary first 20.
+    ask_ai_detailed_limit: int = 20
+    ask_ai_compact_limit: int = 100
+    ask_ai_titles_limit: int = 300
+    # search_across_meetings with no date range searches only the user's most
+    # recent this-many meetings.
+    ask_ai_search_candidate_meetings: int = 200
+    ask_ai_search_top_k: int = 10
+    ask_ai_topic_top_k: int = 10
+
     # Fallback STT provider - used if Gemini keeps failing (429/503)
     sarvam_api_key: str = ""
     sarvam_stt_model: str = "saaras:v3"
