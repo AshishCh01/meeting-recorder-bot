@@ -198,7 +198,12 @@ def _accumulate_tool_call_deltas(acc: dict, deltas: list[dict]) -> None:
             entry["arguments"] += function["arguments"]
 
 
-async def _stream_one_turn(client: httpx.AsyncClient, messages: list[dict], force_answer: bool = False):
+async def _stream_one_turn(
+    client: httpx.AsyncClient,
+    messages: list[dict],
+    force_answer: bool = False,
+    tool_schemas: list[dict] = GROQ_TOOLS,
+):
     """
     Runs a single Groq turn, yielding ("delta", text) as content arrives and
     finally ("final", {...}) with the assembled tool calls, full text and usage.
@@ -207,6 +212,9 @@ async def _stream_one_turn(client: httpx.AsyncClient, messages: list[dict], forc
     what it has already gathered instead of calling another tool. It is used on
     the last permitted iteration so the budget ends in an answer rather than in
     a half-finished search.
+
+    `tool_schemas` is the tool list offered to the model; the per-meeting
+    GROQ_TOOLS unless the caller runs a different chat.
 
     Retries transient failures, but only before any text has been yielded -
     once a delta has gone out to the caller it has already reached the user's
@@ -222,7 +230,7 @@ async def _stream_one_turn(client: httpx.AsyncClient, messages: list[dict], forc
         payload = {
             "model": settings.groq_chat_model,
             "messages": messages,
-            "tools": GROQ_TOOLS,
+            "tools": tool_schemas,
             "tool_choice": "none" if force_answer else "auto",
             "temperature": 0.0,
             "max_tokens": settings.groq_max_output_tokens,
@@ -302,6 +310,7 @@ async def run_groq_chat_stream(
     instruction: str,
     tool_map: dict,
     max_tool_iterations: int = 6,
+    tool_schemas: list[dict] = GROQ_TOOLS,
 ) -> AsyncGenerator[dict, None]:
     """
     Runs the same agentic tool-calling loop as chat_service.ask_question_stream,
@@ -315,7 +324,9 @@ async def run_groq_chat_stream(
     decoded argument dict. The bodies open blocking SQLAlchemy sessions (and
     search_transcript makes a blocking embedding call), so each runs in a
     worker thread - blocking the event loop here would stall every other
-    request the process is serving, not just this one.
+    request the process is serving, not just this one. `tool_schemas` are
+    the declarations sent with every turn and must describe the same tools
+    as `tool_map`; they default to the per-meeting GROQ_TOOLS.
 
     Raises on an unrecoverable Groq failure; the caller is expected to fall
     back to its canned message.
@@ -336,7 +347,7 @@ async def run_groq_chat_stream(
             turn_text = ""
             tool_calls: list[dict] = []
 
-            async for kind, value in _stream_one_turn(client, convo, force_answer=force_answer):
+            async for kind, value in _stream_one_turn(client, convo, force_answer=force_answer, tool_schemas=tool_schemas):
                 if kind == "delta":
                     answer_parts.append(value)
                     yield {"type": "delta", "text": value}
