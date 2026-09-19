@@ -44,6 +44,20 @@ _RETRYABLE_STREAM_ERRORS = (
 )
 
 
+def _is_user_question(content: types.Content) -> bool:
+    """
+    True for a turn the user typed: role "user" with text. A function
+    response is also role "user" (it is how tool results go back to the
+    model), but it carries no text - only the text turn can open a history.
+    """
+    parts = content.parts or []
+    return (
+        content.role == "user"
+        and any(getattr(part, "text", None) for part in parts)
+        and not any(getattr(part, "function_response", None) for part in parts)
+    )
+
+
 async def run_agent_stream(
     *,
     history: list[types.Content],
@@ -121,6 +135,20 @@ async def run_agent_stream(
         if len(history) > history_turn_limit:
             # Modify the list in-place to retain the reference inside the cache
             history[:] = history[-history_turn_limit:]
+            # The cut counts entries, not questions, so it can land inside a
+            # tool round-trip and leave the history opening on a function
+            # call or a function response whose other half was cut off.
+            # Gemini rejects that with "400 INVALID_ARGUMENT: Please ensure
+            # that function call turn comes immediately after a user turn or
+            # after a function response turn" - and since the cut is made
+            # before history_mark, rolling the failed question back doesn't
+            # repair it, so every later question in the session failed the
+            # same way. Drop whatever precedes the first remaining question.
+            first_question = next(
+                (i for i, content in enumerate(history) if _is_user_question(content)),
+                len(history),
+            )
+            del history[:first_question]
 
         # Where to roll history back to if this request never produces an
         # answer. Without it a failed question stays in the session forever:
