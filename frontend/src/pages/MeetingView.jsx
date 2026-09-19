@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { MeetingDetails } from '../components/MeetingDetails';
-import { ChatInterface } from '../components/ChatInterface';
+import { MeetingChatInterface } from '../components/ChatInterface';
 import { MobileChatSheet } from '../components/meeting/MobileChatSheet';
 import { MeetingChatProvider } from '../context/MeetingChatContext';
 import { DeleteConfirmDialog } from '../components/DeleteConfirmDialog';
@@ -142,7 +142,7 @@ export const MeetingView = () => {
 
           {/* Desktop: permanent chat column */}
           <div className="hidden lg:block w-105 flex-none border-l border-line">
-            <ChatInterface />
+            <MeetingChatInterface />
           </div>
         </div>
 

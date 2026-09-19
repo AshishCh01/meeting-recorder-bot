@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { useAuth } from '../context/AuthContext';
-import { Bot, Loader2, Check, CalendarDays, Bell } from 'lucide-react';
+import { Bot, Loader2, Check, CalendarDays, Bell, Sparkles } from 'lucide-react';
 import api from '../lib/api';
 
 const NOTIFICATIONS = [
@@ -10,6 +10,9 @@ const NOTIFICATIONS = [
   { label: 'Slack DM with the summary', help: 'Requires the Slack app.' },
   { label: 'Weekly digest of action items', help: 'Monday morning, your open follow-ups.' },
 ];
+
+// The backend's cap (UserSettingsUpdate.ask_ai_instructions).
+const ASK_AI_INSTRUCTIONS_MAX = 1000;
 
 const ComingSoonPill = () => (
   <span className="px-2.5 py-1 rounded-full bg-status-muted-bg text-status-muted-fg text-[11px] font-bold tracking-wide">
@@ -30,6 +33,11 @@ export const Settings = () => {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [saved, setSaved] = useState(false);
+
+  const [instructions, setInstructions] = useState('');
+  const [savingInstructions, setSavingInstructions] = useState(false);
+  const [instructionsError, setInstructionsError] = useState(null);
+  const [instructionsSaved, setInstructionsSaved] = useState(false);
 
   const [searchParams, setSearchParams] = useSearchParams();
   const [calendarStatus, setCalendarStatus] = useState({ connected: false, google_email: null });
@@ -90,7 +98,9 @@ export const Settings = () => {
     let isMounted = true;
     api.get('/users/me')
       .then(({ data }) => {
-        if (isMounted) setBotDisplayName(data.bot_display_name);
+        if (!isMounted) return;
+        setBotDisplayName(data.bot_display_name);
+        setInstructions(data.ask_ai_instructions ?? '');
       })
       .catch((err) => {
         console.error('Failed to load settings', err);
@@ -117,6 +127,25 @@ export const Settings = () => {
       setError(err.response?.data?.detail || 'Failed to save. Please try again.');
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Saved on its own: PATCH /users/me changes only the fields it is sent.
+  const handleInstructionsSubmit = async (e) => {
+    e.preventDefault();
+    setSavingInstructions(true);
+    setInstructionsError(null);
+    setInstructionsSaved(false);
+    try {
+      const { data } = await api.patch('/users/me', { ask_ai_instructions: instructions });
+      setInstructions(data.ask_ai_instructions ?? '');
+      setInstructionsSaved(true);
+      setTimeout(() => setInstructionsSaved(false), 2500);
+    } catch (err) {
+      console.error('Failed to save Ask AI instructions', err);
+      setInstructionsError(err.response?.data?.detail || 'Failed to save. Please try again.');
+    } finally {
+      setSavingInstructions(false);
     }
   };
 
@@ -189,6 +218,62 @@ export const Settings = () => {
                     Save changes
                   </button>
                   {saved && (
+                    <span className="flex items-center gap-1.5 text-sm font-medium text-status-done-fg">
+                      <Check className="w-4 h-4" /> Saved
+                    </span>
+                  )}
+                </div>
+              </form>
+            )}
+          </div>
+
+          {/* Ask AI */}
+          <div className="bg-surface border border-border-strong rounded-2xl p-6 flex flex-col gap-5">
+            <div className="flex items-center gap-3">
+              <div className="bg-brand-blue/10 p-2.5 rounded-xl">
+                <Sparkles className="w-5 h-5 text-brand-blue" />
+              </div>
+              <div>
+                <h2 className="text-[15px] font-bold text-brand-dark">Ask AI custom instructions</h2>
+                <p className="text-xs text-muted">
+                  What Ask AI should know about you and how you like answers - your role, your team, a preferred format.
+                </p>
+              </div>
+            </div>
+
+            {loading ? (
+              <div className="flex justify-center py-6">
+                <Loader2 className="w-5 h-5 animate-spin text-brand-blue" />
+              </div>
+            ) : (
+              <form onSubmit={handleInstructionsSubmit} className="flex flex-col gap-4">
+                <div>
+                  <textarea
+                    rows={5}
+                    maxLength={ASK_AI_INSTRUCTIONS_MAX}
+                    value={instructions}
+                    onChange={(e) => setInstructions(e.target.value)}
+                    placeholder="e.g. I lead the platform team. Keep answers short and list action items first."
+                    className="w-full px-4 py-3 bg-surface border border-border rounded-xl text-sm text-brand-dark placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-brand-blue/20 focus:border-brand-blue transition-all resize-y"
+                  />
+                  <div className="mt-1 flex justify-between gap-3 text-xs text-muted">
+                    <span>Used for tone and context. Answers still come only from your meetings.</span>
+                    <span className="flex-none tabular-nums">{instructions.length}/{ASK_AI_INSTRUCTIONS_MAX}</span>
+                  </div>
+                </div>
+
+                {instructionsError && <p className="text-sm text-red-600 dark:text-red-400">{instructionsError}</p>}
+
+                <div className="flex items-center gap-3">
+                  <button
+                    type="submit"
+                    disabled={savingInstructions}
+                    className="flex items-center px-4 py-2.5 bg-brand-blue text-white font-medium text-sm rounded-xl hover:opacity-90 disabled:opacity-50 transition-opacity"
+                  >
+                    {savingInstructions ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                    Save instructions
+                  </button>
+                  {instructionsSaved && (
                     <span className="flex items-center gap-1.5 text-sm font-medium text-status-done-fg">
                       <Check className="w-4 h-4" /> Saved
                     </span>

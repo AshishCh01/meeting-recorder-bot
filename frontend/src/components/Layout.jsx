@@ -19,18 +19,22 @@ export const Layout = ({ children }) => {
   const navigation = [
     { name: 'Meetings', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Upcoming', href: '/upcoming', icon: CalendarClock },
+    { name: 'Ask AI', href: '/ask', icon: Sparkles },
     { name: 'Settings', href: '/settings', icon: Settings },
   ];
 
-  // "Meetings", "Upcoming" and "Settings" have real pages - "Ask AI" is
-  // still shown as a muted placeholder (not a Link) so the mobile nav
-  // matches the design reference without linking anywhere that 404s.
+  // Every item has a real page now. `active: false` still renders a muted,
+  // unlinked placeholder, for an item added to match the design reference
+  // before its page exists.
   const mobileNavItems = [
     { name: 'Meetings', href: '/dashboard', icon: LayoutDashboard, active: true },
     { name: 'Upcoming', href: '/upcoming', icon: CalendarClock, active: true },
-    { name: 'Ask AI', icon: Sparkles, active: false },
+    { name: 'Ask AI', href: '/ask', icon: Sparkles, active: true },
     { name: 'Settings', href: '/settings', icon: Settings, active: true },
   ];
+
+  // A section's own sub-pages count as the section: /ask/<id> is Ask AI.
+  const isCurrent = (href) => location.pathname === href || location.pathname.startsWith(`${href}/`);
 
   return (
     <div className="min-h-screen bg-page flex">
@@ -61,7 +65,7 @@ export const Layout = ({ children }) => {
 
           <nav className="mt-5 flex-1 px-4 space-y-1">
             {navigation.map((item) => {
-              const isActive = location.pathname === item.href;
+              const isActive = isCurrent(item.href);
               return (
                 <Link
                   key={item.name}
@@ -128,7 +132,7 @@ export const Layout = ({ children }) => {
       {/* Mobile bottom nav */}
       <div className="lg:hidden fixed bottom-0 w-full h-(--mobile-nav-h) bg-surface border-t border-line z-50 grid grid-cols-4 px-2 pt-2 pb-[env(safe-area-inset-bottom,0.5rem)]">
         {mobileNavItems.map((item) => {
-          const isActive = item.active && location.pathname === item.href;
+          const isActive = item.active && isCurrent(item.href);
           const content = (
             <>
               <item.icon className={`h-5 w-5 ${isActive ? 'text-brand-blue' : 'text-faint'}`} />
