@@ -17,7 +17,7 @@ from google import genai
 from google.genai import types, errors
 
 from app.config import settings
-from app.rag.chat_fallback_groq import gemini_history_to_openai, run_groq_chat_stream
+from app.rag.chat_fallback_groq import GROQ_INSTRUCTION_SUFFIX, gemini_history_to_openai, run_groq_chat_stream
 from app.services.cost_tracker import gemini_generation_cost, groq_generation_cost, record_usage
 from app.services.gemini_errors import is_transient
 
@@ -50,7 +50,7 @@ async def run_agent_stream(
     session_lock: asyncio.Lock,
     question: str,
     instruction: str,
-    gemini_tools: list[Callable],
+    gemini_tools: list,
     gemini_tool_dispatch: dict[str, Callable[[dict], Any]],
     groq_tool_map: dict[str, Callable[[dict], Any]],
     groq_tool_schemas: list[dict],
@@ -64,6 +64,7 @@ async def run_agent_stream(
     max_tool_iterations: int,
     logger: logging.Logger,
     log_prefix: str = "[chat]",
+    groq_instruction_suffix: str = GROQ_INSTRUCTION_SUFFIX,
 ) -> AsyncGenerator[dict, None]:
     """
     Runs the agent loop and yields events as they happen, so the caller can
@@ -90,7 +91,11 @@ async def run_agent_stream(
     blocking (SQLAlchemy) and are run through asyncio.to_thread.
     `gemini_tool_dispatch` maps each Gemini function name (the callable's
     __name__) to a callable taking the decoded argument dict; `groq_tool_map`
-    does the same for the bare names in `groq_tool_schemas`.
+    does the same for the bare names in `groq_tool_schemas`. `gemini_tools`
+    is whatever GenerateContentConfig(tools=...) takes: Python callables
+    (their names and docstrings become the declarations) or types.Tool
+    objects. `groq_instruction_suffix` is added to the instruction on the
+    Groq path only; it names tools, so it must match `groq_tool_schemas`.
 
     `logger` is the caller's, so each chat's lines keep their own logger
     name. Callers should wrap this generator in contextlib.aclosing, so a
@@ -331,6 +336,7 @@ async def run_agent_stream(
                                     tool_map=groq_tool_map,
                                     max_tool_iterations=max_tool_iterations,
                                     tool_schemas=groq_tool_schemas,
+                                    instruction_suffix=groq_instruction_suffix,
                                 ):
                                     if event["type"] == "final":
                                         groq_final = event

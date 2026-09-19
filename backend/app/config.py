@@ -58,6 +58,12 @@ class Settings(BaseSettings):
     ask_ai_search_candidate_meetings: int = 200
     ask_ai_search_top_k: int = 10
     ask_ai_topic_top_k: int = 10
+    # Ask AI agent (app/ask_ai/agent/). More tool iterations than the
+    # per-meeting chat's 6: a date question is typically a list_meetings call
+    # followed by a details call per meeting it picks out. The history limit
+    # plays the same role as chat_service.HISTORY_TURN_LIMIT.
+    ask_ai_max_tool_iterations: int = 8
+    ask_ai_history_turn_limit: int = 20
 
     # Fallback STT provider - used if Gemini keeps failing (429/503)
     sarvam_api_key: str = ""

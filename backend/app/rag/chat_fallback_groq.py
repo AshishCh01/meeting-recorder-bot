@@ -214,7 +214,9 @@ async def _stream_one_turn(
     a half-finished search.
 
     `tool_schemas` is the tool list offered to the model; the per-meeting
-    GROQ_TOOLS unless the caller runs a different chat.
+    GROQ_TOOLS unless the caller runs a different chat. Empty means a plain
+    completion: no `tools` or `tool_choice` is sent at all, since the API
+    rejects an empty tool list.
 
     Retries transient failures, but only before any text has been yielded -
     once a delta has gone out to the caller it has already reached the user's
@@ -230,12 +232,13 @@ async def _stream_one_turn(
         payload = {
             "model": settings.groq_chat_model,
             "messages": messages,
-            "tools": tool_schemas,
-            "tool_choice": "none" if force_answer else "auto",
             "temperature": 0.0,
             "max_tokens": settings.groq_max_output_tokens,
             "stream": True,
         }
+        if tool_schemas:
+            payload["tools"] = tool_schemas
+            payload["tool_choice"] = "none" if force_answer else "auto"
 
         try:
             async with client.stream(
@@ -311,6 +314,7 @@ async def run_groq_chat_stream(
     tool_map: dict,
     max_tool_iterations: int = 6,
     tool_schemas: list[dict] = GROQ_TOOLS,
+    instruction_suffix: str = GROQ_INSTRUCTION_SUFFIX,
 ) -> AsyncGenerator[dict, None]:
     """
     Runs the same agentic tool-calling loop as chat_service.ask_question_stream,
@@ -327,11 +331,14 @@ async def run_groq_chat_stream(
     request the process is serving, not just this one. `tool_schemas` are
     the declarations sent with every turn and must describe the same tools
     as `tool_map`; they default to the per-meeting GROQ_TOOLS.
+    `instruction_suffix` is appended to `instruction` for this provider only
+    and names tools, so it has to match `tool_schemas` too; it defaults to
+    the per-meeting GROQ_INSTRUCTION_SUFFIX.
 
     Raises on an unrecoverable Groq failure; the caller is expected to fall
     back to its canned message.
     """
-    convo: list[dict] = [{"role": "system", "content": instruction + GROQ_INSTRUCTION_SUFFIX}] + list(messages)
+    convo: list[dict] = [{"role": "system", "content": instruction + instruction_suffix}] + list(messages)
     tools_used: list[str] = []
     answer_parts: list[str] = []
     prompt_tokens = 0
@@ -424,3 +431,23 @@ async def run_groq_chat_stream(
         "output_tokens": output_tokens,
         "exhausted": True,
     }
+
+
+async def complete_text(messages: list[dict]) -> dict:
+    """
+    One plain Groq completion - no tools - for short side tasks such as naming
+    an Ask AI chat. Returns {"text", "prompt_tokens", "output_tokens"}. Same
+    retries as a chat turn, and raises once they are spent, like
+    run_groq_chat_stream.
+    """
+    timeout = httpx.Timeout(settings.groq_timeout_seconds, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        async for kind, value in _stream_one_turn(client, messages, tool_schemas=[]):
+            if kind == "final":
+                usage = value["usage"] or {}
+                return {
+                    "text": value["text"],
+                    "prompt_tokens": usage.get("prompt_tokens", 0) or 0,
+                    "output_tokens": usage.get("completion_tokens", 0) or 0,
+                }
+    raise RuntimeError("Groq ended the turn without a final event")
