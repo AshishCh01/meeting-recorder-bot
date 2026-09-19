@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError, TimeoutError as PoolTimeoutError
 from app.config import settings
-from app.api import calendar, chat, meetings, users, webhooks
+from app.api import ask, calendar, chat, meetings, users, webhooks
 from app.db.database import SessionLocal
 from app.services.watchdog import sweep_stale_meetings
 from app.services.scheduler import trigger_due_meetings
@@ -174,6 +174,7 @@ app.include_router(webhooks.router)
 app.include_router(chat.router)
 app.include_router(users.router)
 app.include_router(calendar.router)
+app.include_router(ask.router)
 
 
 @app.get("/health")

@@ -4,6 +4,9 @@ database, with the dates, summaries and vectors a test needs.
 """
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
+
+import pytest
 
 from app.db.models import Meeting, MeetingChunk, User
 
@@ -137,3 +140,33 @@ class FakeGeminiTitle:
 
         monkeypatch.setattr(agent_runner.client.aio.models, "generate_content", self.generate_content)
         return self
+
+
+@pytest.fixture
+def api(monkeypatch, db, user):
+    """
+    A TestClient with two users: `me` (the conftest user) and `other`. Only
+    the JWT check (auth._identify) is stubbed - the rest of auth runs for
+    real. Import this fixture into a test module to use it.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.api import auth
+    from app.main import app
+
+    me_id, me_email = str(user.id), user.email
+    other_id = str(add_user(db, "other@example.com"))
+    identities = {"me": (me_id, me_email), "other": (other_id, "other@example.com")}
+    monkeypatch.setattr(auth, "_identify", lambda token: identities[token])
+    auth.user_row_cache.clear()
+    # The fixtures' own session must not sit on a pooled connection that a
+    # test measuring the pool would count.
+    db.close()
+    yield SimpleNamespace(
+        client=TestClient(app),
+        me={"Authorization": "Bearer me"},
+        other={"Authorization": "Bearer other"},
+        user_id=me_id,
+        other_id=other_id,
+    )
+    auth.user_row_cache.clear()

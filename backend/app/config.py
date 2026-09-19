@@ -293,6 +293,13 @@ class Settings(BaseSettings):
     chat_rate_limit_requests: int = 30
     chat_rate_limit_window_seconds: int = 300
 
+    # Ask AI: its own budget, and a tighter one than chat's - a question
+    # across every meeting typically makes several tool calls (a list, then
+    # details or a search) and replays a longer prompt each time, so it costs
+    # a few chat turns. 20 per 10 minutes is still more than a person asks.
+    ask_ai_rate_limit_requests: int = 20
+    ask_ai_rate_limit_window_seconds: int = 600
+
     # Meeting creation: cheaper per call than chat, but each one dispatches a
     # recorder - a headful Chrome plus ffmpeg at roughly 2GB - so the resource
     # it protects is the bot pool, not an API bill.

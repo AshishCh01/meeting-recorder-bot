@@ -193,3 +193,107 @@ def test_delete_all_deletes_only_the_users_chats_and_returns_their_ids(db, user)
     assert count("ask_ai_conversations", user_id=user.id) == 0
     assert history.get_owned_conversation(theirs.id, other) is not None
     assert count("ask_ai_messages", user_id=uuid.UUID(other)) == 2
+
+
+# ---------------------------------------------------------------------------
+# The HTTP routes (Phase 5)
+# ---------------------------------------------------------------------------
+
+import asyncio  # noqa: E402
+
+import pytest  # noqa: E402
+
+from app.ask_ai.agent import service  # noqa: E402
+
+from tests.ask_ai_fixtures import api  # noqa: E402,F401 - fixture
+
+
+def test_new_chat_returns_the_same_empty_chat_until_it_is_used(api):
+    first = api.client.post("/ask/conversations", headers=api.me).json()
+    again = api.client.post("/ask/conversations", headers=api.me).json()
+
+    assert first == again
+    assert first["title"] == "New chat" and first["last_message_at"] is None
+
+    history.save_exchange(first["id"], api.user_id, "Q", "A", [])
+    fresh = api.client.post("/ask/conversations", headers=api.me).json()
+    assert fresh["id"] != first["id"]
+
+
+def test_the_list_holds_used_chats_only_newest_first(api):
+    older = used_chat(api.user_id, ("Q1", "A1"))
+    newer = used_chat(api.user_id, ("Q2", "A2"))
+    api.client.post("/ask/conversations", headers=api.me)  # an empty chat, not listed
+
+    listed = api.client.get("/ask/conversations", headers=api.me).json()
+
+    assert [c["id"] for c in listed] == [str(newer.id), str(older.id)]
+    assert all(c["last_message_at"] for c in listed)
+    assert api.client.get("/ask/conversations?limit=1", headers=api.me).json()[0]["id"] == str(newer.id)
+    page_two = api.client.get(
+        "/ask/conversations", params={"before": listed[0]["last_message_at"]}, headers=api.me,
+    ).json()
+    assert [c["id"] for c in page_two] == [str(older.id)]
+
+
+def test_a_chats_messages_come_back_oldest_first(api):
+    new = api.client.post("/ask/conversations", headers=api.me).json()
+    assert api.client.get(f"/ask/conversations/{new['id']}/messages", headers=api.me).json() == {
+        "id": new["id"], "title": "New chat", "messages": [],
+    }
+
+    history.save_exchange(new["id"], api.user_id, "When is the launch?", "On the 14th.", ["list_meetings"])
+    body = api.client.get(f"/ask/conversations/{new['id']}/messages", headers=api.me).json()
+
+    assert [(m["role"], m["content"], m["tools_used"]) for m in body["messages"]] == [
+        ("user", "When is the launch?", []),
+        ("assistant", "On the 14th.", ["list_meetings"]),
+    ]
+    assert all(m["created_at"] for m in body["messages"])
+
+
+def test_rename(api):
+    chat = used_chat(api.user_id, ("Q", "A"))
+
+    response = api.client.patch(f"/ask/conversations/{chat.id}", json={"title": "  Launch   plans "}, headers=api.me)
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "Launch plans"
+    assert history.get_owned_conversation(chat.id, api.user_id).title == "Launch plans"
+
+
+@pytest.mark.parametrize("title", ["", "   ", "x" * 101])
+def test_a_blank_or_overlong_title_is_rejected(api, title):
+    chat = used_chat(api.user_id, ("Q", "A"))
+
+    assert api.client.patch(f"/ask/conversations/{chat.id}", json={"title": title}, headers=api.me).status_code == 422
+
+
+def test_delete_removes_the_messages_and_the_cached_history(api):
+    chat = used_chat(api.user_id, ("Q", "A"))
+    key = service.session_key(api.user_id, chat.id)
+    asyncio.run(service._session_cache.get_session(*service._session_parts(api.user_id, chat.id)))
+    assert key in service._session_cache.cache
+
+    response = api.client.delete(f"/ask/conversations/{chat.id}", headers=api.me)
+
+    assert response.json() == {"status": "deleted"}
+    assert count("ask_ai_messages", conversation_id=chat.id) == 0
+    assert key not in service._session_cache.cache, "a deleted chat's history could reach a later answer"
+    assert api.client.delete(f"/ask/conversations/{chat.id}", headers=api.me).status_code == 404
+
+
+def test_delete_all_evicts_every_cached_history(api):
+    chats = [used_chat(api.user_id, ("Q", "A")) for _ in range(2)]
+    for chat in chats:
+        asyncio.run(service._session_cache.get_session(*service._session_parts(api.user_id, chat.id)))
+
+    assert api.client.delete("/ask/conversations", headers=api.me).json() == {"status": "deleted", "count": 2}
+    assert not any(service.session_key(api.user_id, c.id) in service._session_cache.cache for c in chats)
+
+
+@pytest.mark.parametrize("method, path", [
+    ("post", "/ask/conversations"), ("get", "/ask/conversations"), ("delete", "/ask/conversations"),
+])
+def test_every_route_needs_a_login(api, method, path):
+    assert getattr(api.client, method)(path).status_code in (401, 403)

@@ -124,6 +124,14 @@ CHAT = Limit(
     message="You've sent a lot of questions in a short time. Please try again in {wait}.",
 )
 
+ASK_AI = Limit(
+    # Separate from CHAT, and tighter: see settings.ask_ai_rate_limit_requests.
+    scope="ask-ai",
+    requests=lambda: settings.ask_ai_rate_limit_requests,
+    window_seconds=lambda: settings.ask_ai_rate_limit_window_seconds,
+    message="You've asked a lot of questions in a short time. Please try again in {wait}.",
+)
+
 MEETING_CREATE = Limit(
     scope="meeting-create",
     requests=lambda: settings.meeting_create_rate_limit_requests,
