@@ -11,6 +11,7 @@ import { Dashboard } from './pages/Dashboard';
 import { Upcoming } from './pages/Upcoming';
 import { MeetingView } from './pages/MeetingView';
 import { Settings } from './pages/Settings';
+import { AskAI } from './pages/AskAI';
 
 function App() {
   return (
@@ -63,6 +64,18 @@ function App() {
               element={
                 <ProtectedRoute>
                   <MeetingView />
+                </ProtectedRoute>
+              }
+            />
+            {/* /ask opens (or creates) the user's empty chat and moves to its
+                own URL. One route with an optional segment, so that move - and
+                switching between chats - keeps the page, and its chat list,
+                mounted instead of reloading it. */}
+            <Route
+              path="/ask/:conversationId?"
+              element={
+                <ProtectedRoute>
+                  <AskAI />
                 </ProtectedRoute>
               }
             />
