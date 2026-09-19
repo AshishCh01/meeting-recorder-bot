@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import BigInteger, Boolean, Column, Float, String, Integer, DateTime, ForeignKey, Index, Numeric, Text
+from sqlalchemy import BigInteger, Boolean, Column, Float, String, Integer, DateTime, ForeignKey, Index, Numeric, Text, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -12,6 +12,9 @@ class User(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email = Column(String, unique=True, index=True, nullable=False)
     bot_display_name = Column(String, nullable=False, server_default="MeetIQ Notetaker")
+    # The user's own instructions for Ask AI, added to its prompt. NULL when
+    # none are set. At most 1,000 characters, enforced by the API.
+    ask_ai_instructions = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     meetings = relationship("Meeting", back_populates="user")
@@ -34,6 +37,13 @@ class Meeting(Base):
     # meeting - Gemini and Jina vectors live in different, incompatible
     # spaces, so mixing them silently returns wrong results, not an error.
     embedding_provider = Column(String, nullable=True)
+    # One vector for the whole meeting (title, summary and key points), so
+    # Ask AI can rank meetings by topic before searching their chunks.
+    # Written in the same embedding call as the chunks, so
+    # embedding_provider above describes it too. NULL until the meeting is
+    # indexed, or until the Ask AI backfill reaches a meeting indexed
+    # before this column existed.
+    summary_embedding = Column(Vector(768), nullable=True)
     # When set, this meeting was scheduled for a future join (via the
     # calendar "record this event" flow, or in principle any future
     # date) rather than joined immediately - app/services/scheduler.py
@@ -66,6 +76,14 @@ class Meeting(Base):
 
     user = relationship("User", back_populates="meetings")
     chunks = relationship("MeetingChunk", back_populates="meeting", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        # Ask AI's date filters. A meeting's date is
+        # coalesce(scheduled_at, created_at), and Postgres only uses this
+        # index for a query that repeats that expression exactly - so build
+        # it with ask_ai/tools/dates.py, never by hand.
+        Index("ix_meetings_user_meeting_date", "user_id", text("coalesce(scheduled_at, created_at)")),
+    )
 
 class CalendarConnection(Base):
     __tablename__ = "calendar_connections"
@@ -181,4 +199,71 @@ class AiUsageEvent(Base):
     __table_args__ = (
         Index("ix_ai_usage_events_user_created", "user_id", "created_at"),
         Index("ix_ai_usage_events_meeting", "meeting_id"),
+    )
+
+
+class AskAiConversation(Base):
+    """
+    One Ask AI chat - a conversation across all of a user's meetings, as
+    opposed to ChatMessage's one thread per meeting.
+
+    Created by the backend as soon as the user clicks "New chat", so the chat
+    has its URL before anything is asked. last_message_at is NULL until the
+    first exchange is saved, and a user has at most one such empty chat (the
+    partial unique index below): "New chat" reuses it rather than making
+    another, and the sidebar list leaves empty chats out.
+
+    No relationship() to User or to AskAiMessage, for the same reason
+    ChatMessage has none: deletes rely on ON DELETE CASCADE in the database
+    rather than on SQLAlchemy loading every row to clear it.
+    """
+    __tablename__ = "ask_ai_conversations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    # "New chat" until the first question is titled.
+    title = Column(String, nullable=False, server_default="New chat")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # NULL means the chat is empty. Set when an exchange is saved.
+    last_message_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        # The sidebar list: one user's chats, most recently used first.
+        Index("ix_ask_ai_conversations_user_last_message", "user_id", text("last_message_at DESC")),
+        # At most one empty chat per user, even with two tabs clicking "New
+        # chat" at the same moment: the second insert fails instead of
+        # making a duplicate.
+        Index(
+            "ux_ask_ai_conversations_one_empty_per_user",
+            "user_id",
+            unique=True,
+            postgresql_where=text("last_message_at IS NULL"),
+        ),
+    )
+
+
+class AskAiMessage(Base):
+    """
+    One turn of an Ask AI chat. Like ChatMessage, only the text turns are
+    stored - tool calls and their results are re-run rather than replayed.
+    """
+    __tablename__ = "ask_ai_messages"
+
+    # BIGSERIAL for the same reason as ChatMessage.id: the thread is read back
+    # in insertion order, and created_at cannot provide it.
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    conversation_id = Column(UUID(as_uuid=True), ForeignKey("ask_ai_conversations.id", ondelete="CASCADE"), nullable=False)
+    # Redundant with the conversation's owner, so ownership checks need no
+    # join.
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    # "user" or "assistant".
+    role = Column(String, nullable=False)
+    content = Column(Text, nullable=False)
+    # Which Ask AI tools produced this answer. NULL on user turns.
+    tools_used = Column(ARRAY(String), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        # The only access path: one conversation's thread, in order.
+        Index("ix_ask_ai_messages_conversation", "conversation_id", "id"),
     )

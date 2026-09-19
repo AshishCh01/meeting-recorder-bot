@@ -82,7 +82,7 @@ CONFTEST_ENV_KEYS = frozenset({
 })
 
 from app.db import database  # noqa: E402
-from app.db.models import AiUsageEvent, ChatMessage, Meeting, MeetingChunk, User  # noqa: E402
+from app.db.models import AiUsageEvent, AskAiConversation, AskAiMessage, ChatMessage, Meeting, MeetingChunk, User  # noqa: E402
 
 
 def _guard_engine() -> None:
@@ -115,7 +115,13 @@ def _expected_url() -> str:
 # ai_usage_events is here for B4: the cost tracker writes a row on every AI
 # call, and those writes are swallowed on failure - so without the table every
 # test would pass while recording nothing.
-_TABLES = [User.__table__, Meeting.__table__, MeetingChunk.__table__, ChatMessage.__table__, AiUsageEvent.__table__]
+# ask_ai_conversations and ask_ai_messages are here for Ask AI, whose
+# one-empty-chat rule is a partial unique index - only a real table can
+# enforce it.
+_TABLES = [
+    User.__table__, Meeting.__table__, MeetingChunk.__table__, ChatMessage.__table__, AiUsageEvent.__table__,
+    AskAiConversation.__table__, AskAiMessage.__table__,
+]
 
 
 @pytest.fixture(scope="session")
@@ -154,7 +160,7 @@ def clean_tables():
     yield
     with database.engine.begin() as conn:
         from sqlalchemy import text
-        conn.execute(text("TRUNCATE ai_usage_events, chat_messages, meeting_chunks, meetings, users RESTART IDENTITY CASCADE"))
+        conn.execute(text("TRUNCATE ask_ai_messages, ask_ai_conversations, ai_usage_events, chat_messages, meeting_chunks, meetings, users RESTART IDENTITY CASCADE"))
 
 
 @pytest.fixture(autouse=True)
