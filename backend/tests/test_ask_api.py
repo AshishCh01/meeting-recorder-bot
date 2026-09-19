@@ -241,3 +241,63 @@ def test_instructions_are_per_user(api):
     api.client.patch("/users/me", json={"ask_ai_instructions": "Mine."}, headers=api.me)
 
     assert api.client.get("/users/me", headers=api.other).json()["ask_ai_instructions"] is None
+
+
+# ---------------------------------------------------------------------------
+# Final pass (Phase 7)
+# ---------------------------------------------------------------------------
+
+@needs_redis
+@pytest.mark.parametrize("cache", ["miss", "hit"])
+def test_no_pooled_connection_is_held_during_the_limiters_redis_call(api, chat_id, spy_stream, limiter, monkeypatch, cache):
+    """
+    The per-meeting chat's Gate 8 (test_rate_limit.py), for the Ask AI route:
+    the limiter runs before the route body, so the only connection it could
+    hold is auth's. The cache miss is the variant with teeth - auth really
+    queries then.
+    """
+    from app.api import auth
+
+    if cache == "hit":
+        auth.user_row_cache.remember(api.user_id)
+    else:
+        auth.user_row_cache.clear()
+
+    seen = []
+    real = rate_limit._client_and_script
+
+    def watching():
+        client, script = real()
+
+        async def wrapper(keys, args, client=client):
+            seen.append(engine.pool.checkedout())
+            return await script(keys=keys, args=args, client=client)
+
+        return client, wrapper
+
+    monkeypatch.setattr(rate_limit, "_client_and_script", watching)
+    assert engine.pool.checkedout() == 0, "a fixture leaked a connection - the measurement would be off"
+
+    response = stream(api, chat_id)
+
+    assert response.status_code == 200
+    assert auth.user_row_cache.known(api.user_id)
+    assert seen == [0], f"{seen} connection(s) checked out while the limiter talked to Redis"
+
+
+def test_concurrent_new_chat_requests_share_one_empty_chat(api):
+    import threading
+
+    ids, barrier = [], threading.Barrier(6)
+
+    def click():
+        barrier.wait()
+        ids.append(api.client.post("/ask/conversations", headers=api.me).json()["id"])
+
+    threads = [threading.Thread(target=click) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(ids) == 6 and len(set(ids)) == 1
