@@ -2,30 +2,60 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-@theme {
-  --color-brand-blue: #0B4FB4;
-  --color-brand-blue-light: #3FC9D6;
-  --color-brand-dark: #0F172A;
+/* Design tokens (phase 0 of the redesign). Values come from the prototype's
+   `:root` / `.dark` blocks in prototype/app/app.css; the NAMES are the app's
+   own --color-* names, because Tailwind v4 generates every utility from them -
+   --color-surface is what makes bg-surface, text-surface and border-surface
+   exist. Porting the prototype's plain names (--surface, --line, --text)
+   instead would break every utility class in the app at once.
 
-  --color-body: #4A5763;
-  --color-muted: #7C8A97;
-  --color-faint: #9BA7B3;
-  --color-line: #EDF1F5;
-  --color-border: #D9E1E9;
-  --color-border-strong: #E4E9EF;
-  --color-sidebar: #FAFCFD;
+   Several tokens are rgba rather than hex, so a surface can sit over any
+   background and still read as one palette. The cost is that Tailwind's
+   slash-opacity modifiers compound alpha: bg-tint-2/50 is not "half of
+   tint-2", it is half of an already-transparent colour. Use a different token
+   rather than an opacity modifier on any of these. */
+
+/* `static` so every token is emitted whether or not a utility happens to use
+   it yet. Without it Tailwind tree-shakes the unused ones out of :root while
+   the .dark block below - plain CSS, not scanned - keeps them, so a raw
+   var(--color-tint) would resolve in dark and be empty in light. Later phases
+   are the ones that start using these. */
+@theme static {
+  --color-brand-blue: #1668D6;
+  --color-brand-blue-light: #0E9CBC;
+  --color-brand-dark: #0B1420;
+
+  --color-body: #45566A;
+  --color-muted: #6C7D91;
+  --color-faint: #8C9AAB;
+  --color-line: rgba(13, 24, 40, 0.10);
+  --color-border: rgba(13, 24, 40, 0.17);
+  --color-border-strong: rgba(13, 24, 40, 0.10);
+  --color-sidebar: #F3F7FC;
   --color-surface: #FFFFFF;
-  --color-surface-hover: #FFFFFF;
-  --color-page: #F8FAFC;
+  --color-surface-hover: #F7F9FC;
+  --color-page: #FBFCFE;
 
-  --color-status-done-bg: #EAF4FD;
-  --color-status-done-fg: #0B4FB4;
-  --color-status-processing-bg: #FDF3E3;
-  --color-status-processing-fg: #8A5A00;
-  --color-status-failed-bg: #FDECEC;
-  --color-status-failed-fg: #A32B2B;
-  --color-status-muted-bg: #F2F5F8;
-  --color-status-muted-fg: #5B6875;
+  /* Neutral washes for hover, zebra rows and inset panels. Deliberately
+     transparent so one token works on page, sidebar and surface alike. */
+  --color-tint: rgba(13, 24, 40, 0.028);
+  --color-tint-2: rgba(13, 24, 40, 0.05);
+  --color-tint-3: rgba(13, 24, 40, 0.09);
+
+  /* The accent trio: a wash, a hairline and an ink that stays legible on the
+     wash. Used for active nav, selected rows and links. */
+  --color-accent-soft: rgba(22, 104, 214, 0.10);
+  --color-accent-line: rgba(22, 104, 214, 0.22);
+  --color-accent-ink: #1560C4;
+
+  --color-status-done-bg: rgba(22, 104, 214, 0.10);
+  --color-status-done-fg: #1560C4;
+  --color-status-processing-bg: rgba(191, 123, 10, 0.12);
+  --color-status-processing-fg: #9A6508;
+  --color-status-failed-bg: rgba(199, 58, 58, 0.10);
+  --color-status-failed-fg: #B4372F;
+  --color-status-muted-bg: rgba(13, 24, 40, 0.05);
+  --color-status-muted-fg: #45566A;
 
   --font-sans: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
@@ -41,39 +71,63 @@
   --mobile-nav-h: calc(3.875rem + env(safe-area-inset-bottom, 0.5rem));
 }
 
-/* Dark mode: same token names, inverted values (screen 06 of the design
-   reference). Utilities like bg-sidebar/text-body/border-line read these
-   custom properties, so overriding them here re-themes the whole app
-   without touching component classes. */
+/* Dark mode: same token names, dark values. Utilities like
+   bg-sidebar/text-body/border-line read these custom properties, so
+   overriding them here re-themes the whole app without touching component
+   classes. The `dark` class is set by the pre-paint script in index.html from
+   localStorage, and @custom-variant above binds Tailwind's dark: utilities to
+   the same class. */
 .dark {
   color-scheme: dark;
 
-  --color-brand-dark: #F2F5F8;
-  --color-body: #A9B5C1;
-  --color-muted: #7E8B98;
-  --color-faint: #6F7C89;
-  --color-line: #232E3A;
-  --color-border: #2C3845;
-  --color-border-strong: #232E3A;
-  --color-sidebar: #131C25;
-  --color-surface: #141D26;
-  --color-surface-hover: #1B2530;
-  --color-page: #0F1720;
+  --color-brand-blue: #4DA3FF;
+  --color-brand-blue-light: #6FE3F2;
+  --color-brand-dark: #E9EEF5;
 
-  --color-status-done-bg: #16324F;
-  --color-status-done-fg: #6FD3E8;
-  --color-status-processing-bg: #3A2E14;
+  --color-body: #AAB6C4;
+  --color-muted: #74828F;
+  --color-faint: #5F6B78;
+  --color-line: rgba(255, 255, 255, 0.07);
+  --color-border: rgba(255, 255, 255, 0.13);
+  --color-border-strong: rgba(255, 255, 255, 0.07);
+  --color-sidebar: #0B1018;
+  --color-surface: #10161F;
+  --color-surface-hover: #151D28;
+  --color-page: #080B11;
+
+  --color-tint: rgba(255, 255, 255, 0.025);
+  --color-tint-2: rgba(255, 255, 255, 0.05);
+  --color-tint-3: rgba(255, 255, 255, 0.09);
+
+  --color-accent-soft: rgba(77, 163, 255, 0.14);
+  --color-accent-line: rgba(77, 163, 255, 0.28);
+  --color-accent-ink: #8CC6FF;
+
+  --color-status-done-bg: rgba(77, 163, 255, 0.14);
+  --color-status-done-fg: #8CC6FF;
+  --color-status-processing-bg: rgba(228, 180, 92, 0.14);
   --color-status-processing-fg: #E4B45C;
-  --color-status-failed-bg: #3A1B1B;
+  --color-status-failed-bg: rgba(228, 140, 140, 0.13);
   --color-status-failed-fg: #E48C8C;
-  --color-status-muted-bg: #232E3A;
-  --color-status-muted-fg: #A9B5C1;
+  --color-status-muted-bg: rgba(255, 255, 255, 0.05);
+  --color-status-muted-fg: #AAB6C4;
 }
 
 @layer base {
   body {
     @apply bg-page text-body antialiased font-sans transition-colors duration-200;
   }
+}
+
+/* The logo mark's own colours. They live here rather than on the <svg> because
+   browsers do not resolve var() inside SVG presentation attributes - a
+   fill="var(--color-brand-blue)" silently renders as nothing. Going through a
+   class means the CSS cascade resolves the variable, so the mark re-themes
+   with everything else. */
+@layer components {
+  .mark-dot { fill: var(--color-brand-blue); }
+  .mark-from { stop-color: var(--color-brand-blue-light); }
+  .mark-to { stop-color: var(--color-brand-blue); }
 }
 
 /* Markdown in Ask AI answers. Tailwind's preflight strips list markers and

@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { LayoutDashboard, LogOut, PanelLeftClose, PanelLeftOpen, CalendarClock, Sparkles, Settings } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
-import meetiqLogo from '../assets/logo.png';
+import { Logo } from './Logo';
 
 export const Layout = ({ children }) => {
   const { user, signOut } = useAuth();
@@ -47,7 +47,7 @@ export const Layout = ({ children }) => {
         <div className="flex-1 flex flex-col pt-8 pb-4 overflow-y-auto">
           <div className={`flex items-center mb-8 ${isCollapsed ? 'flex-col gap-4 px-2' : 'px-6 justify-between'}`}>
             <div className="flex items-center gap-2" title="MeetIQ">
-              <img src={meetiqLogo} alt="MeetIQ" className="h-8 w-8 object-contain shrink-0" />
+              <Logo alt="MeetIQ" className="h-8 w-8 shrink-0" />
               {!isCollapsed && (
                 <span className="text-xl font-bold text-brand-dark tracking-tight">
                   Meet<span className="text-brand-blue">IQ</span>
@@ -118,7 +118,7 @@ export const Layout = ({ children }) => {
       {/* Mobile top bar (simplified) */}
       <div className="lg:hidden fixed top-0 w-full h-16 bg-surface border-b border-line z-50 flex items-center justify-between px-4">
         <div className="flex items-center space-x-2">
-          <img src={meetiqLogo} alt="MeetIQ" className="h-6 w-6 object-contain" />
+          <Logo alt="MeetIQ" className="h-6 w-6" />
           <span className="text-lg font-bold text-brand-dark tracking-tight">Meet<span className="text-brand-blue">IQ</span></span>
         </div>
         <div className="flex items-center">
