@@ -407,6 +407,9 @@ body.app {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* Explicit: overflow-y alone makes the X axis scrollable too, and in the
+     rail that produced a stray horizontal scrollbar above the account row. */
+  overflow-x: hidden;
   padding: 2px 12px 12px;
 }
 
@@ -633,32 +636,11 @@ body.rail .main {
   margin-left: var(--rail);
 }
 
-/* Tooltips for the rail. */
-body.rail .nav-item::after {
-  content: attr(data-label);
-  position: absolute;
-  left: calc(100% + 14px);
-  top: 50%;
-  transform: translateY(-50%) translateX(-4px);
-  padding: 5px 9px;
-  border-radius: 7px;
-  background: var(--elevated);
-  border: 1px solid var(--line);
-  box-shadow: var(--shadow-md);
-  color: var(--text);
-  font-size: 12.5px;
-  font-weight: 600;
-  white-space: nowrap;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.16s, transform 0.16s var(--ease);
-  z-index: 50;
-}
-
-body.rail .nav-item:hover::after {
-  opacity: 1;
-  transform: translateY(-50%) translateX(0);
-}
+/* The rail's labels come from each item's `title` and `aria-label`, set in
+   app.js. A CSS tooltip would have to sit outside the nav's scroll box,
+   which is what added the horizontal scrollbar; the native one costs
+   nothing and keeps the name available to screen readers, since the
+   visible label is display:none here. */
 
 /* ------------------------------------------------- main + topbar */
 .main {
@@ -1312,7 +1294,11 @@ body.rail .nav-item:hover::after {
   .bottom-nav {
     display: grid;
   }
-  .main {
+  /* body.rail has to be named here. A rail preference saved on a desktop
+     otherwise out-ranks a plain `.main` rule and leaves a 72px gap on the
+     phone, where the sidebar is not even displayed. */
+  .main,
+  body.rail .main {
     margin-left: 0;
     padding-bottom: var(--mobnav);
   }

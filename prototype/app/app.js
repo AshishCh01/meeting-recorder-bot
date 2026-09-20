@@ -92,8 +92,10 @@ function renderShell(active) {
       <span class="nav-label eyebrow">${g.label}</span>
       ${g.items
         .map(
+          // title and aria-label carry the name in the rail, where the
+          // visible label is hidden.
           (it) => `<a class="nav-item ${it.id === active ? 'is-active' : ''}" href="${it.href}"
-             data-label="${it.label}" ${it.id === active ? 'aria-current="page"' : ''}>
+             title="${it.label}" aria-label="${it.label}" ${it.id === active ? 'aria-current="page"' : ''}>
             ${I[it.icon]}<span>${it.label}</span>
             ${it.count ? `<span class="nav-count">${it.count}</span>` : ''}
           </a>`
