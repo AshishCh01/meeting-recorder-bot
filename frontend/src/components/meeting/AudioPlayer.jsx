@@ -16,7 +16,9 @@ const RATES = [1, 1.25, 1.5, 2];
  * the row is what you hit. The previous mobile scrubber was a bare 4px line,
  * which on a touch screen is close to untappable.
  */
-export const AudioPlayer = ({ src }) => {
+// `gutterClass` stops the bar bleeding into the Ask AI column when it is
+// open; see the note beside it in MeetingDetails.
+export const AudioPlayer = ({ src, gutterClass = '' }) => {
   const audioRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -63,7 +65,9 @@ export const AudioPlayer = ({ src }) => {
   const percent = duration > 0 ? Math.round((currentTime / duration) * 100) : 0;
 
   return (
-    <div className="sticky bottom-(--mobile-nav-h) z-15 -mx-4 mt-auto flex items-center gap-3 border-t border-line bg-surface/85 px-4 py-2.5 backdrop-blur-lg tablet:bottom-0 tablet:-mx-6 tablet:px-6 lg:-mx-8 lg:px-8">
+    <div
+      className={`sticky bottom-(--mobile-nav-h) z-15 -mx-4 mt-auto flex items-center gap-3 border-t border-line bg-surface/85 px-4 py-2.5 backdrop-blur-lg tablet:bottom-0 tablet:-mx-6 tablet:px-6 lg:-mx-8 lg:px-8 ${gutterClass}`}
+    >
       <audio
         ref={audioRef}
         src={src}
