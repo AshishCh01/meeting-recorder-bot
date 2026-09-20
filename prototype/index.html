@@ -1,0 +1,2067 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#080B11" />
+    <title>MeetIQ — Turn every meeting into knowledge</title>
+    <meta
+      name="description"
+      content="MeetIQ records your meetings and turns every conversation into searchable transcripts, clear summaries, action items, and AI-powered answers."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      /* ------------------------------------------------------------------
+         Design tokens. These are the Phase 0 values - whatever lands here
+         is what the whole app should later be re-themed with.
+         ------------------------------------------------------------------ */
+      :root {
+        /* Surfaces: near-black navy, lifted one step at a time. */
+        --bg: #080b11;
+        --bg-soft: #0b1018;
+        --surface: #10161f;
+        --surface-2: #151d28;
+
+        /* Hairlines. Borders are light-on-dark at low alpha, never solid grey. */
+        --line: rgba(255, 255, 255, 0.07);
+        --line-strong: rgba(255, 255, 255, 0.12);
+
+        /* Text */
+        --text: #e9eef5;
+        --text-soft: #aab6c4;
+        --text-muted: #74828f;
+
+        /* Accent: azure primary, cyan support, violet only in ambient glow. */
+        --azure: #4da3ff;
+        --azure-deep: #1d6fd6;
+        --cyan: #6fe3f2;
+        --violet: #8b7cf6;
+
+        --radius: 16px;
+        --radius-lg: 22px;
+        --ease: cubic-bezier(0.16, 1, 0.3, 1);
+        --maxw: 1180px;
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      html {
+        -webkit-text-size-adjust: 100%;
+        scroll-behavior: smooth;
+        /* Anchored sections clear the sticky header. */
+        scroll-padding-top: 88px;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text-soft);
+        font-family: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
+        font-size: 16px;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+        overflow-x: hidden;
+      }
+
+      h1,
+      h2,
+      h3 {
+        color: var(--text);
+        font-weight: 800;
+        letter-spacing: -0.035em;
+        line-height: 1.08;
+        margin: 0;
+        text-wrap: balance;
+      }
+
+      p {
+        margin: 0;
+        text-wrap: pretty;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      :focus-visible {
+        outline: 2px solid var(--azure);
+        outline-offset: 3px;
+        border-radius: 6px;
+      }
+
+      .wrap {
+        width: 100%;
+        max-width: var(--maxw);
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+
+      .mono {
+        font-family: 'IBM Plex Mono', ui-monospace, monospace;
+        font-size: 11.5px;
+        font-weight: 500;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+      }
+
+      /* ---------------------------------------------------------------- Nav */
+      header.nav {
+        position: sticky;
+        top: 0;
+        z-index: 60;
+        background: rgba(8, 11, 17, 0.72);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        border-bottom: 1px solid transparent;
+        transition: border-color 0.3s, background 0.3s;
+      }
+
+      header.nav.scrolled {
+        border-bottom-color: var(--line);
+      }
+
+      .nav-inner {
+        height: 68px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 800;
+        color: var(--text);
+        font-size: 17px;
+        letter-spacing: -0.02em;
+      }
+
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 30px;
+      }
+
+      .nav-links a {
+        font-size: 14.5px;
+        font-weight: 600;
+        color: var(--text-soft);
+        transition: color 0.2s;
+      }
+
+      .nav-links a:hover {
+        color: var(--text);
+      }
+
+      .nav-right {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .nav-toggle {
+        display: none;
+        width: 44px;
+        height: 44px;
+        align-items: center;
+        justify-content: center;
+        background: none;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        color: var(--text);
+        cursor: pointer;
+      }
+
+      .mobile-menu {
+        display: none;
+        border-top: 1px solid var(--line);
+        background: var(--bg-soft);
+        padding: 14px 24px 22px;
+      }
+
+      .mobile-menu.open {
+        display: block;
+      }
+
+      .mobile-menu a {
+        display: block;
+        padding: 13px 0;
+        font-size: 15px;
+        font-weight: 600;
+        color: var(--text-soft);
+        border-bottom: 1px solid var(--line);
+      }
+
+      .mobile-menu .btn {
+        margin-top: 16px;
+        width: 100%;
+      }
+
+      /* ------------------------------------------------------------ Buttons */
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        height: 46px;
+        padding: 0 20px;
+        border-radius: 12px;
+        font-size: 14.5px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+        border: 1px solid transparent;
+        cursor: pointer;
+        white-space: nowrap;
+        transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease),
+          background 0.2s, border-color 0.2s, color 0.2s;
+      }
+
+      .btn svg {
+        flex: none;
+      }
+
+      .btn-primary {
+        background: linear-gradient(180deg, #ffffff 0%, #dbe6f2 100%);
+        color: #0a0e14;
+        box-shadow: 0 1px 0 rgba(255, 255, 255, 0.5) inset,
+          0 10px 30px rgba(120, 170, 255, 0.16);
+      }
+
+      .btn-primary:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 1px 0 rgba(255, 255, 255, 0.6) inset,
+          0 14px 36px rgba(120, 170, 255, 0.28);
+      }
+
+      .btn-ghost {
+        background: rgba(255, 255, 255, 0.04);
+        border-color: var(--line-strong);
+        color: var(--text);
+      }
+
+      .btn-ghost:hover {
+        background: rgba(255, 255, 255, 0.08);
+        transform: translateY(-1px);
+      }
+
+      .btn-accent {
+        background: linear-gradient(135deg, var(--azure) 0%, var(--azure-deep) 100%);
+        color: #fff;
+        box-shadow: 0 10px 30px rgba(77, 163, 255, 0.25);
+      }
+
+      .btn-accent:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 14px 38px rgba(77, 163, 255, 0.38);
+      }
+
+      .btn-sm {
+        height: 40px;
+        padding: 0 16px;
+        font-size: 14px;
+      }
+
+      .btn-lg {
+        height: 52px;
+        padding: 0 26px;
+        font-size: 15.5px;
+      }
+
+      /* --------------------------------------------------------------- Hero */
+      .hero {
+        position: relative;
+        padding: 86px 0 0;
+        text-align: center;
+        overflow: hidden;
+      }
+
+      /* Ambient glow. Two slow-drifting blobs, nothing else in the page uses
+         violet - it exists only to keep the blue from reading as flat. */
+      .glow {
+        position: absolute;
+        border-radius: 50%;
+        filter: blur(90px);
+        pointer-events: none;
+        z-index: 0;
+      }
+
+      .glow-a {
+        width: 900px;
+        height: 560px;
+        top: -230px;
+        left: 50%;
+        margin-left: -450px;
+        background: radial-gradient(circle, rgba(77, 163, 255, 0.55), transparent 66%);
+        animation: drift 18s ease-in-out infinite alternate;
+      }
+
+      .glow-b {
+        width: 700px;
+        height: 460px;
+        top: 40px;
+        left: 50%;
+        margin-left: -140px;
+        background: radial-gradient(circle, rgba(139, 124, 246, 0.36), transparent 66%);
+        animation: drift 22s ease-in-out infinite alternate-reverse;
+      }
+
+      @keyframes drift {
+        from {
+          transform: translate3d(-30px, 0, 0) scale(1);
+        }
+        to {
+          transform: translate3d(30px, 26px, 0) scale(1.12);
+        }
+      }
+
+      .hero .wrap {
+        position: relative;
+        z-index: 1;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        padding: 7px 15px 7px 11px;
+        border: 1px solid var(--line-strong);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.035);
+        font-size: 12.5px;
+        font-weight: 600;
+        color: var(--text-soft);
+        letter-spacing: -0.005em;
+      }
+
+      .eyebrow .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--cyan);
+        box-shadow: 0 0 0 4px rgba(111, 227, 242, 0.14);
+        animation: pulse 2.6s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.35;
+        }
+      }
+
+      h1.hero-title {
+        margin: 26px auto 0;
+        max-width: 15ch;
+        font-size: clamp(2.6rem, 7.4vw, 5.1rem);
+        line-height: 1.02;
+        letter-spacing: -0.045em;
+      }
+
+      .grad {
+        background: linear-gradient(100deg, #eaf3ff 0%, #8ec6ff 46%, var(--cyan) 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+
+      .hero-sub {
+        margin: 24px auto 0;
+        max-width: 60ch;
+        font-size: clamp(1rem, 1.5vw, 1.15rem);
+        line-height: 1.62;
+        color: var(--text-soft);
+      }
+
+      .hero-cta {
+        margin-top: 34px;
+        display: flex;
+        gap: 12px;
+        justify-content: center;
+        flex-wrap: wrap;
+      }
+
+      .hero-note {
+        margin-top: 20px;
+        font-size: 13.5px;
+        color: var(--text-muted);
+      }
+
+      /* --------------------------------------------------- Product mock ---
+         A real (static) render of the meeting page, so the hero shows the
+         product instead of a placeholder rectangle. */
+      .mock-frame {
+        position: relative;
+        margin: 60px auto 0;
+        max-width: 1080px;
+        padding: 0 24px;
+      }
+
+      .mock {
+        position: relative;
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-lg);
+        background: linear-gradient(180deg, #121a24 0%, #0d131b 100%);
+        overflow: hidden;
+        box-shadow: 0 40px 90px -30px rgba(0, 0, 0, 0.9),
+          0 0 0 1px rgba(255, 255, 255, 0.03),
+          0 -1px 0 rgba(255, 255, 255, 0.06) inset;
+      }
+
+      /* Fades the bottom of the mock into the page instead of cutting it. */
+      .mock-fade {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 120px;
+        background: linear-gradient(to bottom, transparent, var(--bg));
+        pointer-events: none;
+        z-index: 2;
+      }
+
+      .mock-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.02);
+      }
+
+      .mock-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.14);
+      }
+
+      .mock-url {
+        margin-left: 10px;
+        padding: 4px 12px;
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.04);
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+
+      .mock-body {
+        display: grid;
+        grid-template-columns: 54px 1fr 250px;
+        min-height: 400px;
+        text-align: left;
+      }
+
+      .mock-rail {
+        border-right: 1px solid var(--line);
+        padding: 16px 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 20px;
+      }
+
+      .rail-icon {
+        width: 22px;
+        height: 22px;
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.07);
+      }
+
+      .rail-icon.on {
+        background: linear-gradient(135deg, var(--azure), var(--azure-deep));
+        box-shadow: 0 4px 14px rgba(77, 163, 255, 0.4);
+      }
+
+      .mock-main {
+        padding: 20px 22px;
+        min-width: 0;
+      }
+
+      .mock-crumb {
+        font-size: 12px;
+        color: var(--azure);
+        font-weight: 700;
+      }
+
+      .mock-title {
+        margin: 10px 0 0;
+        font-size: 20px;
+        font-weight: 800;
+        color: var(--text);
+        letter-spacing: -0.03em;
+        line-height: 1.2;
+      }
+
+      .mock-meta {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 10px;
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+
+      .pill {
+        padding: 3px 9px;
+        border-radius: 6px;
+        background: rgba(77, 163, 255, 0.14);
+        color: #8cc6ff;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      /* Waveform: one grey row, one accent row clipped by an animated width. */
+      .wave-box {
+        position: relative;
+        margin-top: 16px;
+        padding: 12px 14px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.02);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .play {
+        flex: none;
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, var(--azure), var(--azure-deep));
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 6px 18px rgba(77, 163, 255, 0.35);
+      }
+
+      .wave {
+        position: relative;
+        flex: 1;
+        height: 30px;
+        min-width: 0;
+      }
+
+      .wave-row {
+        position: absolute;
+        inset: 0;
+      }
+
+      .wave-row .inner {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        height: 100%;
+      }
+
+      .wave-row span {
+        flex: 1;
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.13);
+      }
+
+      /* The accent row sits on top and is revealed by animating its width;
+         its inner keeps a fixed pixel width so the bars stay aligned with
+         the track underneath instead of squeezing as the clip grows. */
+      .wave-row.lit {
+        overflow: hidden;
+        width: 0;
+        animation: scrub 9s var(--ease) infinite;
+      }
+
+      .wave-row.lit span {
+        background: linear-gradient(180deg, var(--cyan), var(--azure));
+      }
+
+      @keyframes scrub {
+        0% {
+          width: 0;
+        }
+        75% {
+          width: 100%;
+        }
+        100% {
+          width: 100%;
+          opacity: 0;
+        }
+      }
+
+      .wave-time {
+        flex: none;
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+
+      .mock-tabs {
+        display: flex;
+        gap: 18px;
+        margin-top: 18px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .mock-tabs span {
+        padding-bottom: 9px;
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--text-muted);
+      }
+
+      .mock-tabs span.on {
+        color: var(--azure);
+        box-shadow: inset 0 -2px 0 var(--azure);
+      }
+
+      .tldr {
+        margin-top: 16px;
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.02);
+      }
+
+      .tldr .mono {
+        color: var(--azure);
+        font-size: 10px;
+      }
+
+      .tldr p {
+        margin-top: 8px;
+        font-size: 13px;
+        line-height: 1.65;
+        color: var(--text-soft);
+      }
+
+      .mock-chat {
+        border-left: 1px solid var(--line);
+        padding: 18px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        background: rgba(255, 255, 255, 0.015);
+      }
+
+      .bubble {
+        padding: 10px 13px;
+        border-radius: 14px;
+        font-size: 12.5px;
+        line-height: 1.55;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--text-soft);
+      }
+
+      .bubble.me {
+        align-self: flex-end;
+        background: linear-gradient(135deg, var(--azure), var(--azure-deep));
+        border-color: transparent;
+        color: #fff;
+        font-weight: 600;
+      }
+
+      .bubble .cite {
+        color: #8cc6ff;
+        font-weight: 700;
+      }
+
+      .typing {
+        display: inline-flex;
+        gap: 4px;
+        align-items: center;
+      }
+
+      .typing i {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--azure);
+        animation: bounce 1.3s infinite;
+      }
+
+      .typing i:nth-child(2) {
+        animation-delay: 0.16s;
+      }
+
+      .typing i:nth-child(3) {
+        animation-delay: 0.32s;
+      }
+
+      @keyframes bounce {
+        0%,
+        60%,
+        100% {
+          transform: translateY(0);
+          opacity: 0.45;
+        }
+        30% {
+          transform: translateY(-4px);
+          opacity: 1;
+        }
+      }
+
+      /* ------------------------------------------------------ Works-with */
+      .strip {
+        margin-top: -40px;
+        padding: 0 0 64px;
+        position: relative;
+        z-index: 3;
+      }
+
+      .strip-inner {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        flex-wrap: wrap;
+      }
+
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 15px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.025);
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-soft);
+      }
+
+      /* -------------------------------------------------------- Sections */
+      section {
+        position: relative;
+      }
+
+      .sec {
+        padding: 96px 0;
+        border-top: 1px solid var(--line);
+      }
+
+      .sec-head {
+        max-width: 640px;
+        margin-bottom: 52px;
+      }
+
+      .sec-head h2 {
+        margin-top: 14px;
+        font-size: clamp(1.75rem, 3.4vw, 2.6rem);
+      }
+
+      .sec-head p {
+        margin-top: 16px;
+        font-size: 16.5px;
+        color: var(--text-soft);
+      }
+
+      /* ---------------------------------------------------- How it works */
+      .steps {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 20px;
+      }
+
+      .step {
+        position: relative;
+        padding: 26px 24px 28px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: linear-gradient(180deg, var(--surface) 0%, var(--bg-soft) 100%);
+        overflow: hidden;
+        transition: border-color 0.3s, transform 0.3s var(--ease);
+      }
+
+      .step:hover {
+        border-color: var(--line-strong);
+        transform: translateY(-3px);
+      }
+
+      .step-n {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        border-radius: 9px;
+        background: rgba(77, 163, 255, 0.12);
+        border: 1px solid rgba(77, 163, 255, 0.25);
+        color: #8cc6ff;
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .step h3 {
+        margin-top: 16px;
+        font-size: 18px;
+        letter-spacing: -0.02em;
+      }
+
+      .step p {
+        margin-top: 9px;
+        font-size: 14.5px;
+        color: var(--text-soft);
+      }
+
+      /* Small illustration strip at the bottom of each step card. */
+      .step-art {
+        margin-top: 20px;
+        height: 56px;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.02);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 12px;
+        overflow: hidden;
+      }
+
+      .bar {
+        height: 6px;
+        border-radius: 3px;
+        background: rgba(255, 255, 255, 0.1);
+      }
+
+      .bar.accent {
+        background: linear-gradient(90deg, var(--azure), var(--cyan));
+      }
+
+      .link-mono {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 10.5px;
+        color: var(--text-muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      /* ------------------------------------------------------ Bento grid */
+      .bento {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 20px;
+      }
+
+      .tile {
+        position: relative;
+        padding: 26px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: linear-gradient(180deg, var(--surface) 0%, var(--bg-soft) 100%);
+        overflow: hidden;
+        transition: border-color 0.3s, transform 0.3s var(--ease);
+      }
+
+      /* Cursor spotlight, the one flourish borrowed straight from Attio. */
+      .tile::before,
+      .price::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(
+          340px circle at var(--mx, 50%) var(--my, 0%),
+          rgba(77, 163, 255, 0.1),
+          transparent 62%
+        );
+        opacity: 0;
+        transition: opacity 0.35s;
+        pointer-events: none;
+      }
+
+      .tile:hover::before,
+      .price:hover::before {
+        opacity: 1;
+      }
+
+      .tile:hover {
+        border-color: var(--line-strong);
+        transform: translateY(-3px);
+      }
+
+      .tile-wide {
+        grid-column: span 2;
+      }
+
+      .tile-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 38px;
+        height: 38px;
+        border-radius: 11px;
+        background: rgba(77, 163, 255, 0.1);
+        border: 1px solid rgba(77, 163, 255, 0.2);
+        color: #8cc6ff;
+      }
+
+      .tile h3 {
+        margin-top: 18px;
+        font-size: 17.5px;
+        letter-spacing: -0.02em;
+      }
+
+      .tile p {
+        margin-top: 9px;
+        font-size: 14.5px;
+        color: var(--text-soft);
+      }
+
+      .tile-demo {
+        margin-top: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+      }
+
+      /* Short tiles get a small slice of real UI so they don't sit empty
+         next to the tall ones. */
+      .mini-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 9px 11px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.02);
+        font-size: 12.5px;
+        color: var(--text-soft);
+      }
+
+      .mini-box {
+        flex: none;
+        width: 14px;
+        height: 14px;
+        border: 1.5px solid var(--line-strong);
+        border-radius: 4px;
+      }
+
+      .mini-row .who {
+        margin-left: auto;
+        flex: none;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.06);
+        font-size: 10.5px;
+        font-weight: 700;
+        color: var(--text-muted);
+      }
+
+      .mini-row .ts {
+        flex: none;
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 10.5px;
+        color: var(--text-muted);
+      }
+
+      .mini-row .said {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .mini-row .said b {
+        color: var(--text);
+        font-weight: 700;
+      }
+
+      /* ------------------------------------------------------- Privacy */
+      .privacy {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 20px;
+      }
+
+      .promise {
+        padding: 22px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.02);
+      }
+
+      .promise h3 {
+        margin-top: 14px;
+        font-size: 15.5px;
+        letter-spacing: -0.015em;
+      }
+
+      .promise p {
+        margin-top: 7px;
+        font-size: 13.5px;
+        color: var(--text-muted);
+      }
+
+      .check {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 8px;
+        background: rgba(111, 227, 242, 0.12);
+        color: var(--cyan);
+      }
+
+      /* ------------------------------------------------------- Pricing */
+      .prices {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 20px;
+        align-items: start;
+      }
+
+      .price {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+        padding: 30px 26px 28px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        background: linear-gradient(180deg, var(--surface) 0%, var(--bg-soft) 100%);
+        overflow: hidden;
+        transition: border-color 0.3s, transform 0.3s var(--ease);
+      }
+
+      .price:hover {
+        border-color: var(--line-strong);
+        transform: translateY(-3px);
+      }
+
+      /* Pro is lifted with light and a gradient hairline, not a claim badge. */
+      .price.featured {
+        border-color: rgba(77, 163, 255, 0.4);
+        background: linear-gradient(180deg, #16202c 0%, #0c121a 100%);
+        box-shadow: 0 24px 60px -28px rgba(77, 163, 255, 0.5);
+      }
+
+      .price.featured::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 18%;
+        right: 18%;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, var(--azure), transparent);
+      }
+
+      .price-name {
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--text);
+        letter-spacing: -0.01em;
+      }
+
+      .price-tag {
+        display: flex;
+        align-items: flex-end;
+        gap: 7px;
+      }
+
+      .price-tag .amt {
+        font-size: 42px;
+        font-weight: 800;
+        color: var(--text);
+        letter-spacing: -0.045em;
+        line-height: 1;
+      }
+
+      .price-tag .per {
+        font-size: 13.5px;
+        color: var(--text-muted);
+        padding-bottom: 4px;
+      }
+
+      .price-line {
+        font-size: 13.5px;
+        color: var(--text-soft);
+        min-height: 40px;
+      }
+
+      .rule {
+        height: 1px;
+        background: var(--line);
+      }
+
+      .feats li {
+        display: flex;
+        gap: 10px;
+        align-items: flex-start;
+        font-size: 14px;
+        line-height: 1.5;
+        color: var(--text-soft);
+        padding: 6px 0;
+      }
+
+      .feats svg {
+        flex: none;
+        margin-top: 3px;
+        color: var(--azure);
+      }
+
+      .price .btn {
+        margin-top: auto;
+        width: 100%;
+      }
+
+      .price-foot {
+        margin-top: 26px;
+        text-align: center;
+        font-size: 13.5px;
+        color: var(--text-muted);
+      }
+
+      /* ----------------------------------------------------------- FAQ */
+      .faq {
+        max-width: 780px;
+        margin: 0 auto;
+      }
+
+      details {
+        border-bottom: 1px solid var(--line);
+      }
+
+      summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        padding: 22px 0;
+        cursor: pointer;
+        list-style: none;
+        font-size: 16px;
+        font-weight: 700;
+        color: var(--text);
+        letter-spacing: -0.015em;
+      }
+
+      summary::-webkit-details-marker {
+        display: none;
+      }
+
+      summary .sign {
+        flex: none;
+        width: 26px;
+        height: 26px;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--text-muted);
+        transition: transform 0.3s var(--ease), color 0.2s;
+      }
+
+      details[open] summary .sign {
+        transform: rotate(45deg);
+        color: var(--azure);
+      }
+
+      details p {
+        padding: 0 0 22px;
+        font-size: 15px;
+        color: var(--text-soft);
+        max-width: 66ch;
+      }
+
+      /* ------------------------------------------------------- CTA band */
+      .cta {
+        position: relative;
+        margin: 0 auto;
+        padding: 76px 32px;
+        border: 1px solid var(--line-strong);
+        border-radius: 28px;
+        background: linear-gradient(160deg, #142031 0%, #0b1018 62%);
+        text-align: center;
+        overflow: hidden;
+      }
+
+      .cta::before {
+        content: '';
+        position: absolute;
+        width: 520px;
+        height: 300px;
+        top: -140px;
+        left: 50%;
+        margin-left: -260px;
+        background: radial-gradient(circle, rgba(77, 163, 255, 0.4), transparent 70%);
+        filter: blur(60px);
+      }
+
+      .cta > * {
+        position: relative;
+      }
+
+      .cta h2 {
+        font-size: clamp(1.8rem, 3.6vw, 2.7rem);
+      }
+
+      .cta p {
+        margin: 16px auto 0;
+        max-width: 48ch;
+        color: var(--text-soft);
+      }
+
+      /* -------------------------------------------------------- Footer */
+      footer {
+        border-top: 1px solid var(--line);
+        padding: 64px 0 40px;
+        margin-top: 96px;
+      }
+
+      .foot-grid {
+        display: grid;
+        grid-template-columns: 1.4fr repeat(3, 1fr);
+        gap: 40px;
+      }
+
+      .foot-blurb {
+        margin-top: 14px;
+        font-size: 13.5px;
+        color: var(--text-muted);
+        max-width: 30ch;
+      }
+
+      .foot-col h4 {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+        margin: 0 0 14px;
+      }
+
+      .foot-col a {
+        display: block;
+        padding: 6px 0;
+        font-size: 14px;
+        color: var(--text-soft);
+        transition: color 0.2s;
+      }
+
+      .foot-col a:hover {
+        color: var(--text);
+      }
+
+      .foot-bottom {
+        margin-top: 48px;
+        padding-top: 24px;
+        border-top: 1px solid var(--line);
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+        font-size: 13px;
+        color: var(--text-muted);
+      }
+
+      /* ------------------------------------------------ Scroll reveal */
+      .reveal {
+        opacity: 0;
+        transform: translateY(16px);
+        transition: opacity 0.75s var(--ease), transform 0.75s var(--ease);
+        transition-delay: var(--d, 0ms);
+      }
+
+      .reveal.in {
+        opacity: 1;
+        transform: none;
+      }
+
+      /* -------------------------------------------------- Breakpoints */
+      @media (max-width: 1000px) {
+        .mock-body {
+          grid-template-columns: 54px 1fr;
+        }
+        .mock-chat {
+          display: none;
+        }
+        .bento,
+        .steps {
+          grid-template-columns: repeat(2, 1fr);
+        }
+        .tile-wide {
+          grid-column: span 2;
+        }
+        .privacy {
+          grid-template-columns: repeat(2, 1fr);
+        }
+        .prices {
+          grid-template-columns: 1fr;
+          max-width: 460px;
+          margin: 0 auto;
+        }
+        .foot-grid {
+          grid-template-columns: 1fr 1fr;
+          gap: 32px;
+        }
+      }
+
+      @media (max-width: 760px) {
+        .nav-links,
+        .nav-right .btn-ghost,
+        .nav-right .signin {
+          display: none;
+        }
+        .nav-toggle {
+          display: inline-flex;
+        }
+        .hero {
+          padding-top: 58px;
+        }
+        .sec {
+          padding: 72px 0;
+        }
+        .mock-body {
+          grid-template-columns: 1fr;
+        }
+        .mock-rail {
+          display: none;
+        }
+        .steps,
+        .bento,
+        .privacy {
+          grid-template-columns: 1fr;
+        }
+        .tile-wide {
+          grid-column: span 1;
+        }
+        .cta {
+          padding: 56px 22px;
+          border-radius: 22px;
+        }
+        .hero-cta .btn {
+          width: 100%;
+        }
+      }
+
+      @media (max-width: 420px) {
+        .wrap {
+          padding: 0 18px;
+        }
+        .mock-frame {
+          padding: 0 18px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.001ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.001ms !important;
+          scroll-behavior: auto !important;
+        }
+        .reveal {
+          opacity: 1;
+          transform: none;
+        }
+        .wave-row.lit {
+          width: 62%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- ============================================================ NAV -->
+    <header class="nav" id="nav">
+      <div class="wrap nav-inner">
+        <a href="#top" class="brand" aria-label="MeetIQ home">
+          <svg width="26" height="26" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <circle cx="16" cy="6.6" r="3.6" fill="#4DA3FF" />
+            <path
+              d="M5.6 20.2a10.4 10.4 0 0 1 20.8 0v3.4a4.8 4.8 0 0 1-4.8 4.8h-7.9"
+              stroke="url(#lg)"
+              stroke-width="4"
+              stroke-linecap="round"
+            />
+            <defs>
+              <linearGradient id="lg" x1="5" y1="10" x2="27" y2="29" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#6FE3F2" />
+                <stop offset="1" stop-color="#1D6FD6" />
+              </linearGradient>
+            </defs>
+          </svg>
+          MeetIQ
+        </a>
+
+        <nav class="nav-links">
+          <a href="#how-it-works">How it works</a>
+          <a href="#features">Features</a>
+          <a href="#pricing">Pricing</a>
+          <a href="#faq">FAQ</a>
+        </nav>
+
+        <div class="nav-right">
+          <a class="signin btn btn-sm" href="#" style="color: var(--text)">Sign in</a>
+          <a class="btn btn-primary btn-sm" href="#pricing">Start free</a>
+          <button class="nav-toggle" id="navToggle" aria-expanded="false" aria-controls="mobileMenu" aria-label="Open menu">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M4 7h16M4 12h16M4 17h16" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="mobile-menu" id="mobileMenu">
+        <a href="#how-it-works">How it works</a>
+        <a href="#features">Features</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#faq">FAQ</a>
+        <a href="#">Sign in</a>
+        <a class="btn btn-primary" href="#pricing">Start free</a>
+      </div>
+    </header>
+
+    <!-- =========================================================== HERO -->
+    <section class="hero" id="top">
+      <div class="glow glow-a"></div>
+      <div class="glow glow-b"></div>
+
+      <div class="wrap">
+        <span class="eyebrow reveal"><i class="dot"></i> Now with Google Calendar sync</span>
+
+        <h1 class="hero-title reveal" style="--d: 60ms">
+          Turn every meeting into <span class="grad">knowledge.</span>
+        </h1>
+
+        <p class="hero-sub reveal" style="--d: 120ms">
+          MeetIQ records your meetings and turns every conversation into searchable transcripts,
+          clear summaries, action items, and AI-powered answers.
+        </p>
+
+        <div class="hero-cta reveal" style="--d: 180ms">
+          <a class="btn btn-primary btn-lg" href="#pricing">
+            Start free
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 12h14M13 6l6 6-6 6" />
+            </svg>
+          </a>
+          <a class="btn btn-ghost btn-lg" href="#how-it-works">See how it works</a>
+        </div>
+
+        <p class="hero-note reveal" style="--d: 240ms">
+          5 meetings a month free · no card required · audio only, never video
+        </p>
+      </div>
+
+      <!-- Product mock: the actual meeting page, not a placeholder. -->
+      <div class="mock-frame reveal" style="--d: 300ms">
+        <div class="mock">
+          <div class="mock-bar">
+            <i class="mock-dot"></i><i class="mock-dot"></i><i class="mock-dot"></i>
+            <span class="mock-url">app.meetiq.com/meetings</span>
+          </div>
+
+          <div class="mock-body">
+            <div class="mock-rail">
+              <i class="rail-icon on"></i>
+              <i class="rail-icon"></i>
+              <i class="rail-icon"></i>
+              <i class="rail-icon"></i>
+            </div>
+
+            <div class="mock-main">
+              <div class="mock-crumb">← Meetings</div>
+              <h3 class="mock-title">Q3 roadmap review</h3>
+              <div class="mock-meta">
+                <span class="pill">Completed</span>
+                <span>Google Meet · 18 Sept, 13:16 · 42 min</span>
+              </div>
+
+              <div class="wave-box">
+                <span class="play" aria-hidden="true">
+                  <svg width="11" height="11" viewBox="0 0 12 12" fill="#fff"><path d="M3 1.5v9l7-4.5z" /></svg>
+                </span>
+                <div class="wave" id="wave"></div>
+                <span class="wave-time">12:04 / 42:18</span>
+              </div>
+
+              <div class="mock-tabs">
+                <span class="on">Summary</span><span>Action items 4</span><span>Transcript</span>
+              </div>
+
+              <div class="tldr">
+                <div class="mono">TL;DR</div>
+                <p>
+                  The team agreed to ship calendar sync first and hold billing until October.
+                  Priya owns the pricing page copy; Dan will size the migration before Friday.
+                </p>
+              </div>
+            </div>
+
+            <div class="mock-chat">
+              <div class="bubble me">What did we decide about pricing?</div>
+              <div class="bubble">
+                You held the new tiers until October and agreed on a $5 Pro plan.
+                <span class="cite">Q3 roadmap review — 18 Sept</span>
+              </div>
+              <div class="bubble me">Who owns the migration?</div>
+              <div class="bubble">
+                <span class="typing"><i></i><i></i><i></i></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="mock-fade"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================================================== WORKS WITH -->
+    <div class="strip">
+      <div class="wrap strip-inner reveal">
+        <span class="mono" style="width: 100%; text-align: center; margin-bottom: 4px">Works with</span>
+        <span class="chip">Google Meet</span>
+        <span class="chip">Zoom</span>
+        <span class="chip">Google Calendar</span>
+        <span class="chip">PDF export</span>
+      </div>
+    </div>
+
+    <!-- =================================================== HOW IT WORKS -->
+    <section class="sec" id="how-it-works">
+      <div class="wrap">
+        <div class="sec-head reveal">
+          <div class="mono">How it works</div>
+          <h2>Three steps, about twenty seconds.</h2>
+          <p>Paste a link or pick an event from your calendar. MeetIQ does the rest and stays out of the call.</p>
+        </div>
+
+        <div class="steps">
+          <article class="step reveal">
+            <span class="step-n">1</span>
+            <h3>Paste the link</h3>
+            <p>Drop in a Google Meet or Zoom URL, or opt in a single event from your connected calendar.</p>
+            <div class="step-art">
+              <span class="link-mono">https://meet.google.com/abc-defg-hij</span>
+            </div>
+          </article>
+
+          <article class="step reveal" style="--d: 90ms">
+            <span class="step-n">2</span>
+            <h3>The bot joins</h3>
+            <p>It appears under a name you choose, records audio only, and leaves when the call ends.</p>
+            <div class="step-art">
+              <span class="bar accent" style="width: 20%"></span>
+              <span class="bar" style="width: 14%"></span>
+              <span class="bar" style="width: 30%"></span>
+              <span class="bar" style="width: 18%"></span>
+            </div>
+          </article>
+
+          <article class="step reveal" style="--d: 180ms">
+            <span class="step-n">3</span>
+            <h3>Get your notes</h3>
+            <p>Transcript, summary and action items in a couple of minutes — then ask the AI anything.</p>
+            <div class="step-art" style="flex-direction: column; align-items: stretch; justify-content: center; gap: 6px">
+              <span class="bar" style="width: 85%"></span>
+              <span class="bar" style="width: 65%"></span>
+              <span class="bar accent" style="width: 40%"></span>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================================================= FEATURES -->
+    <section class="sec" id="features">
+      <div class="wrap">
+        <div class="sec-head reveal">
+          <div class="mono">Features</div>
+          <h2>Everything that was said, in a form you can use.</h2>
+          <p>Not a wall of transcript. Summaries you can skim, follow-ups with owners, and an AI that cites its sources.</p>
+        </div>
+
+        <div class="bento">
+          <article class="tile tile-wide reveal spot">
+            <span class="tile-icon">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 3v2M18.4 5.6l-1.4 1.4M21 12h-2M5 12H3M7 7 5.6 5.6" />
+                <circle cx="12" cy="14" r="5" />
+              </svg>
+            </span>
+            <h3>Ask across every meeting you've recorded</h3>
+            <p>
+              "What did we decide about pricing last month?" Answers come back with a link to the meeting
+              they came from, so you can check the source before you quote it.
+            </p>
+            <div class="tile-demo">
+              <span class="bubble me" style="max-width: 62%">Which meeting discussed the migration?</span>
+              <span class="bubble" style="max-width: 78%">
+                Two calls covered it. <span class="cite">Q3 roadmap review — 18 Sept</span> and
+                <span class="cite">Platform sync — 11 Sept</span>.
+              </span>
+            </div>
+          </article>
+
+          <article class="tile reveal spot" style="--d: 90ms">
+            <span class="tile-icon">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+                <path d="M14 3v5h5M9 13h6M9 17h4" />
+              </svg>
+            </span>
+            <h3>Summary and action items</h3>
+            <p>A TL;DR, the key points, and follow-ups with an owner and a timestamp attached.</p>
+            <div class="tile-demo">
+              <span class="mini-row"><i class="mini-box"></i>Send the pricing draft<span class="who">Priya</span></span>
+              <span class="mini-row"><i class="mini-box"></i>Size the migration<span class="who">Dan</span></span>
+            </div>
+          </article>
+
+          <article class="tile reveal spot" style="--d: 40ms">
+            <span class="tile-icon">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
+              </svg>
+            </span>
+            <h3>Speaker-labelled transcripts</h3>
+            <p>Every line timestamped and attributed, with the audio next to it so you can jump straight there.</p>
+            <div class="tile-demo">
+              <span class="mini-row"><i class="ts">12:04</i><span class="said"><b>Dan:</b> Can we ship sync first?</span></span>
+              <span class="mini-row"><i class="ts">12:11</i><span class="said"><b>Priya:</b> Yes, billing can wait.</span></span>
+            </div>
+          </article>
+
+          <article class="tile tile-wide reveal spot" style="--d: 120ms">
+            <span class="tile-icon">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="5" width="18" height="16" rx="2" /><path d="M16 3v4M8 3v4M3 11h18" />
+              </svg>
+            </span>
+            <h3>Calendar sync that stays off by default</h3>
+            <p>
+              Connect Google Calendar and your upcoming calls appear in one list. Nothing is recorded until you
+              switch on that specific event — MeetIQ joins a couple of minutes before it starts.
+            </p>
+            <div class="tile-demo">
+              <span class="bubble" style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
+                <span>Design review · Tue, 10:00 · Google Meet</span>
+                <span class="pill" style="background: rgba(111,227,242,0.14); color: var(--cyan)">Scheduled</span>
+              </span>
+              <span class="bubble" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; opacity: 0.6">
+                <span>Standup · Wed, 09:30 · Google Meet</span>
+                <span class="pill" style="background: rgba(255,255,255,0.06); color: var(--text-muted)">Off</span>
+              </span>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================================================== PRIVACY -->
+    <section class="sec">
+      <div class="wrap">
+        <div class="sec-head reveal">
+          <div class="mono">Privacy</div>
+          <h2>Notes, not surveillance.</h2>
+          <p>No engagement scores. No emails to your guests. Nothing recorded unless you ask for it.</p>
+        </div>
+
+        <div class="privacy">
+          <article class="promise reveal">
+            <span class="check">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+            </span>
+            <h3>Audio only</h3>
+            <p>No video is ever captured or stored.</p>
+          </article>
+
+          <article class="promise reveal" style="--d: 60ms">
+            <span class="check">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+            </span>
+            <h3>Off by default</h3>
+            <p>The bot joins only the meetings you turn on.</p>
+          </article>
+
+          <article class="promise reveal" style="--d: 120ms">
+            <span class="check">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+            </span>
+            <h3>No auto-emails</h3>
+            <p>Your guests get nothing from us, ever.</p>
+          </article>
+
+          <article class="promise reveal" style="--d: 180ms">
+            <span class="check">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+            </span>
+            <h3>Delete anytime</h3>
+            <p>One click removes the audio, transcript and chat.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================================================== PRICING -->
+    <section class="sec" id="pricing">
+      <div class="wrap">
+        <div class="sec-head reveal" style="max-width: 720px">
+          <div class="mono">Pricing</div>
+          <h2>Start free. Upgrade when meetings pile up.</h2>
+          <p>Every plan includes transcripts, summaries and action items. You only pay for how much you record.</p>
+        </div>
+
+        <div class="prices">
+          <!-- Free -->
+          <article class="price reveal spot">
+            <div>
+              <div class="price-name">Free</div>
+              <div class="price-tag" style="margin-top: 12px">
+                <span class="amt">$0</span><span class="per">forever</span>
+              </div>
+            </div>
+            <p class="price-line">For trying MeetIQ on a handful of calls.</p>
+            <div class="rule"></div>
+            <ul class="feats">
+              <li>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+                5 meetings a month
+              </li>
+              <li>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+                Up to 90 minutes per recording
+              </li>
+              <li>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+                Transcript, summary and action items
+              </li>
+              <li>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+                Ask AI on a single meeting
+              </li>
+            </ul>
+            <a class="btn btn-ghost" href="#">Start free</a>
+          </article>
+
+          <!-- Pro -->
+          <article class="price featured reveal spot" style="--d: 80ms">
+            <div>
+              <div class="price-name" style="color: #8cc6ff">Pro</div>
+              <div class="price-tag" style="margin-top: 12px">
+                <span class="amt">$5</span><span class="per">/ month</span>
+              </div>
+            </div>
+            <p class="price-line">30 hours of recording a month — around 40 calls.</p>
+            <div class="rule"></div>
+            <ul class="feats">
+              <li>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+                <span><strong style="color: var(--text)">30 hours</strong> of recording a month</span>
+              </li>
+              <li>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+                Unlimited meetings within those hours
+              </li>
+              <li>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+                Ask AI across all your meetings
+              </li>
+              <li>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+                Google Calendar sync
+              </li>
+              <li>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+                PDF export and custom bot name
+              </li>
+            </ul>
+            <a class="btn btn-accent" href="#">Get Pro</a>
+          </article>
+
+          <!-- Pro Max -->
+          <article class="price reveal spot" style="--d: 160ms">
+            <div>
+              <div class="price-name">Pro Max</div>
+              <div class="price-tag" style="margin-top: 12px">
+                <span class="amt">$10</span><span class="per">/ month</span>
+              </div>
+            </div>
+            <p class="price-line">For back-to-back days, with no hours to count.</p>
+            <div class="rule"></div>
+            <ul class="feats">
+              <li>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+                <span><strong style="color: var(--text)">Unlimited</strong> meetings and recording hours</span>
+              </li>
+              <li>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+                Everything in Pro
+              </li>
+              <li>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+                Priority processing
+              </li>
+              <li>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+                Custom Ask AI instructions
+              </li>
+              <li>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+                Early access to new features
+              </li>
+            </ul>
+            <a class="btn btn-ghost" href="#">Get Pro Max</a>
+          </article>
+        </div>
+
+        <p class="price-foot reveal">Prices in USD. Billed monthly, cancel in two clicks.</p>
+      </div>
+    </section>
+
+    <!-- ============================================================ FAQ -->
+    <section class="sec" id="faq">
+      <div class="wrap">
+        <div class="sec-head reveal" style="margin: 0 auto 44px; text-align: center">
+          <div class="mono">FAQ</div>
+          <h2>Questions people ask first.</h2>
+        </div>
+
+        <div class="faq reveal">
+          <details open>
+            <summary>
+              Does MeetIQ record video?
+              <span class="sign">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
+              </span>
+            </summary>
+            <p>No. The bot captures audio only. No video is recorded or stored at any point.</p>
+          </details>
+
+          <details>
+            <summary>
+              Do my guests get an email?
+              <span class="sign">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
+              </span>
+            </summary>
+            <p>Never. MeetIQ sends nothing to anyone in the call. The notes go to you and stay with you.</p>
+          </details>
+
+          <details>
+            <summary>
+              Do I need to tell people they're being recorded?
+              <span class="sign">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
+              </span>
+            </summary>
+            <p>
+              Yes. The bot joins as a visible participant under a name you choose, so everyone can see it is there.
+              Recording laws vary by country, so tell participants and get their agreement before you start.
+            </p>
+          </details>
+
+          <details>
+            <summary>
+              Which platforms are supported?
+              <span class="sign">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
+              </span>
+            </summary>
+            <p>Google Meet and Zoom today, from a pasted link or a synced Google Calendar event.</p>
+          </details>
+
+          <details>
+            <summary>
+              Can I delete a recording?
+              <span class="sign">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
+              </span>
+            </summary>
+            <p>Yes. Deleting a meeting removes the audio, the transcript and the chat history together.</p>
+          </details>
+
+          <details>
+            <summary>
+              Will the bot join meetings on its own?
+              <span class="sign">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
+              </span>
+            </summary>
+            <p>
+              Only for calendar events you switch on one by one. Connecting your calendar shows your upcoming
+              meetings; it does not record any of them.
+            </p>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ CTA -->
+    <section class="wrap" style="padding-top: 40px">
+      <div class="cta reveal">
+        <h2>Your next meeting can write itself up.</h2>
+        <p>Paste a link and see what comes back. Five meetings a month are free, and no card is required.</p>
+        <div class="hero-cta" style="margin-top: 30px">
+          <a class="btn btn-primary btn-lg" href="#pricing">
+            Start free
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+          </a>
+          <a class="btn btn-ghost btn-lg" href="#faq">Read the FAQ</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================= FOOTER -->
+    <footer>
+      <div class="wrap">
+        <div class="foot-grid">
+          <div>
+            <a href="#top" class="brand">
+              <svg width="24" height="24" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+                <circle cx="16" cy="6.6" r="3.6" fill="#4DA3FF" />
+                <path d="M5.6 20.2a10.4 10.4 0 0 1 20.8 0v3.4a4.8 4.8 0 0 1-4.8 4.8h-7.9" stroke="url(#lg2)" stroke-width="4" stroke-linecap="round" />
+                <defs>
+                  <linearGradient id="lg2" x1="5" y1="10" x2="27" y2="29" gradientUnits="userSpaceOnUse">
+                    <stop stop-color="#6FE3F2" /><stop offset="1" stop-color="#1D6FD6" />
+                  </linearGradient>
+                </defs>
+              </svg>
+              MeetIQ
+            </a>
+            <p class="foot-blurb">Audio-only meeting notes for people who don't want their calls scored.</p>
+          </div>
+
+          <div class="foot-col">
+            <h4>Product</h4>
+            <a href="#how-it-works">How it works</a>
+            <a href="#features">Features</a>
+            <a href="#pricing">Pricing</a>
+            <a href="#faq">FAQ</a>
+          </div>
+
+          <div class="foot-col">
+            <h4>Privacy</h4>
+            <a href="/privacy">Privacy policy</a>
+            <a href="/what-we-store">What we store</a>
+            <a href="/data-deletion">Data deletion</a>
+            <a href="/terms">Terms</a>
+          </div>
+
+          <div class="foot-col">
+            <h4>Company</h4>
+            <a href="mailto:hello@meetiq.com">Contact</a>
+          </div>
+        </div>
+
+        <div class="foot-bottom">
+          <span>© 2026 MeetIQ</span>
+          <span>Built for people who'd rather be in the conversation.</span>
+        </div>
+      </div>
+    </footer>
+
+    <script>
+      // Waveform bars. Generated rather than hand-written so the two rows
+      // (grey track + accent progress) always match.
+      (function buildWave() {
+        const wave = document.getElementById('wave');
+        if (!wave) return;
+        const COUNT = 54;
+        const heights = Array.from({ length: COUNT }, (_, i) =>
+          6 + Math.round(Math.abs(Math.sin(i * 0.9) * Math.cos(i * 0.31)) * 22)
+        );
+        const makeInner = () => {
+          const inner = document.createElement('div');
+          inner.className = 'inner';
+          heights.forEach((h) => {
+            const bar = document.createElement('span');
+            bar.style.height = h + 'px';
+            inner.appendChild(bar);
+          });
+          return inner;
+        };
+
+        const track = document.createElement('div');
+        track.className = 'wave-row';
+        const trackInner = makeInner();
+        trackInner.style.width = '100%';
+        track.appendChild(trackInner);
+
+        const lit = document.createElement('div');
+        lit.className = 'wave-row lit';
+        const litInner = makeInner();
+        lit.appendChild(litInner);
+
+        wave.append(track, lit);
+
+        // The clipped row needs a pixel width to stay aligned with the track.
+        const sync = () => {
+          litInner.style.width = wave.clientWidth + 'px';
+        };
+        sync();
+        window.addEventListener('resize', sync);
+      })();
+
+      // Header hairline appears once the page moves.
+      const nav = document.getElementById('nav');
+      const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 8);
+      onScroll();
+      window.addEventListener('scroll', onScroll, { passive: true });
+
+      // Mobile menu.
+      const toggle = document.getElementById('navToggle');
+      const menu = document.getElementById('mobileMenu');
+      toggle.addEventListener('click', () => {
+        const open = menu.classList.toggle('open');
+        toggle.setAttribute('aria-expanded', String(open));
+      });
+      menu.addEventListener('click', (e) => {
+        if (e.target.tagName === 'A') {
+          menu.classList.remove('open');
+          toggle.setAttribute('aria-expanded', 'false');
+        }
+      });
+
+      // Scroll reveal. Elements start hidden only if JS runs, so the page
+      // still reads fine without it.
+      const io = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('in');
+              io.unobserve(entry.target);
+            }
+          });
+        },
+        { rootMargin: '0px 0px -8% 0px', threshold: 0.08 }
+      );
+      document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+
+      // Cursor spotlight on cards.
+      document.querySelectorAll('.spot').forEach((card) => {
+        card.addEventListener('mousemove', (e) => {
+          const r = card.getBoundingClientRect();
+          card.style.setProperty('--mx', e.clientX - r.left + 'px');
+          card.style.setProperty('--my', e.clientY - r.top + 'px');
+        });
+      });
+    </script>
+  </body>
+</html>
