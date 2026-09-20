@@ -47,13 +47,3 @@ export function formatClockTime(seconds) {
   if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   return `${minutes}:${String(secs).padStart(2, '0')}`;
 }
-
-// Two-letter initials from a title for the small avatar chip, e.g.
-// "Weekly sync" -> "WS". Falls back to a single letter or "M".
-export function abbreviate(title) {
-  if (!title) return 'M';
-  const words = title.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return 'M';
-  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
-  return (words[0][0] + words[1][0]).toUpperCase();
-}
