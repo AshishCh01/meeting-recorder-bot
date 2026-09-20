@@ -4,7 +4,15 @@
 
 The current frontend works but looks generated: every element in its own rounded box, one blue used for buttons, links, badges and the active nav item alike, four ungrouped sidebar links above 250px of dead space, and a meeting page where the header and audio player take more than half the screen before any content. On a phone the meeting page leaves roughly 40px for the summary.
 
-A full redesign was prototyped first, in [prototype/](../prototype/): the landing page plus seven app screens, as static HTML and CSS. Design references are Attio (visuals) and Cal.com (copy). The prototypes were rendered in Chromium at 1440, 820, 375 and 320px in both themes, with no horizontal overflow and no console errors.
+A full redesign was prototyped first: the landing page plus seven app screens, as static HTML and CSS.
+
+> **Where the prototype lives.** The `prototype/` folder is on the
+> **`frontend-redesign-phase-1`** branch, deliberately not on `main` — it ships
+> with nothing and should never reach production. Check that branch out, or
+> browse it on GitHub, to follow the `prototype/...` paths referenced below.
+> Cut each phase branch from `main`, not from the prototype branch, so the
+> folder is never merged in by accident.
+ Design references are Attio (visuals) and Cal.com (copy). The prototypes were rendered in Chromium at 1440, 820, 375 and 320px in both themes, with no horizontal overflow and no console errors.
 
 This plan ports that design into the React app in nine phases. It does not change what the app does.
 
