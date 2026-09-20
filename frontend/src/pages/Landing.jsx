@@ -7,6 +7,7 @@ import { ThemeToggle } from '../components/ThemeToggle';
 import { Logo } from '../components/Logo';
 import { Reveal } from '../components/landing/Reveal';
 import { ProductMock } from '../components/landing/ProductMock';
+import { LEGAL_LINKS } from '../components/legal/LegalPage';
 
 const NAV_LINKS = [
   { href: '#how-it-works', label: 'How it works' },
@@ -448,10 +449,7 @@ export const Landing = () => {
               </p>
             </div>
 
-            {/* Product and Company only. The privacy and terms pages land in
-                phase 2; linking to them now would be four dead links, which
-                is worse than not linking at all. */}
-            <div className="flex gap-12">
+            <div className="flex flex-wrap gap-10 sm:gap-12">
               <div className="flex flex-col gap-2.5">
                 <h3 className="text-[13px] font-extrabold text-brand-dark">Product</h3>
                 {NAV_LINKS.map((l) => (
@@ -460,6 +458,15 @@ export const Landing = () => {
                   </a>
                 ))}
               </div>
+              <div className="flex flex-col gap-2.5">
+                <h3 className="text-[13px] font-extrabold text-brand-dark">Privacy</h3>
+                {LEGAL_LINKS.map((l) => (
+                  <Link key={l.to} to={l.to} className="text-[13.5px] text-muted transition-colors hover:text-brand-dark">
+                    {l.label}
+                  </Link>
+                ))}
+              </div>
+
               <div className="flex flex-col gap-2.5">
                 <h3 className="text-[13px] font-extrabold text-brand-dark">Account</h3>
                 <Link to="/login" className="text-[13.5px] text-muted transition-colors hover:text-brand-dark">

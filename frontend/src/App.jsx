@@ -13,6 +13,10 @@ import { Upcoming } from './pages/Upcoming';
 import { MeetingView } from './pages/MeetingView';
 import { Settings } from './pages/Settings';
 import { AskAI } from './pages/AskAI';
+import { PrivacyPolicy } from './pages/legal/PrivacyPolicy';
+import { Terms } from './pages/legal/Terms';
+import { WhatWeStore } from './pages/legal/WhatWeStore';
+import { DataDeletion } from './pages/legal/DataDeletion';
 
 function App() {
   return (
@@ -29,6 +33,12 @@ function App() {
                   </PublicOnlyRoute>
                 }
               />
+              {/* Unguarded on purpose: a privacy policy you have to be
+                  signed in - or out - to read would be a strange thing. */}
+              <Route path="/privacy" element={<PrivacyPolicy />} />
+              <Route path="/terms" element={<Terms />} />
+              <Route path="/what-we-store" element={<WhatWeStore />} />
+              <Route path="/data-deletion" element={<DataDeletion />} />
               <Route
                 path="/login"
                 element={
