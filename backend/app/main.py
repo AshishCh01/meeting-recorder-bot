@@ -8,10 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError, TimeoutError as PoolTimeoutError
 from app.config import settings
-from app.api import ask, calendar, chat, meetings, users, webhooks
+from app.api import ask, billing, calendar, chat, meetings, users, webhooks
 from app.db.database import SessionLocal
 from app.services.watchdog import sweep_stale_meetings
 from app.services.scheduler import trigger_due_meetings
+from app.billing.service import expire_due_subscriptions
 from app.services import rate_limit
 from app.observability import configure_logging, init_sentry
 
@@ -82,6 +83,29 @@ async def _scheduler_loop():
         await asyncio.sleep(interval_seconds)
 
 
+async def _billing_expiry_loop():
+    """
+    Moves elapsed subscriptions to "expired" and their users back to free.
+
+    Tidying, not enforcement: quota.resolve() already treats an elapsed period
+    as free at read time, so if this loop never runs nobody keeps a plan they
+    have not paid for - users.plan and the subscription status just stay stale
+    on the billing page. That is why the interval is an hour rather than
+    minutes, and why a failure here is a warning and not an alert.
+    """
+    interval_seconds = 3600
+    while True:
+        try:
+            await asyncio.to_thread(_run_with_session, expire_due_subscriptions)
+        except asyncio.CancelledError:
+            raise
+        except OperationalError as e:
+            logger.warning("[billing] expiry sweep failed: DB connection error (%s) - will retry next cycle", e)
+        except Exception:
+            logger.exception("[billing] expiry sweep failed")
+        await asyncio.sleep(interval_seconds)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     tasks = []
@@ -89,6 +113,9 @@ async def lifespan(app: FastAPI):
         tasks.append(asyncio.create_task(_watchdog_loop()))
     if settings.calendar_scheduler_enabled:
         tasks.append(asyncio.create_task(_scheduler_loop()))
+    # Only worth running where subscriptions can exist at all.
+    if settings.billing_enabled:
+        tasks.append(asyncio.create_task(_billing_expiry_loop()))
     yield
     for task in tasks:
         task.cancel()
@@ -175,6 +202,7 @@ app.include_router(chat.router)
 app.include_router(users.router)
 app.include_router(calendar.router)
 app.include_router(ask.router)
+app.include_router(billing.router)
 
 
 @app.get("/health")

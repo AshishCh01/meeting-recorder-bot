@@ -132,7 +132,7 @@ def test_valid_scheduled_meetings_are_never_swept_whatever_their_age(db, user, f
 
 def test_a_valid_scheduled_meeting_is_still_joined_normally(db, user, flags, monkeypatch):
     joins = []
-    monkeypatch.setattr(scheduler, "trigger_bot_join", lambda *args: joins.append(args[2]))
+    monkeypatch.setattr(scheduler, "trigger_bot_join", lambda *args, **kwargs: joins.append(args[2]))
     due = make_meeting(db, user.id, scheduled_at=datetime.now(timezone.utc) - timedelta(minutes=1))
     age_meeting(due.id, minutes=60 * 24 * 3)
 
@@ -194,7 +194,7 @@ def test_a_crash_while_creating_a_meeting_leaves_no_row_stuck_in_scheduled(db, u
         raise _ProcessKilled()
 
     monkeypatch.setattr(meetings, "initial_status", killed)
-    monkeypatch.setattr(meetings, "trigger_bot_join", lambda *args: None)
+    monkeypatch.setattr(meetings, "trigger_bot_join", lambda *args, **kwargs: None)
 
     with pytest.raises(_ProcessKilled):
         create(db, user)
@@ -213,7 +213,7 @@ def test_the_row_is_already_at_its_dispatch_status_when_the_bot_is_triggered(db,
     """
     monkeypatch.setattr(settings, "bot_dispatch_use_queue", use_queue)
     seen = []
-    monkeypatch.setattr(meetings, "trigger_bot_join", lambda platform, url, meeting_id, *rest: seen.append(reread(meeting_id).status))
+    monkeypatch.setattr(meetings, "trigger_bot_join", lambda platform, url, meeting_id, *rest, **kwargs: seen.append(reread(meeting_id).status))
 
     result = create(db, user)
 
@@ -223,7 +223,7 @@ def test_the_row_is_already_at_its_dispatch_status_when_the_bot_is_triggered(db,
 
 
 def test_a_trigger_that_fails_still_ends_the_meeting_failed(db, user, flags, monkeypatch):
-    def refuse(*args):
+    def refuse(*args, **kwargs):
         raise RuntimeError("bot unreachable")
 
     monkeypatch.setattr(meetings, "trigger_bot_join", refuse)

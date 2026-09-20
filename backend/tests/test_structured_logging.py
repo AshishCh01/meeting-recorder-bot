@@ -550,6 +550,21 @@ def test_the_meetings_route_lines_carry_the_meeting_and_user(db, user, captured,
         def remove(self, paths):
             raise RuntimeError("storage unavailable")
 
+    # PDF export is a paid feature (billing Phase 4), so this user needs a
+    # plan that includes it - otherwise the route answers 402 and never
+    # reaches the generator whose failure logging is what is under test here.
+    from datetime import datetime, timedelta, timezone
+
+    from app.billing.plans import PRO
+    from app.db.models import Subscription
+
+    now = datetime.now(timezone.utc)
+    db.add(Subscription(
+        user_id=user.id, plan=PRO, status="active",
+        current_period_start=now, current_period_end=now + timedelta(days=30),
+    ))
+    db.commit()
+
     pdf_meeting = make_meeting(db, user, status="completed", transcript=TRANSCRIPT)
     deleted = make_meeting(db, user, status="completed")
     monkeypatch.setattr(meetings, "supabase", _StorageDown())

@@ -87,13 +87,17 @@ class Recorder:
         self.calls = []
         self._lock = threading.Lock()
 
-    def __call__(self, platform, meeting_url, meeting_id, user_id, bot_display_name):
+    def __call__(self, platform, meeting_url, meeting_id, user_id, bot_display_name,
+                 max_duration_minutes=None):
         with self._lock:
             self.calls.append({
                 "platform": platform,
                 "meeting_url": meeting_url,
                 "meeting_id": meeting_id,
                 "bot_display_name": bot_display_name,
+                # The caller's plan cap (billing Phase 2) - recorded so a test
+                # can assert the sweep carries it, not just that it joins.
+                "max_duration_minutes": max_duration_minutes,
             })
         return {"status": "ok"}
 

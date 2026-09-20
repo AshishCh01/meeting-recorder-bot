@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Menu, X, ArrowRight, Check, Plus, Sparkles, FileText, AudioLines, CalendarDays,
@@ -8,6 +8,8 @@ import { Logo } from '../components/Logo';
 import { Reveal } from '../components/landing/Reveal';
 import { ProductMock } from '../components/landing/ProductMock';
 import { LEGAL_LINKS } from '../components/legal/LegalPage';
+import { PlanCards } from '../components/billing/PlanCards';
+import api from '../lib/api';
 
 const NAV_LINKS = [
   { href: '#how-it-works', label: 'How it works' },
@@ -57,7 +59,7 @@ const FAQ = [
   },
   {
     q: 'Which platforms are supported?',
-    a: 'Google Meet and Zoom today, from a pasted link or a synced Google Calendar event.',
+    a: 'Google Meet and Zoom today, from a pasted link on any plan, or from a synced Google Calendar event on Pro and Team.',
   },
   {
     q: 'Can I delete a recording?',
@@ -65,7 +67,15 @@ const FAQ = [
   },
   {
     q: 'Will the bot join meetings on its own?',
-    a: 'Only for calendar events you switch on one by one. Connecting your calendar shows your upcoming meetings; it does not record any of them.',
+    a: 'Only for calendar events you switch on one by one. Connecting your calendar shows your upcoming meetings; it does not record any of them. Calendar sync is part of Pro and Team.',
+  },
+  {
+    q: 'What happens when I hit the free limit?',
+    a: 'Recording is refused until the month resets, and nothing already recorded is touched - your transcripts, summaries and past meetings all stay. Upgrading lifts the limit straight away.',
+  },
+  {
+    q: 'Can I cancel?',
+    a: 'Any time, from Settings. You keep the plan until the period you have paid for ends, and then go back to Free. Nothing you have recorded is deleted.',
   },
 ];
 
@@ -95,6 +105,15 @@ const Tile = ({ icon: Icon, title, children, demo, wide = false, delay = 0 }) =>
 );
 
 export const Landing = () => {
+  // Public endpoint, so this works signed out. A failure leaves plans empty
+  // and the section says so rather than inventing numbers.
+  const [plans, setPlans] = useState([]);
+  useEffect(() => {
+    api.get('/billing/plans')
+      .then(({ data }) => setPlans(data))
+      .catch(() => setPlans([]));
+  }, []);
+
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
@@ -204,7 +223,7 @@ export const Landing = () => {
             </Reveal>
 
             <Reveal as="p" delay={240} className="mt-5 text-[13.5px] text-muted">
-              Free while in beta · no card required · audio only, never video
+              Free to start · no card required · audio only, never video
             </Reveal>
           </div>
 
@@ -371,25 +390,55 @@ export const Landing = () => {
         {/* ---------------------------------------------------- pricing */}
         <section id="pricing" className="scroll-mt-20 py-20">
           <div className="mx-auto max-w-6xl px-5 sm:px-6">
-            {/* No tiers and no prices: billing does not exist yet, so three
-                cards with buttons would be three buttons leading nowhere. */}
-            <Reveal className="mx-auto max-w-2xl rounded-3xl border border-accent-line bg-accent-soft p-8 text-center sm:p-12">
-              <div className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-accent-ink">Pricing</div>
-              <h2 className="mt-2.5 text-[clamp(1.6rem,3.5vw,2.25rem)] font-extrabold leading-[1.15] tracking-[-0.03em] text-brand-dark">
-                Free while MeetIQ is in beta.
-              </h2>
-              <p className="mx-auto mt-3 max-w-md text-[15px] leading-relaxed text-body">
-                Every account gets transcripts, summaries, action items and Ask AI, at no cost and with no card.
-                Paid plans will come later — we will tell you long before anything changes.
-              </p>
-              <Link
-                to="/register"
-                className="btn-primary mt-7 inline-flex h-12 items-center gap-2 rounded-xl px-6 text-[15px] font-bold transition-opacity hover:opacity-90"
-              >
-                Create your account
-                <ArrowRight className="h-4 w-4" />
-              </Link>
+            <SectionHead
+              eyebrow="Pricing"
+              title="Start free. Pay when it earns it."
+              centered
+            >
+              Every plan records, transcribes and summarises. What you buy is volume and the
+              things around it.
+            </SectionHead>
+
+            <Reveal className="mt-12">
+              {/* The tiers come from GET /billing/plans, which is public and
+                  is the same catalogue the backend enforces - so this section
+                  cannot quote a price or a limit the server disagrees with. */}
+              {plans.length > 0 ? (
+                <PlanCards
+                  plans={plans}
+                  highlight="pro"
+                  renderAction={(plan) => (
+                    // Signed out, every tier leads to the same place: there is
+                    // nothing to charge until there is an account to charge.
+                    <Link
+                      to="/register"
+                      className={[
+                        'inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl text-[14.5px] font-bold transition-opacity hover:opacity-90',
+                        plan.id === 'pro'
+                          ? 'btn-primary'
+                          : 'border border-border-strong bg-surface text-brand-dark',
+                      ].join(' ')}
+                    >
+                      {plan.price_paise === 0 ? 'Start free' : `Get ${plan.name}`}
+                      <ArrowRight className="h-4 w-4" />
+                    </Link>
+                  )}
+                />
+              ) : (
+                // The backend is unreachable. Better to say nothing about
+                // price than to fall back to hardcoded numbers that could be
+                // out of date the moment the catalogue changes.
+                <p className="text-center text-[14.5px] text-muted">
+                  Pricing is loading. If it does not appear,{' '}
+                  <Link to="/register" className="font-bold text-accent-ink">create an account</Link>{' '}
+                  and start free.
+                </p>
+              )}
             </Reveal>
+
+            <p className="mt-8 text-center text-[13px] text-muted">
+              Prices in INR. Cancel any time — you keep the plan until the period ends.
+            </p>
           </div>
         </section>
 
@@ -421,7 +470,7 @@ export const Landing = () => {
               Your next meeting can write itself up.
             </h2>
             <p className="mx-auto mt-3 max-w-lg text-[15px] leading-relaxed text-body">
-              Paste a link and see what comes back. Free while MeetIQ is in beta, and no card is required.
+              Paste a link and see what comes back. The free plan needs no card.
             </p>
             <div className="mt-7 flex flex-wrap items-center justify-center gap-2.5">
               <Link to="/register" className="btn-primary inline-flex h-12 items-center gap-2 rounded-xl px-5 text-[15px] font-bold transition-opacity hover:opacity-90">

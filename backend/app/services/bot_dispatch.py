@@ -23,6 +23,7 @@ from app.config import settings
 from app.db.database import SessionLocal
 from app.db.models import Meeting, User
 from app.services import bot_registry, bot_service
+from app.billing import quota
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,15 @@ def dispatch_queued_meeting(meeting_id: str) -> DispatchResult:
         db_user = db.query(User).filter(User.id == meeting.user_id).first()
         bot_display_name = db_user.bot_display_name if db_user else None
 
+        # The plan's recording cap (billing Phase 2). Recomputed here rather
+        # than carried through the queue on purpose: a job can sit in the
+        # queue while the user upgrades or their period rolls over, and the
+        # cap that matters is the one in force when the recorder actually
+        # joins. The meeting-count quota is NOT re-checked - that was spent
+        # when the meeting was created, and refusing it now would strand a
+        # meeting the user was already told was booked.
+        max_duration_minutes = quota.resolve_max_duration_minutes(db, user_id)
+
         # Phase C3: which recorder, out of however many are configured. The
         # answer comes from the heartbeat cache bot_registry's poll loop keeps
         # in Redis, not from calling every host live - see claim_host, which
@@ -146,7 +156,10 @@ def dispatch_queued_meeting(meeting_id: str) -> DispatchResult:
             return DROPPED
 
         try:
-            bot_service.post_join(host, platform, meeting_url, meeting_id, user_id, bot_display_name)
+            bot_service.post_join(
+                host, platform, meeting_url, meeting_id, user_id, bot_display_name,
+                max_duration_minutes=max_duration_minutes,
+            )
         except Exception as e:
             # The 409 case is the one that matters: the cache said there was
             # room and the bot disagreed. It is not a lock, and the bot's

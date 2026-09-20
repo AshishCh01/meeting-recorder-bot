@@ -1,6 +1,7 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
+import { BillingProvider } from './context/BillingContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { SidebarProvider } from './context/SidebarContext';
 import { ToastProvider } from './context/ToastContext';
@@ -23,6 +24,9 @@ function App() {
   return (
     <ThemeProvider>
       <AuthProvider>
+        {/* Inside AuthProvider: it only fetches once there is a session, and
+            renders an "ungranted" state when there is not. */}
+        <BillingProvider>
         <ToastProvider>
           <SidebarProvider>
             <Router>
@@ -105,6 +109,7 @@ function App() {
             </Router>
           </SidebarProvider>
         </ToastProvider>
+        </BillingProvider>
       </AuthProvider>
     </ThemeProvider>
   );

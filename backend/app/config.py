@@ -400,6 +400,41 @@ class Settings(BaseSettings):
     jina_embedding_cost_per_mtok: float = 0.0
     sarvam_cost_per_audio_hour: float = 0.0
 
+    # Razorpay (billing). Documented in .env.example, but until now there were
+    # no fields here to receive them - Settings has extra = "ignore", so the
+    # values in the environment were being silently dropped.
+    #
+    # All three are blank by default and billing_enabled is False when the
+    # pair is missing: the app must start and run without them, exactly as it
+    # does today, rather than failing at import because a demo feature is
+    # unconfigured.
+    #
+    # The key id is public (it is handed to Checkout in the browser). The
+    # secret and the webhook secret are not, and must never be returned by an
+    # API or reach the frontend bundle.
+    razorpay_key_id: str = ""
+    razorpay_key_secret: str = ""
+    razorpay_webhook_secret: str = ""
+
+    @property
+    def billing_enabled(self) -> bool:
+        """
+        True when a usable Razorpay key pair is configured. Both halves are
+        required - an id without a secret can open Checkout but cannot verify
+        what comes back, which is worse than being switched off.
+        """
+        return bool(self.razorpay_key_id and self.razorpay_key_secret)
+
+    @property
+    def razorpay_is_test_mode(self) -> bool:
+        """
+        Whether the configured key is a test key. Read off the id's own
+        prefix, which Razorpay guarantees, rather than a separate flag
+        somebody could set to disagree with the key actually in use. The UI
+        uses this to label the demo as a demo.
+        """
+        return self.razorpay_key_id.startswith("rzp_test_")
+
     class Config:
         env_file = None if IGNORE_DOTENV else ".env"
         extra = "ignore"

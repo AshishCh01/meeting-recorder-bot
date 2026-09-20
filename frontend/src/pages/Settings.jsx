@@ -2,8 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { useAuth } from '../context/AuthContext';
-import { Bot, Loader2, Check, CalendarDays, Bell, Sparkles } from 'lucide-react';
+import { Bot, Loader2, Check, CalendarDays, Bell, Sparkles, Lock } from 'lucide-react';
 import api from '../lib/api';
+import { useBilling } from '../context/BillingContext';
+import { BillingCard } from '../components/billing/BillingCard';
 
 const NOTIFICATIONS = [
   { label: 'Email me when notes are ready', help: 'One message per meeting, to you only.' },
@@ -40,6 +42,11 @@ export const Settings = () => {
   const [instructionsSaved, setInstructionsSaved] = useState(false);
 
   const [searchParams, setSearchParams] = useSearchParams();
+  const { can: planIncludes, planName } = useBilling();
+  // Connecting is gated; disconnecting deliberately is not - a downgraded
+  // user must still be able to revoke access they already granted, which is
+  // why /calendar/disconnect has no gate on the backend either.
+  const canConnectCalendar = planIncludes('calendar_scheduling');
   const [calendarStatus, setCalendarStatus] = useState({ connected: false, google_email: null });
   const [calendarLoading, setCalendarLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
@@ -174,6 +181,9 @@ export const Settings = () => {
               </div>
             </div>
           </div>
+
+          {/* Plan & billing */}
+          <BillingCard />
 
           {/* Bot & recording */}
           <div className="bg-surface border border-border-strong rounded-2xl p-6 flex flex-col gap-5">
@@ -327,7 +337,7 @@ export const Settings = () => {
                   >
                     {disconnecting ? 'Disconnecting…' : 'Disconnect'}
                   </button>
-                ) : (
+                ) : canConnectCalendar ? (
                   <button
                     onClick={handleConnectCalendar}
                     disabled={connecting}
@@ -335,6 +345,13 @@ export const Settings = () => {
                   >
                     {connecting ? 'Connecting…' : 'Connect'}
                   </button>
+                ) : (
+                  <span
+                    title={`Calendar scheduling is not part of the ${planName || 'Free'} plan`}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-border rounded-lg text-[13px] font-semibold text-faint shrink-0"
+                  >
+                    <Lock className="w-3.5 h-3.5" /> Pro
+                  </span>
                 )}
               </div>
 

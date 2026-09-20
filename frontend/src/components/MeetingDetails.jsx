@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  AlertCircle, RefreshCw, Loader2, Download, Trash2, Square,
+  AlertCircle, RefreshCw, Loader2, Download, Trash2, Square, Lock,
   ArrowLeft, MoreHorizontal, PanelRight, Sparkles,
 } from 'lucide-react';
 import { StatusBadge } from './StatusBadge';
@@ -12,6 +12,7 @@ import { TranscriptTab } from './meeting/TranscriptTab';
 import { formatPlatform, formatDuration } from '../lib/format';
 import api from '../lib/api';
 import { useToast } from '../context/ToastContext';
+import { useBilling } from '../context/BillingContext';
 
 const TABS = [
   { id: 'summary', label: 'Summary' },
@@ -89,10 +90,18 @@ export const MeetingDetails = ({
   chatOpen, onToggleChat, onOpenMobileChat,
 }) => {
   const { toast } = useToast();
+  const { can, planName } = useBilling();
+  const canExport = can('pdf_export');
   const [activeTab, setActiveTab] = useState('summary');
   const [isRetrying, setIsRetrying] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
+
+  // Free users still see the button - pressing it explains why, instead of
+  // the feature simply not being there.
+  const handleLockedExport = () => {
+    toast(`PDF export is part of Pro. You're on ${planName || 'Free'}.`);
+  };
 
   const handleDownloadPDF = async () => {
     setIsDownloading(true);
@@ -167,12 +176,17 @@ export const MeetingDetails = ({
           <div className="flex flex-none items-center gap-1.5">
             {meeting.status === 'completed' && (
               <button
-                onClick={handleDownloadPDF}
+                onClick={canExport ? handleDownloadPDF : handleLockedExport}
                 disabled={isDownloading}
-                title="Export as PDF"
+                title={canExport ? 'Export as PDF' : `PDF export is not part of the ${planName || 'Free'} plan`}
                 className="inline-flex items-center gap-1.5 rounded-[10px] border border-line bg-surface px-2.5 py-2 text-[13px] font-bold text-brand-dark transition-colors hover:border-border disabled:opacity-50 tablet:px-3.5"
               >
-                {isDownloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                {/* Shown locked rather than hidden: a button that vanishes
+                    reads as a missing feature, one with a padlock reads as an
+                    upgrade. The backend refuses either way. */}
+                {isDownloading
+                  ? <Loader2 className="h-4 w-4 animate-spin" />
+                  : canExport ? <Download className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
                 <span className="hidden tablet:inline">Export</span>
               </button>
             )}

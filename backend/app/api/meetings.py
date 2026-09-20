@@ -16,6 +16,7 @@ from app.services.transcription_service import submit_transcription
 from app.db.supabase import supabase
 from app.config import settings
 from app.services.pdf_service import generate_meeting_pdf
+from app.billing import quota
 
 router = APIRouter(prefix="/meetings", tags=["meetings"])
 
@@ -79,6 +80,12 @@ def create_meeting(
     except ValueError as e:
         raise HTTPException(400, str(e))
 
+    # Billing Phase 2. After the URL is validated (a malformed link is a 400
+    # whatever plan you are on, and should not read as "you are out of
+    # meetings") and before the row is inserted, so a refused meeting leaves
+    # nothing behind. 402 with a sentence the frontend renders as-is.
+    usage = quota.enforce_meeting_quota(db, user_id)
+
     # "joining" pre-C2, "queued" once BOT_DISPATCH_USE_QUEUE is on - the bot has
     # not been contacted yet on the queued path, and parking the meeting in
     # "joining" while it waits would have the watchdog sweep it after 10
@@ -101,7 +108,13 @@ def create_meeting(
 
     try:
         db_user = db.query(User).filter(User.id == user_id).first()
-        trigger_bot_join(platform, meeting_url, str(meeting.id), user_id, db_user.bot_display_name)
+        # The plan's recording cap travels with the join, so the recorder
+        # stops at the length this user actually paid for. Already clamped to
+        # the recorder's own hard limit by effective_max_duration_minutes.
+        trigger_bot_join(
+            platform, meeting_url, str(meeting.id), user_id, db_user.bot_display_name,
+            max_duration_minutes=usage.max_duration_minutes,
+        )
     except Exception as e:
         # Still reached on the queued path if the *enqueue* itself fails
         # (Redis down), which is the one case where the caller genuinely
@@ -370,6 +383,12 @@ def export_meeting_pdf(
     meeting = db.query(Meeting).filter(Meeting.id == meeting_id, Meeting.user_id == user_id).first()
     if not meeting:
         raise HTTPException(404, "Meeting not found")
+
+    # Billing Phase 4. After ownership - a meeting you do not own is a 404 on
+    # every plan, and a 402 would confirm it exists - and before the
+    # not-ready check, so the answer to "can I export this at all" does not
+    # depend on whether this particular meeting happens to be transcribed yet.
+    quota.require_feature(db, user_id, "pdf_export")
 
     if not meeting.transcript:
         raise HTTPException(400, "Meeting transcript is not ready yet.")

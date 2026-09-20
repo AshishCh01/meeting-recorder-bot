@@ -50,7 +50,10 @@ def initial_status() -> str:
     return "queued" if settings.bot_dispatch_use_queue else "joining"
 
 
-def trigger_bot_join(platform: str, meeting_url: str, meeting_id: str, user_id: str, bot_display_name: str) -> dict:
+def trigger_bot_join(
+    platform: str, meeting_url: str, meeting_id: str, user_id: str, bot_display_name: str,
+    max_duration_minutes: int | None = None,
+) -> dict:
     """
     The seam every bot-join call site goes through (POST /meetings and the
     scheduler's due sweep). Which side of the C2 cutover we are on is decided
@@ -97,12 +100,15 @@ def trigger_bot_join(platform: str, meeting_url: str, meeting_id: str, user_id: 
             "only %s will be used. Turn the queue on to use the pool.",
             len(hosts), hosts[0].id,
         )
-    return post_join(hosts[0], platform, meeting_url, meeting_id, user_id, bot_display_name)
+    return post_join(
+        hosts[0], platform, meeting_url, meeting_id, user_id, bot_display_name,
+        max_duration_minutes=max_duration_minutes,
+    )
 
 
 def post_join(
     host: "BotHost", platform: str, meeting_url: str, meeting_id: str,
-    user_id: str, bot_display_name: str,
+    user_id: str, bot_display_name: str, max_duration_minutes: int | None = None,
 ) -> dict:
     """
     The actual HTTP call to meeting-bot. Both sides of the cutover end here -
@@ -118,19 +124,33 @@ def post_join(
 
     Raises httpx.HTTPStatusError on a non-2xx; a 409 specifically means the
     bot is at capacity or already has this meeting.
+
+    `max_duration_minutes` is the caller's plan cap (billing Phase 2). It is
+    optional and left out of the payload entirely when None, so a recorder
+    running older code, or a caller that has no plan context, behaves exactly
+    as before: MeetingLifecycle falls back to its own
+    MAX_RECORDING_DURATION_MINUTES. It can only ever shorten a recording, never
+    extend one past that env var - the clamp happens in
+    plans.effective_max_duration_minutes before the value gets here.
     """
     endpoint = PLATFORM_ENDPOINTS.get(platform)
     if endpoint is None:
         raise ValueError(f"No meeting-bot endpoint for platform: {platform!r}")
 
+    payload = {
+        "url": meeting_url,
+        "meetingId": meeting_id,
+        "userId": user_id,
+        "botDisplayName": bot_display_name,
+    }
+    # Omitted rather than sent as null when there is no plan cap - see the
+    # docstring. An absent key is what makes the bot fall back to its env var.
+    if max_duration_minutes is not None:
+        payload["maxDurationMinutes"] = max_duration_minutes
+
     response = httpx.post(
         f"{host.url}{endpoint}",
-        json={
-            "url": meeting_url,
-            "meetingId": meeting_id,
-            "userId": user_id,
-            "botDisplayName": bot_display_name,
-        },
+        json=payload,
         headers={
             "Authorization": f"Bearer {settings.meeting_bot_bearer_token}"
         },

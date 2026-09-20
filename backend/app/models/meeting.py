@@ -73,3 +73,8 @@ class UserSettings(BaseModel):
     email: str
     bot_display_name: str
     ask_ai_instructions: Optional[str] = None
+    # The user's billing tier id - "free", "pro" or "team". Read-only here:
+    # UserSettingsUpdate has no plan field on purpose, so the settings PATCH
+    # can never change what someone is paying for. Plan changes go through
+    # the billing endpoints (Phase 3).
+    plan: str = "free"
