@@ -138,6 +138,52 @@
   }
 }
 
+/* Touch targets.
+   On a coarse pointer every control gets at least a 44px hit area, without
+   changing what is painted: a transparent, centred overlay grows the target
+   while the button keeps its visual size. Doing it here rather than by
+   resizing forty controls means a new small icon button is covered the day it
+   is written, instead of the next time someone audits.
+
+   Scoped to `button` and `[role=switch]`, and to coarse pointers only, so it
+   cannot disturb mouse layouts. The one element in the app that already uses
+   ::after - the stretched link over a meeting row - is an <a>, not a button.
+   Opt a control out with `.no-tap` if its overlay ever swallows a neighbour. */
+@media (pointer: coarse) {
+  button:not(.no-tap),
+  [role='switch']:not(.no-tap) {
+    position: relative;
+  }
+
+  button:not(.no-tap)::after,
+  [role='switch']:not(.no-tap)::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 100%;
+    height: 100%;
+    min-width: 44px;
+    min-height: 44px;
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* Honour the OS setting everywhere, not only where a component remembered to
+   add a motion-reduce: variant. Animations are not removed outright - a
+   spinner that does not spin reads as frozen - they are collapsed to
+   effectively instant, which is the usual recommendation. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* The primary button's fill and ink, in one place because phases 4 to 7 all
    need it and a repeated gradient string is how palettes drift apart.
 

@@ -4,6 +4,8 @@ import { Loader2, CalendarClock } from 'lucide-react';
 import { Layout } from '../components/Layout';
 import api from '../lib/api';
 import { formatPlatform } from '../lib/format';
+import { useToast } from '../context/ToastContext';
+import { LoadingLabel, RowSkeleton } from '../components/Skeleton';
 
 // event.starts_at is either an ISO datetime (timed event) or a plain
 // "YYYY-MM-DD" date (all-day event, which POST /calendar/events/{id}/schedule
@@ -75,6 +77,7 @@ const RecordSwitch = ({ on, pending, disabled, onChange, label }) => (
 );
 
 export const Upcoming = () => {
+  const { toast } = useToast();
   const [status, setStatus] = useState({ connected: false, google_email: null });
   const [statusLoading, setStatusLoading] = useState(true);
   const [events, setEvents] = useState([]);
@@ -118,7 +121,7 @@ export const Upcoming = () => {
       await fetchAll();
     } catch (err) {
       console.error('Failed to update this event', err);
-      alert(err.response?.data?.detail || 'Failed to update this event.');
+      toast(err.response?.data?.detail || 'Couldn’t update that event. Please try again.');
     } finally {
       setPendingId(null);
     }
@@ -163,9 +166,10 @@ export const Upcoming = () => {
           {error && <p className="text-sm text-red-600 dark:text-red-400 mb-4">{error}</p>}
 
           {eventsLoading ? (
-            <div className="flex h-64 items-center justify-center">
-              <Loader2 className="w-8 h-8 animate-spin text-brand-blue" />
-            </div>
+            <>
+              <LoadingLabel>Loading your calendar…</LoadingLabel>
+              <RowSkeleton rows={4} />
+            </>
           ) : events.length === 0 ? (
             <div className="px-6 py-16 text-center text-sm text-muted">
               No upcoming events with a Google Meet or Zoom link.
