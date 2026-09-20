@@ -74,11 +74,6 @@ export const MeetingRow = ({ meeting, onDeleteRequest, onRetry, retrying }) => {
   const title = meeting.title || meeting.meeting_url || 'Meeting';
   const { tone } = getStatusMeta(meeting.status);
 
-  // GET /meetings already returns the whole transcript, so the summary line
-  // costs nothing extra here. A meeting still processing has no summary and
-  // gets no subline - its badge already says what it is doing, and repeating
-  // that under the title just says it twice.
-
   return (
     <article className="group relative grid grid-cols-[34px_minmax(0,1fr)] items-center gap-x-3 gap-y-0 border-b border-line px-2.5 py-3 transition-colors hover:bg-tint tablet:grid-cols-[34px_minmax(0,1fr)_auto_auto]">
       <span className={`grid h-8.5 w-8.5 place-items-center rounded-[10px] ${ICON_TONE[tone]}`}>
@@ -95,9 +90,6 @@ export const MeetingRow = ({ meeting, onDeleteRequest, onRetry, retrying }) => {
         >
           {title}
         </Link>
-        {meeting.transcript?.summary && (
-          <p className="mt-0.5 truncate text-[13px] text-muted">{meeting.transcript.summary}</p>
-        )}
       </div>
 
       <div className="relative z-10 col-start-2 mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-2 pr-9 tablet:col-start-3 tablet:row-start-1 tablet:mt-0 tablet:flex-nowrap tablet:gap-3.5 tablet:pr-0">
