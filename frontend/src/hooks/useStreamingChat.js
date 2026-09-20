@@ -32,7 +32,12 @@ export function useStreamingChat({ streamPath, buildBody, toolLabels, onEvent, i
   const sendingRef = useRef(false);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // `block: 'nearest'` scrolls the message list and nothing else. The
+    // default is 'start', which scrolls every ancestor scroll container -
+    // including the window - so on the meeting page, where the page is now
+    // the only scroll container, the greeting dragged the whole page down by
+    // 56px on load and pulled the sticky header off the top of the screen.
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
 
   useEffect(() => {

@@ -8,6 +8,7 @@ import { MeetingChatProvider } from '../context/MeetingChatContext';
 import { DeleteConfirmDialog } from '../components/DeleteConfirmDialog';
 import { Loader2 } from 'lucide-react';
 import api from '../lib/api';
+import { usePersistentToggle } from '../hooks/usePersistentToggle';
 
 export const MeetingView = () => {
   const { id } = useParams();
@@ -17,6 +18,10 @@ export const MeetingView = () => {
   const [error, setError] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  // Remembered across meetings: collapsing the panel on one call and finding
+  // it back on the next is the same annoyance as the sidebar rail resetting.
+  const [chatOpen, toggleChat] = usePersistentToggle('meeting-chat-open', true);
+  const [sheetOpen, setSheetOpen] = useState(false);
 
   useEffect(() => {
     let intervalId;
@@ -132,22 +137,49 @@ export const MeetingView = () => {
           they share a single conversation through this provider rather than
           each owning its own copy of the chat state. */}
       <MeetingChatProvider meetingId={meeting.id}>
-        {/* Mobile height is intentionally unconstrained: the chat sheet below is
-            fixed over the bottom of the viewport, so a viewport-height card with
-            its own scroller would bury the tab content underneath it. */}
-        <div className="lg:h-[calc(100vh-4rem)] flex bg-surface border border-border-strong rounded-2xl overflow-hidden shadow-sm">
-          <div className="flex-1 min-w-0">
-            <MeetingDetails meeting={meeting} onRetry={handleRetry} onStop={handleStop} onDeleteRequest={setDeleteTarget} />
-          </div>
+        {/* No card. The old wrapper was a bordered, rounded box fixed to
+            calc(100vh-4rem) with its own scroller inside the page's scroller -
+            a card inside a card, and a scrollbar inside a scrollbar. The page
+            is the only scroll container now.
 
-          {/* Desktop: permanent chat column */}
-          <div className="hidden lg:block w-105 flex-none border-l border-line">
-            <MeetingChatInterface />
-          </div>
+            The chat column is a grid track rather than a fixed 420px flex
+            child, which is what squeezed the content between 1024 and 1200px;
+            collapsing it now gives the whole width back. */}
+        <div
+          className={`grid min-h-full items-start gap-0 ${
+            chatOpen ? 'wide:grid-cols-[minmax(0,1fr)_360px]' : 'wide:grid-cols-[minmax(0,1fr)]'
+          }`}
+        >
+          <MeetingDetails
+            meeting={meeting}
+            onRetry={handleRetry}
+            onStop={handleStop}
+            onDeleteRequest={setDeleteTarget}
+            chatOpen={chatOpen}
+            onToggleChat={toggleChat}
+            onOpenMobileChat={() => setSheetOpen(true)}
+          />
+
+          {/* Sticky rather than scrolling with the page, so the composer stays
+              put while the transcript moves behind it. -mt-6/-mr-8 cancel the
+              page gutter on all three sides so this is a true full-height
+              column. Without the top cancel its natural top sits at main's
+              24px padding and a 100vh box hangs its composer below the fold;
+              without the bottom cancel that same box plus the page's 32px
+              bottom padding makes the document taller than the viewport and
+              adds a scrollbar to a meeting that fits. */}
+          {chatOpen && (
+            <aside className="-mr-8 -mb-8 -mt-6 hidden border-l border-line bg-sidebar wide:sticky wide:top-0 wide:block wide:h-screen">
+              <MeetingChatInterface />
+            </aside>
+          )}
         </div>
 
-        {/* Mobile: drag-up chat sheet */}
-        <MobileChatSheet meetingTitle={meeting.title || meeting.meeting_url} />
+        <MobileChatSheet
+          meetingTitle={meeting.title || meeting.meeting_url}
+          open={sheetOpen}
+          onClose={() => setSheetOpen(false)}
+        />
       </MeetingChatProvider>
 
       <DeleteConfirmDialog

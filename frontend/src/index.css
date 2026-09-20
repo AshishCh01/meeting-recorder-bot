@@ -70,6 +70,13 @@
      and the missing middle is why tablets currently get a stretched phone
      layout. Named `tablet` so the intent survives in the markup. */
   --breakpoint-tablet: 45rem;
+
+  /* The meeting page's chat column needs about 360px of its own before the
+     content column stops being squeezed. At 1024 the full sidebar, the chat
+     column and the gutters leave the title roughly 96px, which truncates
+     "Pricing page review" to nothing useful. Below this the chat becomes the
+     same sheet phones get. The prototype draws the line at the same place. */
+  --breakpoint-wide: 68.75rem;
 }
 
 :root {

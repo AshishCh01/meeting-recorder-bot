@@ -1,134 +1,109 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { X, ChevronUp, Send, Loader2 } from 'lucide-react';
+import { X, Send, Loader2 } from 'lucide-react';
 import { useMeetingChatContext } from '../../context/MeetingChatContext';
 
 const SUGGESTIONS = ['What did I commit to?', 'What was decided?'];
-const DRAG_THRESHOLD = 60;
 
-export const MobileChatSheet = ({ meetingTitle }) => {
-  const [expanded, setExpanded] = useState(false);
-  const { messages, input, setInput, loading, streaming, status, sendMessage, messagesEndRef } = useMeetingChatContext();
-  const dragStartY = useRef(null);
+/**
+ * The chat surface below 1100px, where the side column would squeeze the
+ * content column rather than sit beside it.
+ *
+ * It used to be permanently docked over the bottom of the page - a peek card
+ * plus its own composer - which on a 375px screen took a fixed slice of a
+ * viewport the summary was already short of. Now it is a sheet that opens from
+ * the header button and covers the screen while it is open, so the content
+ * gets the whole viewport the rest of the time.
+ */
+export const MobileChatSheet = ({ meetingTitle, open, onClose }) => {
+  const { messages, input, setInput, loading, streaming, status, sendMessage, messagesEndRef } =
+    useMeetingChatContext();
 
-  const handleTouchStart = (e) => {
-    dragStartY.current = e.touches[0].clientY;
-  };
+  // The sheet scrolls its own message list; letting the page behind it scroll
+  // too is what makes a full-screen sheet feel broken on a phone.
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKey = (e) => e.key === 'Escape' && onClose();
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = previous;
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open, onClose]);
 
-  const handleTouchEnd = (e) => {
-    if (dragStartY.current === null) return;
-    const delta = dragStartY.current - e.changedTouches[0].clientY;
-    if (delta > DRAG_THRESHOLD) setExpanded(true);
-    else if (delta < -DRAG_THRESHOLD) setExpanded(false);
-    dragStartY.current = null;
-  };
+  if (!open) return null;
 
   const handleSubmit = (e) => {
     e.preventDefault();
     sendMessage();
   };
 
-  const handleSuggestionClick = (text) => {
-    setExpanded(true);
-    sendMessage(text);
-  };
-
   return (
-    <div
-      className={`lg:hidden fixed left-0 right-0 bg-surface border-t border-border-strong shadow-[0_-10px_30px_rgba(15,23,32,0.12)] flex flex-col transition-[top,bottom] duration-300 ${
-        expanded ? 'inset-0 rounded-none z-60' : 'bottom-(--mobile-nav-h) rounded-t-[20px] z-40'
-      }`}
-    >
-      {expanded ? (
-        <>
-          <div className="flex-none flex items-center gap-2.5 px-4 py-3 bg-status-muted-bg">
-            <button onClick={() => setExpanded(false)} className="text-brand-blue">
-              <X className="w-5 h-5" />
-            </button>
-            <div className="min-w-0">
-              <div className="text-sm font-extrabold text-brand-dark">Ask about this meeting</div>
-              <div className="text-xs text-muted truncate">{meetingTitle}</div>
-            </div>
-          </div>
-          <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3">
-            {messages.map((msg) => {
-              const isUser = msg.role === 'user';
-              return (
-                <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-                  <div
-                    className={`max-w-[86%] px-3.5 py-3 rounded-2xl text-sm leading-relaxed border ${
-                      isUser
-                        ? 'bg-brand-blue text-white border-brand-blue'
-                        : 'bg-surface text-brand-dark border-border-strong'
-                    }`}
-                  >
-                    {isUser ? msg.content : <ReactMarkdown>{msg.content}</ReactMarkdown>}
-                  </div>
-                </div>
-              );
-            })}
-            {loading && !streaming && (
-              <div className="text-xs text-muted">{status || 'Thinking…'}</div>
-            )}
-            <div ref={messagesEndRef} />
-          </div>
-        </>
-      ) : (
-        <div
-          onTouchStart={handleTouchStart}
-          onTouchEnd={handleTouchEnd}
-          onClick={() => setExpanded(true)}
-          className="flex-none px-4.5 pt-2.5 pb-5 flex flex-col gap-3 cursor-pointer"
-        >
-          <div className="self-center w-9 h-1 rounded-full bg-border-strong" />
-          <div className="flex items-center gap-2.5">
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-extrabold text-brand-dark">Ask about this meeting</div>
-              <div className="text-xs text-muted">Drag up for full chat</div>
-            </div>
-            <ChevronUp className="w-4 h-4 text-faint" />
-          </div>
-          <div className="flex gap-1.5 overflow-x-auto">
+    <div className="fixed inset-0 z-70 flex flex-col bg-surface wide:hidden" role="dialog" aria-modal="true" aria-label="Ask about this meeting">
+      <div className="flex flex-none items-center gap-2.5 border-b border-line px-4 py-3">
+        <button type="button" onClick={onClose} aria-label="Close chat" className="text-muted transition-colors hover:text-brand-dark">
+          <X className="h-5 w-5" />
+        </button>
+        <div className="min-w-0">
+          <div className="text-sm font-extrabold text-brand-dark">Ask about this meeting</div>
+          <div className="truncate text-xs text-muted">{meetingTitle}</div>
+        </div>
+      </div>
+
+      <div className="flex flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden px-4 py-4">
+        {messages.length === 0 && (
+          <div className="flex flex-wrap gap-1.5">
             {SUGGESTIONS.map((s) => (
-              <span
+              <button
                 key={s}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleSuggestionClick(s);
-                }}
-                className="flex-none px-2.5 py-1.5 rounded-full border border-border text-xs font-semibold text-body whitespace-nowrap"
+                type="button"
+                onClick={() => sendMessage(s)}
+                className="rounded-full border border-border px-2.5 py-1.5 text-xs font-semibold text-body transition-colors hover:border-brand-blue hover:text-brand-dark"
               >
                 {s}
-              </span>
+              </button>
             ))}
           </div>
-        </div>
-      )}
+        )}
+        {messages.map((msg) => {
+          const isUser = msg.role === 'user';
+          return (
+            <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+              <div
+                className={`max-w-[86%] break-words rounded-2xl border px-3.5 py-3 text-sm leading-relaxed ${
+                  isUser ? 'btn-primary border-transparent' : 'chat-markdown border-line bg-surface-hover text-brand-dark'
+                }`}
+              >
+                {isUser ? msg.content : <ReactMarkdown>{msg.content}</ReactMarkdown>}
+              </div>
+            </div>
+          );
+        })}
+        {loading && !streaming && <div className="text-xs text-muted">{status || 'Thinking…'}</div>}
+        <div ref={messagesEndRef} />
+      </div>
 
       <form
         onSubmit={handleSubmit}
-        onClick={(e) => {
-          if (!expanded) {
-            e.preventDefault();
-            setExpanded(true);
-          }
-        }}
-        className="flex-none px-4.5 pb-5 pt-1 flex gap-2.5"
+        className="flex flex-none gap-2.5 border-t border-line px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] pt-3"
       >
         <input
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onFocus={() => setExpanded(true)}
           placeholder="Ask anything…"
-          className="flex-1 h-11 px-3.5 border border-border rounded-xl text-sm text-brand-dark placeholder:text-faint focus:outline-none focus:border-brand-blue"
+          /* 16px: below that, iOS Safari zooms the page on focus. */
+          className="h-11 flex-1 rounded-xl border border-border bg-surface px-3.5 text-base text-brand-dark placeholder:text-muted focus:border-brand-blue focus:outline-none"
         />
         <button
           type="submit"
           disabled={!input.trim() || loading}
-          className="flex-none w-11 h-11 rounded-xl bg-linear-to-br from-brand-blue to-brand-blue-light text-white flex items-center justify-center disabled:opacity-50"
+          aria-label="Send"
+          className="btn-primary flex h-11 w-11 flex-none items-center justify-center rounded-xl disabled:opacity-50"
         >
-          {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
         </button>
       </form>
     </div>
