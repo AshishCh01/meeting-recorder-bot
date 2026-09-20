@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#FBFCFE" />
+    <title>Meetings — MeetIQ</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="app.css" />
+    <script>
+      (function () {
+        var s = null;
+        try {
+          s = localStorage.getItem('theme');
+        } catch (e) {}
+        if (s ? s === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches)
+          document.documentElement.classList.add('dark');
+      })();
+    </script>
+  </head>
+
+  <body class="app" data-page="meetings">
+    <main class="main">
+      <div class="page">
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">Meetings</h1>
+            <p class="page-sub">8 recordings · 2 this week</p>
+          </div>
+          <div class="toolbar">
+            <label class="search">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+              <input type="search" placeholder="Search meetings" aria-label="Search meetings" />
+            </label>
+            <button class="btn btn-primary" data-record>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
+              Record
+            </button>
+          </div>
+        </div>
+
+        <!-- Scrolls sideways on a phone rather than being clipped at the edge. -->
+        <div class="chips" role="tablist" aria-label="Filter by status">
+          <button class="chip is-on" role="tab">All <span class="n">8</span></button>
+          <button class="chip" role="tab">Completed <span class="n">6</span></button>
+          <button class="chip" role="tab">Processing <span class="n">1</span></button>
+          <button class="chip" role="tab">Failed <span class="n">1</span></button>
+          <button class="chip" role="tab">Scheduled <span class="n">3</span></button>
+        </div>
+
+        <div class="group-head"><span class="eyebrow">This week</span><i></i></div>
+        <div class="list">
+          <!-- In progress: the one row where a status badge earns its place. -->
+          <article class="row">
+            <span class="row-icon is-live">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="13" height="16" rx="2" /><path d="m16 10 5-3v10l-5-3" /></svg>
+            </span>
+            <div style="min-width: 0">
+              <a href="meeting.html" class="row-title truncate" style="display: block">Design review — pricing page</a>
+              <p class="row-sub truncate">Recording now · started 6 minutes ago</p>
+            </div>
+            <div class="row-right">
+              <span class="badge warn"><i class="pulse"></i> Recording</span>
+              <span class="row-meta"><span>Google Meet</span></span>
+              <span class="row-actions">
+                <button class="icon-btn" data-row-menu aria-label="More actions">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>
+                </button>
+              </span>
+            </div>
+          </article>
+
+          <article class="row">
+            <span class="row-icon">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="13" height="16" rx="2" /><path d="m16 10 5-3v10l-5-3" /></svg>
+            </span>
+            <div style="min-width: 0">
+              <a href="meeting.html" class="row-title truncate" style="display: block">Meeting Recorder Bot Architecture and Lifecycle Overview</a>
+              <p class="row-sub truncate">Walked through initialization, the URL allow list, and how the bot authenticates before joining.</p>
+            </div>
+            <div class="row-right">
+              <span class="row-meta"><b>2 min</b><span>Google Meet</span><span>Fri 13:16</span></span>
+              <span class="row-actions">
+                <button class="icon-btn" data-row-menu aria-label="More actions">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>
+                </button>
+              </span>
+            </div>
+          </article>
+        </div>
+
+        <div class="group-head"><span class="eyebrow">Earlier</span><i></i></div>
+        <div class="list">
+          <article class="row">
+            <span class="row-icon">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="13" height="16" rx="2" /><path d="m16 10 5-3v10l-5-3" /></svg>
+            </span>
+            <div style="min-width: 0">
+              <a href="meeting.html" class="row-title truncate" style="display: block">Testing and Debugging Google Meet Bot</a>
+              <p class="row-sub truncate">Reproduced the admission timeout and agreed on a retry path. Two follow-ups for Dan.</p>
+            </div>
+            <div class="row-right">
+              <span class="row-meta"><b>2 min</b><span>Google Meet</span><span>Thu 08:09</span></span>
+              <span class="row-actions">
+                <button class="icon-btn" data-row-menu aria-label="More actions">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>
+                </button>
+              </span>
+            </div>
+          </article>
+
+          <!-- Failed: the action sits in the row, not behind a browser alert. -->
+          <article class="row">
+            <span class="row-icon is-bad">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16h.01" /></svg>
+            </span>
+            <div style="min-width: 0">
+              <a href="meeting.html" class="row-title truncate" style="display: block">Weekly standup</a>
+              <p class="row-sub truncate">Transcription failed — the host never admitted the bot.</p>
+            </div>
+            <div class="row-right">
+              <span class="badge bad">Failed</span>
+              <span class="row-meta"><span>Zoom</span><span>Wed 09:30</span></span>
+              <span class="row-actions">
+                <button class="btn btn-quiet" style="height: 30px; padding: 0 10px; font-size: 13px">Retry</button>
+                <button class="icon-btn" data-row-menu aria-label="More actions">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>
+                </button>
+              </span>
+            </div>
+          </article>
+
+          <article class="row">
+            <span class="row-icon">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="13" height="16" rx="2" /><path d="m16 10 5-3v10l-5-3" /></svg>
+            </span>
+            <div style="min-width: 0">
+              <a href="meeting.html" class="row-title truncate" style="display: block">Meeting Recorder Bot Lifecycle and Architecture</a>
+              <p class="row-sub truncate">Covered ffmpeg capture, the webhook back to the API, and where recordings are stored.</p>
+            </div>
+            <div class="row-right">
+              <span class="row-meta"><b>4 min</b><span>Zoom</span><span>Wed 14:30</span></span>
+              <span class="row-actions">
+                <button class="icon-btn" data-row-menu aria-label="More actions">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>
+                </button>
+              </span>
+            </div>
+          </article>
+
+          <article class="row">
+            <span class="row-icon">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="13" height="16" rx="2" /><path d="m16 10 5-3v10l-5-3" /></svg>
+            </span>
+            <div style="min-width: 0">
+              <a href="meeting.html" class="row-title truncate" style="display: block">Discussion on AI Legal Assistant and Meeting Notes</a>
+              <p class="row-sub truncate">Scoped the legal assistant idea and parked it until after the billing work.</p>
+            </div>
+            <div class="row-right">
+              <span class="row-meta"><b>3 min</b><span>Google Meet</span><span>Wed 12:40</span></span>
+              <span class="row-actions">
+                <button class="icon-btn" data-row-menu aria-label="More actions">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>
+                </button>
+              </span>
+            </div>
+          </article>
+
+          <article class="row">
+            <span class="row-icon">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="13" height="16" rx="2" /><path d="m16 10 5-3v10l-5-3" /></svg>
+            </span>
+            <div style="min-width: 0">
+              <a href="meeting.html" class="row-title truncate" style="display: block">Project Status Update and Meeting Recording</a>
+              <p class="row-sub truncate">Status across the three workstreams; nothing blocked.</p>
+            </div>
+            <div class="row-right">
+              <span class="row-meta"><b>3 min</b><span>Zoom</span><span>Wed 12:00</span></span>
+              <span class="row-actions">
+                <button class="icon-btn" data-row-menu aria-label="More actions">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>
+                </button>
+              </span>
+            </div>
+          </article>
+
+          <article class="row">
+            <span class="row-icon">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="13" height="16" rx="2" /><path d="m16 10 5-3v10l-5-3" /></svg>
+            </span>
+            <div style="min-width: 0">
+              <a href="meeting.html" class="row-title truncate" style="display: block">Project Update &amp; Meeting Recording Bot Demo</a>
+              <p class="row-sub truncate">Demoed the bot end to end for the team and collected feedback on the summary format.</p>
+            </div>
+            <div class="row-right">
+              <span class="row-meta"><b>3 min</b><span>Google Meet</span><span>Wed 12:05</span></span>
+              <span class="row-actions">
+                <button class="icon-btn" data-row-menu aria-label="More actions">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>
+                </button>
+              </span>
+            </div>
+          </article>
+        </div>
+      </div>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

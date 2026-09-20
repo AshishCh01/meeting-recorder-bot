@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#FBFCFE" />
+    <title>Settings — MeetIQ</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="app.css" />
+    <link rel="stylesheet" href="screens.css" />
+    <script>
+      (function () {
+        var s = null;
+        try {
+          s = localStorage.getItem('theme');
+        } catch (e) {}
+        if (s ? s === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches)
+          document.documentElement.classList.add('dark');
+      })();
+    </script>
+  </head>
+
+  <body class="app" data-page="settings">
+    <main class="main">
+      <div class="page">
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">Settings</h1>
+            <p class="page-sub">Your account, the bot's name, and what MeetIQ is connected to.</p>
+          </div>
+        </div>
+
+        <div class="set">
+          <!-- Sections, so the page is navigable instead of one long scroll. -->
+          <nav class="set-nav">
+            <a class="is-on" href="#account">Account</a>
+            <a href="#bot">Bot &amp; recording</a>
+            <a href="#ai">Ask AI</a>
+            <a href="#calendar">Calendar</a>
+            <a href="#notifications">Notifications</a>
+          </nav>
+
+          <div>
+            <section class="set-card" id="account">
+              <header>
+                <span class="avatar" style="width: 34px; height: 34px; border-radius: 10px">A</span>
+                <div style="min-width: 0">
+                  <h2>Account</h2>
+                  <p>Signed in with email and password.</p>
+                </div>
+              </header>
+              <div class="body">
+                <div class="field">
+                  <label for="email">Email</label>
+                  <input class="input" id="email" type="email" value="ashishchoudhary5430@gmail.com" readonly />
+                  <p class="hint">Contact support to change the address on your account.</p>
+                </div>
+              </div>
+            </section>
+
+            <section class="set-card" id="bot">
+              <header>
+                <span class="set-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="12" rx="3" /><path d="M12 4v3M9 13h.01M15 13h.01" /></svg>
+                </span>
+                <div>
+                  <h2>Bot &amp; recording</h2>
+                  <p>What participants see when MeetIQ joins a call for you.</p>
+                </div>
+              </header>
+              <div class="body">
+                <div class="field">
+                  <label for="botname">Bot display name</label>
+                  <input class="input" id="botname" type="text" value="MeetIQ Notetaker" maxlength="50" />
+                  <p class="hint">Shown in the participant list. Everyone in the call can see the bot is there.</p>
+                </div>
+                <div class="opt" style="margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px">
+                  <div>
+                    <div class="t">Leave when the call ends</div>
+                    <div class="d">The bot exits as soon as the last person leaves.</div>
+                  </div>
+                  <button class="switch" role="switch" aria-checked="true" aria-label="Leave when the call ends"></button>
+                </div>
+              </div>
+              <footer>
+                <button class="btn btn-primary" onclick="toast('Settings saved')">Save changes</button>
+                <span class="muted" style="font-size: 12.5px">Recordings are capped at 90 minutes.</span>
+              </footer>
+            </section>
+
+            <section class="set-card" id="ai">
+              <header>
+                <span class="set-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v2M18.4 5.6l-1.4 1.4M21 12h-2M5 12H3M7 7 5.6 5.6" /><circle cx="12" cy="14" r="5" /></svg>
+                </span>
+                <div>
+                  <h2>Ask AI instructions</h2>
+                  <p>What the assistant should know about you and how you like answers.</p>
+                </div>
+              </header>
+              <div class="body">
+                <div class="field">
+                  <textarea class="textarea" maxlength="1000" placeholder="e.g. I lead the platform team. Keep answers short and list action items first."></textarea>
+                  <div style="display: flex; justify-content: space-between; gap: 12px">
+                    <p class="hint">Used for tone and context. Answers still come only from your meetings.</p>
+                    <p class="hint" style="flex: none">0/1000</p>
+                  </div>
+                </div>
+              </div>
+              <footer><button class="btn btn-primary" onclick="toast('Instructions saved')">Save instructions</button></footer>
+            </section>
+
+            <section class="set-card" id="calendar">
+              <header>
+                <span class="set-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M16 3v4M8 3v4M3 11h18" /></svg>
+                </span>
+                <div>
+                  <h2>Calendar</h2>
+                  <p>Connecting a calendar only lists your meetings. Nothing records until you switch an event on.</p>
+                </div>
+              </header>
+              <div class="body">
+                <div class="integration">
+                  <span class="logo">GC</span>
+                  <div style="flex: 1; min-width: 0">
+                    <div class="t" style="font-size: 14px; font-weight: 700; color: var(--text)">Google Calendar</div>
+                    <div class="d truncate" style="font-size: 12.5px; color: var(--text-muted)">ashishchoudhary5430@gmail.com</div>
+                  </div>
+                  <button class="btn btn-quiet">Disconnect</button>
+                </div>
+                <div class="integration" style="opacity: 0.6">
+                  <span class="logo">MS</span>
+                  <div style="flex: 1; min-width: 0">
+                    <div class="t" style="font-size: 14px; font-weight: 700; color: var(--text)">Outlook Calendar</div>
+                    <div class="d" style="font-size: 12.5px; color: var(--text-muted)">Not available yet</div>
+                  </div>
+                  <span class="badge">Coming soon</span>
+                </div>
+              </div>
+            </section>
+
+            <section class="set-card" id="notifications">
+              <header>
+                <span class="set-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 8-3 8h18s-3-1-3-8M13.7 21a2 2 0 0 1-3.4 0" /></svg>
+                </span>
+                <div>
+                  <h2>Notifications</h2>
+                  <p>Only ever sent to you. Guests never hear from MeetIQ.</p>
+                </div>
+              </header>
+              <div class="body">
+                <div class="opt">
+                  <div>
+                    <div class="t">Email me when notes are ready</div>
+                    <div class="d">One message per meeting.</div>
+                  </div>
+                  <button class="switch" role="switch" aria-checked="true" aria-label="Email me when notes are ready"></button>
+                </div>
+                <div class="opt">
+                  <div>
+                    <div class="t">Weekly digest of action items</div>
+                    <div class="d">Monday morning, your open follow-ups.</div>
+                  </div>
+                  <button class="switch" role="switch" aria-checked="false" aria-label="Weekly digest of action items"></button>
+                </div>
+              </div>
+            </section>
+
+            <section class="set-card" style="border-color: var(--bad-soft)">
+              <header>
+                <div>
+                  <h2 style="color: var(--bad-ink)">Delete account</h2>
+                  <p>Removes every recording, transcript and chat. This cannot be undone.</p>
+                </div>
+              </header>
+              <footer><button class="btn btn-danger">Delete my account</button></footer>
+            </section>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <script src="app.js"></script>
+    <script>
+      // Highlight the section you are reading.
+      const links = [...document.querySelectorAll('.set-nav a')];
+      const io = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((en) => {
+            if (!en.isIntersecting) return;
+            links.forEach((a) => a.classList.toggle('is-on', a.getAttribute('href') === `#${en.target.id}`));
+          });
+        },
+        { rootMargin: '-20% 0px -70% 0px' }
+      );
+      document.querySelectorAll('.set-card[id]').forEach((s) => io.observe(s));
+    </script>
+  </body>
+</html>
