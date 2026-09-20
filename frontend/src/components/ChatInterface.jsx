@@ -40,7 +40,7 @@ export const ChatInterface = ({
       {header}
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4.5">
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4.5">
         <div className={`flex flex-col gap-3.5 min-h-full ${column}`}>
           {messages.length === 0 && emptyState}
 
@@ -49,10 +49,8 @@ export const ChatInterface = ({
             return (
               <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
                 <div
-                  className={`max-w-[88%] px-4 py-3 rounded-2xl text-[14.5px] leading-relaxed border ${
-                    isUser
-                      ? 'bg-brand-blue text-white border-brand-blue'
-                      : 'bg-surface text-brand-dark border-border-strong'
+                  className={`max-w-[88%] rounded-2xl border px-4 py-3 text-[14.5px] leading-relaxed ${
+                    isUser ? 'btn-primary border-transparent font-semibold' : 'border-line bg-surface text-brand-dark'
                   }`}
                 >
                   {isUser ? (
@@ -71,7 +69,7 @@ export const ChatInterface = ({
               the growing text is the progress indicator. */}
           {loading && !streaming && (
             <div className="flex justify-start">
-              <div className="bg-surface border border-border-strong rounded-2xl px-4 py-3.5 flex items-center gap-2.5">
+              <div className="flex items-center gap-2.5 rounded-2xl border border-line bg-surface px-4 py-3.5">
                 <div className="flex items-center gap-1.5">
                   <div className="w-2 h-2 bg-brand-blue/40 rounded-full animate-bounce" />
                   <div className="w-2 h-2 bg-brand-blue/60 rounded-full animate-bounce" style={{ animationDelay: '0.15s' }} />
@@ -86,7 +84,7 @@ export const ChatInterface = ({
       </div>
 
       {/* Input */}
-      <div className="flex-none px-4.5 py-3.5 border-t border-line">
+      <div className="flex-none border-t border-line px-4.5 pb-[calc(0.875rem+env(safe-area-inset-bottom,0px))] pt-3.5">
         <div className={`flex flex-col gap-2.5 ${column}`}>
           {suggestions.length > 0 && (
             <div className="flex gap-1.5 flex-wrap">
@@ -95,7 +93,7 @@ export const ChatInterface = ({
                   key={s}
                   onClick={() => sendMessage(s)}
                   disabled={loading || disabled}
-                  className="px-2.5 py-1.5 rounded-full border border-border bg-surface text-xs font-semibold text-body hover:border-brand-blue/40 disabled:opacity-50 transition-colors"
+                  className="rounded-full border border-line bg-surface px-2.5 py-1.5 text-xs font-semibold text-body transition-colors hover:border-brand-blue hover:text-brand-dark disabled:opacity-50"
                 >
                   {s}
                 </button>
@@ -110,12 +108,12 @@ export const ChatInterface = ({
               disabled={loading || disabled}
               maxLength={4000}
               placeholder={placeholder}
-              className="flex-1 h-11 px-3.5 border border-border rounded-xl bg-surface text-sm text-brand-dark placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-brand-blue/20 focus:border-brand-blue transition-all disabled:opacity-50"
+              className="h-11 flex-1 rounded-xl border border-border bg-surface px-3.5 text-base text-brand-dark placeholder:text-muted transition-colors focus:border-brand-blue focus:outline-none disabled:opacity-50"
             />
             <button
               type="submit"
               disabled={!input.trim() || loading || disabled}
-              className="flex-none w-11 h-11 rounded-xl bg-linear-to-br from-brand-blue to-brand-blue-light text-white flex items-center justify-center disabled:opacity-50 transition-opacity"
+              className="btn-primary flex h-11 w-11 flex-none items-center justify-center rounded-xl transition-opacity disabled:opacity-50"
             >
               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
             </button>

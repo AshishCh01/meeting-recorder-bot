@@ -28,25 +28,28 @@ const Centered = ({ children }) => (
   <div className="flex-1 flex flex-col items-center justify-center gap-4 p-6 text-center">{children}</div>
 );
 
+// Top-aligned rather than vertically centred. Centring inside a scroll
+// container is what clipped the last row of starter prompts on a short
+// viewport: the overflow went off the top, where it could not be scrolled to.
 const EmptyChat = ({ onPrompt, disabled }) => (
-  <div className="flex-1 flex flex-col items-center justify-center text-center gap-6 py-10">
-    <div className="w-12 h-12 rounded-2xl bg-brand-blue/10 flex items-center justify-center">
-      <Sparkles className="w-6 h-6 text-brand-blue" />
+  <div className="flex flex-col items-center gap-6 pb-4 pt-[6vh] text-center">
+    <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent-soft">
+      <Sparkles className="h-6 w-6 text-accent-ink" />
     </div>
     <div>
-      <h2 className="text-xl font-extrabold text-brand-dark tracking-tight">Ask anything about your meetings</h2>
-      <p className="text-sm text-muted mt-1.5 max-w-md">
+      <h2 className="text-xl font-extrabold tracking-tight text-brand-dark">Ask anything about your meetings</h2>
+      <p className="mt-1.5 max-w-md text-sm text-muted">
         Search by date, topic or title. Answers link back to the meetings they came from.
       </p>
     </div>
-    <div className="grid sm:grid-cols-2 gap-2 w-full max-w-lg">
+    <div className="grid w-full max-w-lg gap-2 sm:grid-cols-2">
       {starterPrompts().map((prompt) => (
         <button
           key={prompt}
           type="button"
           onClick={() => onPrompt(prompt)}
           disabled={disabled}
-          className="px-3.5 py-3 rounded-xl border border-border bg-surface text-left text-sm font-medium text-body hover:border-brand-blue/40 hover:text-brand-dark disabled:opacity-50 transition-colors"
+          className="rounded-xl border border-line bg-surface px-3.5 py-3 text-left text-sm font-medium text-body transition-colors hover:border-brand-blue hover:text-brand-dark disabled:opacity-50"
         >
           {prompt}
         </button>
@@ -125,6 +128,13 @@ export const AskAI = () => {
     }
   };
 
+  useEffect(() => {
+    if (!drawerOpen) return undefined;
+    const onKey = (e) => e.key === 'Escape' && setDrawerOpen(false);
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [drawerOpen]);
+
   const requestDelete = (target) => {
     setDrawerOpen(false);
     setDeleteTarget(target);
@@ -144,16 +154,16 @@ export const AskAI = () => {
   );
 
   const header = (
-    <div className="flex-none px-4 sm:px-5 py-4 border-b border-line flex items-center gap-2.5">
+    <div className="flex flex-none items-center gap-2.5 border-b border-line px-4 py-3.5 tablet:px-5">
       <button
         type="button"
         onClick={() => setDrawerOpen(true)}
-        className="lg:hidden p-1.5 -ml-1.5 rounded-lg text-muted hover:text-brand-dark hover:bg-surface-hover"
+        className="-ml-1.5 rounded-lg p-1.5 text-muted transition-colors hover:bg-tint-2 hover:text-brand-dark wide:hidden"
         aria-label="Show chats"
       >
-        <MessagesSquare className="w-5 h-5" />
+        <MessagesSquare className="h-5 w-5" />
       </button>
-      <Sparkles className="hidden lg:block w-5 h-5 text-brand-blue flex-none" />
+      <Sparkles className="hidden h-5 w-5 flex-none text-brand-blue wide:block" />
       <div className="min-w-0">
         <div className="text-[15px] font-extrabold text-brand-dark tracking-tight truncate">{chat.title}</div>
         <div className="text-xs text-muted">Answers cite your meetings</div>
@@ -198,21 +208,37 @@ export const AskAI = () => {
 
   return (
     <Layout>
-      <div className="h-[calc(100dvh-13rem)] lg:h-[calc(100vh-4rem)] flex bg-surface border border-border-strong rounded-2xl overflow-hidden shadow-sm">
-        {/* Desktop: the chat list as a column */}
-        <aside className="hidden lg:flex w-72 flex-none flex-col border-r border-line bg-sidebar">{list}</aside>
+      {/* No card. The bordered, rounded box with its own scrollbar is gone, and
+          so is the h-[calc(100dvh-13rem)] guess that produced it - 13rem was
+          never the real chrome height, so the pane was short on some phones and
+          clipped the starter prompts on others.
 
-        <section className="flex-1 min-w-0 flex flex-col">
+          The negative margins cancel the shell's page gutter exactly, so the
+          chat is full-bleed, and the heights are the real arithmetic: the
+          viewport less the phone top bar and bottom nav, or the whole viewport
+          from the tablet up. */}
+      <div
+        className="-mx-4 -mb-[calc(var(--mobile-nav-h)+1rem)] -mt-4 flex h-[calc(100dvh-3.5rem-var(--mobile-nav-h))] bg-surface tablet:-mx-6 tablet:-mb-8 tablet:-mt-6 tablet:h-dvh lg:-mx-8"
+      >
+        {/* The chat list as a column, on the same 1100px rule the meeting page
+            uses for its Ask AI panel. Below that it is the drawer. */}
+        <aside className="hidden w-66 flex-none flex-col border-r border-line bg-sidebar wide:flex">{list}</aside>
+
+        <section className="flex min-w-0 flex-1 flex-col">
           {header}
-          <div className="flex-1 min-h-0 flex flex-col">{main}</div>
+          <div className="flex min-h-0 flex-1 flex-col">{main}</div>
         </section>
       </div>
 
       {/* Mobile: the chat list as a drawer */}
       {drawerOpen && (
-        <div className="lg:hidden fixed inset-0 z-60 flex">
-          <div className="absolute inset-0 bg-slate-900/50" onClick={() => setDrawerOpen(false)} />
-          <div className="relative w-80 max-w-[85%] h-full bg-sidebar shadow-xl flex flex-col">
+        <div className="fixed inset-0 z-60 flex wide:hidden">
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 bg-brand-dark/40 backdrop-blur-[2px] dark:bg-black/60"
+            onClick={() => setDrawerOpen(false)}
+          />
+          <div className="relative flex h-full w-80 max-w-[85%] flex-col bg-sidebar shadow-xl">
             <div className="flex-none flex items-center justify-between px-4 pt-4">
               <span className="text-[15px] font-extrabold text-brand-dark">Chats</span>
               <button
@@ -254,7 +280,7 @@ const NewChatButton = ({ onClick, creating }) => (
     type="button"
     onClick={onClick}
     disabled={creating}
-    className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-brand-blue text-white text-sm font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity"
+    className="btn-primary flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition-opacity hover:opacity-90 disabled:opacity-50"
   >
     {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
     New chat

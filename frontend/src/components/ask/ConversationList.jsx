@@ -63,14 +63,14 @@ const ConversationRow = ({ conversation, active, onNavigate, onRename, onDeleteR
   return (
     <div
       className={`group relative flex items-center rounded-lg transition-colors ${
-        active ? 'bg-status-done-bg' : 'hover:bg-surface-hover'
+        active ? 'bg-accent-soft' : 'hover:bg-tint-2'
       }`}
     >
       <Link
         to={`/ask/${conversation.id}`}
         onClick={onNavigate}
         className={`flex-1 min-w-0 px-2.5 py-2 text-sm truncate ${
-          active ? 'font-semibold text-status-done-fg' : 'text-body group-hover:text-brand-dark'
+          active ? 'font-bold text-accent-ink' : 'text-body group-hover:text-brand-dark'
         }`}
         title={conversation.title}
       >
@@ -81,14 +81,14 @@ const ConversationRow = ({ conversation, active, onNavigate, onRename, onDeleteR
           type="button"
           onClick={() => setMenuOpen((open) => !open)}
           className={`p-1.5 mr-1 rounded-md text-faint hover:text-body transition-opacity ${
-            menuOpen ? 'opacity-100' : 'opacity-100 lg:opacity-0 lg:group-hover:opacity-100 focus:opacity-100'
+            menuOpen ? 'opacity-100' : 'opacity-100 focus:opacity-100 wide:opacity-0 wide:group-hover:opacity-100'
           }`}
           aria-label="Chat options"
         >
           <MoreHorizontal className="w-4 h-4" />
         </button>
         {menuOpen && (
-          <div className="absolute right-1 top-full mt-1 z-20 w-36 bg-surface border border-border-strong rounded-xl shadow-lg py-1">
+          <div className="absolute right-1 top-full z-20 mt-1 w-36 rounded-xl border border-border bg-surface py-1 shadow-xl">
             <button
               type="button"
               onClick={startEditing}
@@ -148,7 +148,7 @@ export const ConversationList = ({
           type="button"
           onClick={onNewChat}
           disabled={creating}
-          className="w-full flex items-center justify-center gap-2 h-10 rounded-xl bg-brand-blue text-white text-sm font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity"
+          className="btn-primary flex h-10 w-full items-center justify-center gap-2 rounded-xl text-sm font-bold transition-opacity hover:opacity-90 disabled:opacity-50"
         >
           {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
           New chat
@@ -168,7 +168,7 @@ export const ConversationList = ({
           <div className="flex flex-col gap-4">
             {groups.map((group) => (
               <div key={group.label}>
-                <div className="px-2.5 pb-1 text-[11px] font-bold uppercase tracking-wide text-faint">
+                <div className="px-2.5 pb-1 font-mono text-[10.5px] uppercase tracking-[0.14em] text-muted">
                   {group.label}
                 </div>
                 <div className="flex flex-col gap-0.5">
