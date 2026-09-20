@@ -11,6 +11,7 @@ import { ActionItemsList } from './meeting/ActionItemsList';
 import { TranscriptTab } from './meeting/TranscriptTab';
 import { formatPlatform, formatDuration } from '../lib/format';
 import api from '../lib/api';
+import { useToast } from '../context/ToastContext';
 
 const TABS = [
   { id: 'summary', label: 'Summary' },
@@ -87,6 +88,7 @@ export const MeetingDetails = ({
   meeting, onRetry, onStop, onDeleteRequest,
   chatOpen, onToggleChat, onOpenMobileChat,
 }) => {
+  const { toast } = useToast();
   const [activeTab, setActiveTab] = useState('summary');
   const [isRetrying, setIsRetrying] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -106,7 +108,7 @@ export const MeetingDetails = ({
       window.URL.revokeObjectURL(url);
     } catch (error) {
       console.error('Error downloading PDF:', error);
-      alert('Failed to download PDF. Please try again.');
+      toast('Couldn’t build the PDF. Please try again.');
     } finally {
       setIsDownloading(false);
     }

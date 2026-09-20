@@ -8,6 +8,7 @@ import { ConversationList } from '../components/ask/ConversationList';
 import { askMarkdownComponents } from '../components/ask/askMarkdown';
 import { useAskAiChat } from '../hooks/useAskAiChat';
 import { useAskAiConversations } from '../hooks/useAskAiConversations';
+import { useToast } from '../context/ToastContext';
 
 // Day-first, like the dates the assistant is told to expect ("15/09/2026").
 const dayFirst = (date) =>
@@ -61,6 +62,7 @@ const EmptyChat = ({ onPrompt, disabled }) => (
 export const AskAI = () => {
   const { conversationId } = useParams();
   const navigate = useNavigate();
+  const { toast } = useToast();
   const conversations = useAskAiConversations();
   const { create, remove, removeAll, rename, setTitle, refreshHead } = conversations;
 
@@ -122,7 +124,7 @@ export const AskAI = () => {
       setDeleteTarget(null);
     } catch (err) {
       console.error('Delete failed', err);
-      alert('Failed to delete. Please try again.');
+      toast(err.response?.data?.detail || 'Couldn’t delete that. Please try again.');
     } finally {
       setDeleting(false);
     }
@@ -207,7 +209,7 @@ export const AskAI = () => {
   }
 
   return (
-    <Layout>
+    <Layout wide>
       {/* No card. The bordered, rounded box with its own scrollbar is gone, and
           so is the h-[calc(100dvh-13rem)] guess that produced it - 13rem was
           never the real chrome height, so the pane was short on some phones and

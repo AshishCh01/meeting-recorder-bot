@@ -6,13 +6,15 @@ import { MeetingChatInterface } from '../components/ChatInterface';
 import { MobileChatSheet } from '../components/meeting/MobileChatSheet';
 import { MeetingChatProvider } from '../context/MeetingChatContext';
 import { DeleteConfirmDialog } from '../components/DeleteConfirmDialog';
-import { Loader2 } from 'lucide-react';
 import api from '../lib/api';
 import { usePersistentToggle } from '../hooks/usePersistentToggle';
+import { useToast } from '../context/ToastContext';
+import { LoadingLabel, MeetingSkeleton } from '../components/Skeleton';
 
 export const MeetingView = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [meeting, setMeeting] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -75,7 +77,7 @@ export const MeetingView = () => {
       setMeeting(prev => ({ ...prev, status: 'transcribing', error_message: null }));
     } catch (err) {
       console.error(err);
-      alert('Retry failed to initiate.');
+      toast(err.response?.data?.detail || 'Couldn’t start the retry. Please try again.');
     }
   };
 
@@ -94,7 +96,7 @@ export const MeetingView = () => {
       // ffmpeg) - the 5s poll above picks that up.
     } catch (err) {
       console.error(err);
-      alert(err.response?.data?.detail || 'Failed to stop the bot.');
+      toast(err.response?.data?.detail || 'Couldn’t stop the bot. Please try again.');
     }
   };
 
@@ -106,7 +108,7 @@ export const MeetingView = () => {
       navigate('/dashboard');
     } catch (err) {
       console.error('Delete failed', err);
-      alert('Failed to delete meeting.');
+      toast(err.response?.data?.detail || 'Couldn’t delete this meeting. Please try again.');
       setDeleting(false);
     }
   };
@@ -114,9 +116,8 @@ export const MeetingView = () => {
   if (loading) {
     return (
       <Layout>
-        <div className="flex h-[60vh] items-center justify-center">
-          <Loader2 className="w-8 h-8 animate-spin text-brand-blue" />
-        </div>
+        <LoadingLabel>Loading this meeting…</LoadingLabel>
+        <MeetingSkeleton />
       </Layout>
     );
   }
@@ -132,7 +133,7 @@ export const MeetingView = () => {
   }
 
   return (
-    <Layout>
+    <Layout wide>
       {/* Both chat surfaces below are always mounted (only CSS hides one), so
           they share a single conversation through this provider rather than
           each owning its own copy of the chat state. */}

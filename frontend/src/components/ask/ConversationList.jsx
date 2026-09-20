@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Loader2, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
 import { groupByRecency } from '../../lib/dateGroups';
+import { LoadingLabel, ThreadSkeleton } from '../Skeleton';
 
 // One row: the chat's title as a link, and a menu with Rename (inline) and Delete.
 const ConversationRow = ({ conversation, active, onNavigate, onRename, onDeleteRequest }) => {
@@ -54,7 +55,7 @@ const ConversationRow = ({ conversation, active, onNavigate, onRename, onDeleteR
           if (e.key === 'Escape') cancelRef.current = true;
           if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur();
         }}
-        className="w-full h-9 px-2.5 border border-brand-blue rounded-lg bg-surface text-sm text-brand-dark focus:outline-none focus:ring-2 focus:ring-brand-blue/20"
+        className="h-9 w-full rounded-lg border border-brand-blue bg-surface px-2.5 text-base text-brand-dark focus:outline-none tablet:text-sm"
         aria-label="Chat title"
       />
     );
@@ -157,9 +158,10 @@ export const ConversationList = ({
 
       <div className="flex-1 overflow-y-auto px-3 pb-3">
         {loading ? (
-          <div className="flex justify-center py-6">
-            <Loader2 className="w-5 h-5 animate-spin text-faint" />
-          </div>
+          <>
+            <LoadingLabel>Loading your chats…</LoadingLabel>
+            <ThreadSkeleton />
+          </>
         ) : error ? (
           <p className="px-2.5 py-4 text-sm text-red-600 dark:text-red-400">{error}</p>
         ) : items.length === 0 ? (

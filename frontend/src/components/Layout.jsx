@@ -22,7 +22,7 @@ import { useSidebar } from '../context/SidebarContext';
  * phone where the sidebar is not rendered at all. Write these as max-width
  * rules and that bug comes straight back.
  */
-export const Layout = ({ children }) => {
+export const Layout = ({ children, wide = false }) => {
   const location = useLocation();
   const { isRail, toggleRail } = useSidebar();
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -178,7 +178,15 @@ export const Layout = ({ children }) => {
       </nav>
 
       <div className={`flex min-h-screen flex-col transition-[margin] duration-200 ${mainML}`}>
-        <main className="w-full flex-1 px-4 pb-[calc(var(--mobile-nav-h)+1rem)] pt-[calc(3.5rem+1rem)] tablet:px-6 tablet:pb-8 tablet:pt-6 lg:px-8">
+        {/* `wide` opts a page out of the reading-width cap: the meeting page
+            manages its own full-bleed columns and must not be centred inside a
+            narrower box. Everything else stops at 1100px so rows do not stretch
+            across a 1920px monitor. */}
+        <main
+          className={`w-full flex-1 px-4 pb-[calc(var(--mobile-nav-h)+1rem)] pt-[calc(3.5rem+1rem)] tablet:px-6 tablet:pb-8 tablet:pt-6 lg:px-8 ${
+            wide ? '' : 'mx-auto max-w-[1100px]'
+          }`}
+        >
           {children}
         </main>
       </div>

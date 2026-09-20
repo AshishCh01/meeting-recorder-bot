@@ -8,6 +8,8 @@ import api from '../lib/api';
 import { getStatusMeta } from '../lib/status';
 import { groupMeetingsByDate } from '../lib/dateGroups';
 import { formatDuration } from '../lib/format';
+import { useToast } from '../context/ToastContext';
+import { LoadingLabel, RowSkeleton } from '../components/Skeleton';
 
 const FILTERS = [
   { key: 'all', label: 'All statuses' },
@@ -18,6 +20,7 @@ const FILTERS = [
 ];
 
 export const Dashboard = () => {
+  const { toast } = useToast();
   const [meetings, setMeetings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -71,7 +74,7 @@ export const Dashboard = () => {
       await api.post(`/meetings/${meetingId}/retry`);
     } catch (err) {
       console.error('Retry failed', err);
-      alert('Failed to initiate retry.');
+      toast(err.response?.data?.detail || 'Couldn’t start the retry. Please try again.');
       fetchMeetings(); // Revert optimistic update
     } finally {
       setRetryingId(null);
@@ -104,7 +107,7 @@ export const Dashboard = () => {
       setDeleteTarget(null);
     } catch (err) {
       console.error('Delete failed', err);
-      alert('Failed to delete meeting.');
+      toast(err.response?.data?.detail || 'Couldn’t delete that meeting. Please try again.');
     } finally {
       setDeleting(false);
     }
@@ -250,9 +253,10 @@ export const Dashboard = () => {
       />
 
       {loading ? (
-        <div className="flex h-64 items-center justify-center">
-          <Loader2 className="w-8 h-8 animate-spin text-brand-blue" />
-        </div>
+        <>
+          <LoadingLabel>Loading your meetings…</LoadingLabel>
+          <RowSkeleton />
+        </>
       ) : meetings.length === 0 ? (
         <EmptyState onRecordClick={() => setIsModalOpen(true)} />
       ) : groups.length === 0 ? (

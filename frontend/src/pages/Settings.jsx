@@ -254,7 +254,7 @@ export const Settings = () => {
                     value={instructions}
                     onChange={(e) => setInstructions(e.target.value)}
                     placeholder="e.g. I lead the platform team. Keep answers short and list action items first."
-                    className="w-full px-4 py-3 bg-surface border border-border rounded-xl text-sm text-brand-dark placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-brand-blue/20 focus:border-brand-blue transition-all resize-y"
+                    className="w-full resize-y rounded-xl border border-border bg-surface px-4 py-3 text-base text-brand-dark placeholder:text-muted transition-colors focus:border-brand-blue focus:outline-none tablet:text-sm"
                   />
                   <div className="mt-1 flex justify-between gap-3 text-xs text-muted">
                     <span>Used for tone and context. Answers still come only from your meetings.</span>
