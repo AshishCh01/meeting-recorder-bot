@@ -131,6 +131,13 @@ export const MeetingDetails = ({
   const actionCount = action_items?.length || 0;
   const title = meeting.title || meeting.meeting_url || 'Meeting';
 
+  // The header and the player bleed out to the page gutter so their dividers
+  // run edge to edge. On the right that is only the page edge while the chat
+  // column is absent - with it open, the same -mx-8 pushes them 32px *into*
+  // the panel, over its heading. So the right-hand bleed is dropped from the
+  // width the panel appears at, and a gutter takes its place.
+  const gutter = chatOpen ? 'wide:mr-0 wide:pr-6' : '';
+
   const created = meeting.created_at ? new Date(meeting.created_at) : null;
   const metaDateTime = created
     ? `${created.toLocaleDateString([], { day: 'numeric', month: 'short' })}, ${created.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
@@ -145,7 +152,9 @@ export const MeetingDetails = ({
       {/* One sticky header. It bleeds past the page gutter with matching
           padding so the divider runs edge to edge while the text stays on the
           content grid. `top` clears the phone top bar, which is fixed. */}
-      <header className="sticky top-14 z-20 -mx-4 border-b border-line bg-page/85 px-4 pt-3 backdrop-blur-lg tablet:top-0 tablet:-mx-6 tablet:px-6 lg:-mx-8 lg:px-8">
+      <header
+        className={`sticky top-14 z-20 -mx-4 border-b border-line bg-page/85 px-4 pt-3 backdrop-blur-lg tablet:top-0 tablet:-mx-6 tablet:px-6 lg:-mx-8 lg:px-8 ${gutter}`}
+      >
         <div className="flex items-center justify-between gap-3">
           <Link
             to="/dashboard"
@@ -241,7 +250,7 @@ export const MeetingDetails = ({
 
       {/* One scroll container: the page itself. No inner overflow-y-auto, no
           viewport-height card, no scrollbar inside a scrollbar. */}
-      <div className="flex-1 pb-8 pt-5">
+      <div className={`flex-1 pb-8 pt-5 ${chatOpen ? 'wide:pr-6' : ''}`}>
         {meeting.status === 'failed' && (
           <div className="mb-5 flex items-start gap-3 rounded-xl border border-status-failed-fg/20 bg-status-failed-bg p-4">
             <AlertCircle className="mt-0.5 h-5 w-5 flex-none text-status-failed-fg" />
@@ -290,7 +299,7 @@ export const MeetingDetails = ({
         {activeTab === 'transcript' && <TranscriptTab conversation={conversation} />}
       </div>
 
-      <AudioPlayer src={meeting.audio_playback_url} />
+      <AudioPlayer src={meeting.audio_playback_url} gutterClass={gutter} />
     </div>
   );
 };
