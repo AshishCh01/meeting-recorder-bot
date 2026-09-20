@@ -23,6 +23,11 @@
 @theme static {
   --color-brand-blue: #1668D6;
   --color-brand-blue-light: #0E9CBC;
+  /* The prototype's --azure-deep. Phase 0's mapping had no home for it, but
+     the primary button needs it: white ink on the azure->cyan gradient is
+     3.23:1 at the cyan end, which fails AA. Ending the gradient here instead
+     takes the worst point to 5.27. See the button note below. */
+  --color-brand-blue-deep: #0B4FB4;
   --color-brand-dark: #0B1420;
 
   --color-body: #45566A;
@@ -59,6 +64,12 @@
 
   --font-sans: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  /* The shell has three layouts, not two: phone below this, icon rail from
+     here to 1023, full sidebar at lg and up. Tailwind ships no 720px stop,
+     and the missing middle is why tablets currently get a stretched phone
+     layout. Named `tablet` so the intent survives in the markup. */
+  --breakpoint-tablet: 45rem;
 }
 
 :root {
@@ -82,6 +93,7 @@
 
   --color-brand-blue: #4DA3FF;
   --color-brand-blue-light: #6FE3F2;
+  --color-brand-blue-deep: #1D6FD6;
   --color-brand-dark: #E9EEF5;
 
   --color-body: #AAB6C4;
