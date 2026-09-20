@@ -1,6 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertCircle, RefreshCw, Loader2, Download, Trash2, Square } from 'lucide-react';
+import {
+  AlertCircle, RefreshCw, Loader2, Download, Trash2, Square,
+  ArrowLeft, MoreHorizontal, PanelRight, Sparkles,
+} from 'lucide-react';
 import { StatusBadge } from './StatusBadge';
 import { AudioPlayer } from './meeting/AudioPlayer';
 import { SummaryTab } from './meeting/SummaryTab';
@@ -31,7 +34,59 @@ const PROCESSING_LABEL = {
   transcribing: 'Transcribing and generating insights…',
 };
 
-export const MeetingDetails = ({ meeting, onRetry, onStop, onDeleteRequest }) => {
+/** Delete lives here now rather than as a permanent button beside Export. */
+const HeaderMenu = ({ onDelete }) => {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e) => !wrapRef.current?.contains(e.target) && setOpen(false);
+    const onKey = (e) => e.key === 'Escape' && setOpen(false);
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="More actions"
+        className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] text-muted transition-colors hover:bg-tint-2 hover:text-brand-dark"
+      >
+        <MoreHorizontal className="h-4 w-4" />
+      </button>
+      {open && (
+        <div role="menu" className="absolute right-0 top-full z-30 mt-1.5 w-44 overflow-hidden rounded-xl border border-border bg-surface py-1.5 shadow-xl">
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onDelete();
+            }}
+            className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-red-600 transition-colors hover:bg-surface-hover dark:text-red-400"
+          >
+            <Trash2 className="h-4 w-4" />
+            Delete meeting
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const MeetingDetails = ({
+  meeting, onRetry, onStop, onDeleteRequest,
+  chatOpen, onToggleChat, onOpenMobileChat,
+}) => {
   const [activeTab, setActiveTab] = useState('summary');
   const [isRetrying, setIsRetrying] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -75,87 +130,140 @@ export const MeetingDetails = ({ meeting, onRetry, onStop, onDeleteRequest }) =>
   const title = meeting.title || meeting.meeting_url || 'Meeting';
 
   const created = meeting.created_at ? new Date(meeting.created_at) : null;
-  const breadcrumbDate = created
-    ? created.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })
-    : '';
   const metaDateTime = created
     ? `${created.toLocaleDateString([], { day: 'numeric', month: 'short' })}, ${created.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
     : '';
 
   return (
-    <div className="flex flex-col lg:h-full lg:overflow-hidden bg-surface">
-      {/* Header */}
-      <div className="flex-none px-5 lg:px-7 py-4 lg:py-5 border-b border-line flex flex-col gap-3.5">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2.5 text-[13px] text-muted min-w-0">
-            <Link to="/dashboard" className="font-bold text-brand-blue whitespace-nowrap">← Meetings</Link>
-            {breadcrumbDate && (
-              <>
-                <span>/</span>
-                <span className="truncate">{breadcrumbDate}</span>
-              </>
-            )}
-          </div>
-          <div className="flex gap-2 flex-none">
+    /* The column reaches the bottom of the viewport even when the meeting is
+       short, so the player rests on the bottom edge instead of floating in the
+       middle of an empty page. 3.5rem is main's own pt-6 + pb-8, so this fills
+       exactly and adds no scrollbar. */
+    <div className="flex min-h-full min-w-0 flex-col tablet:min-h-[calc(100dvh-3.5rem)]">
+      {/* One sticky header. It bleeds past the page gutter with matching
+          padding so the divider runs edge to edge while the text stays on the
+          content grid. `top` clears the phone top bar, which is fixed. */}
+      <header className="sticky top-14 z-20 -mx-4 border-b border-line bg-page/85 px-4 pt-3 backdrop-blur-lg tablet:top-0 tablet:-mx-6 tablet:px-6 lg:-mx-8 lg:px-8">
+        <div className="flex items-center justify-between gap-3">
+          <Link
+            to="/dashboard"
+            className="inline-flex flex-none items-center gap-1.5 py-1 text-[13px] font-bold text-muted transition-colors hover:text-brand-dark"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Meetings
+          </Link>
+
+          <div className="flex flex-none items-center gap-1.5">
             {meeting.status === 'completed' && (
               <button
                 onClick={handleDownloadPDF}
                 disabled={isDownloading}
                 title="Export as PDF"
-                className="px-2.5 lg:px-3.5 py-2 border border-border rounded-lg text-[13px] font-bold text-brand-dark disabled:opacity-50 flex items-center gap-1.5"
+                className="inline-flex items-center gap-1.5 rounded-[10px] border border-line bg-surface px-2.5 py-2 text-[13px] font-bold text-brand-dark transition-colors hover:border-border disabled:opacity-50 tablet:px-3.5"
               >
-                {isDownloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                <span className="hidden lg:inline">Export</span>
+                {isDownloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                <span className="hidden tablet:inline">Export</span>
               </button>
             )}
+
+            {/* Below 1100px the chat opens as a full-screen sheet; above it,
+                the column is collapsed and restored in place. */}
             <button
-              onClick={() => onDeleteRequest(meeting)}
-              title="Delete meeting"
-              className="px-2.5 lg:px-3.5 py-2 border border-border rounded-lg text-[13px] font-bold text-brand-dark flex items-center gap-1.5"
+              type="button"
+              onClick={onOpenMobileChat}
+              aria-label="Ask about this meeting"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] text-muted transition-colors hover:bg-tint-2 hover:text-brand-dark wide:hidden"
             >
-              <Trash2 className="w-4 h-4" />
-              <span className="hidden lg:inline">Delete</span>
+              <Sparkles className="h-4.5 w-4.5" />
             </button>
+            <button
+              type="button"
+              onClick={onToggleChat}
+              aria-pressed={chatOpen}
+              aria-label={chatOpen ? 'Hide the Ask AI panel' : 'Show the Ask AI panel'}
+              title={chatOpen ? 'Hide the Ask AI panel' : 'Show the Ask AI panel'}
+              className={`hidden h-9 w-9 items-center justify-center rounded-[10px] transition-colors hover:bg-tint-2 wide:inline-flex ${
+                chatOpen ? 'text-brand-blue' : 'text-muted hover:text-brand-dark'
+              }`}
+            >
+              <PanelRight className="h-4.5 w-4.5" />
+            </button>
+
+            <HeaderMenu onDelete={() => onDeleteRequest(meeting)} />
           </div>
         </div>
 
-        <div className="min-w-0">
-          <h1 className="text-xl lg:text-[26px] font-extrabold tracking-tight text-brand-dark leading-tight">{title}</h1>
-          <div className="flex items-center gap-2.5 mt-2 flex-wrap">
-            <StatusBadge status={meeting.status} />
-            <span className="text-[13px] lg:text-[13.5px] text-muted">
-              {formatPlatform(meeting.platform)}
-              {metaDateTime ? ` · ${metaDateTime}` : ''} · {formatDuration(meeting.duration_seconds)}
-            </span>
-          </div>
+        {/* Title on one line, metadata beside it rather than beneath. Below
+            720px the metadata wraps under, because there is no room for both. */}
+        <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+          {/* The title gets the whole line on a phone: below 720px the meta
+              takes a full-width row of its own rather than competing for the
+              same line, which had truncated the title to "Pricing ..." at
+              375px. */}
+          <h1 className="w-full min-w-0 truncate text-[19px] font-extrabold leading-tight tracking-tight text-brand-dark tablet:w-auto tablet:flex-1">
+            {title}
+          </h1>
+          <span className="flex w-full flex-none items-center gap-2 text-[12.5px] text-muted tablet:w-auto">
+            {meeting.status !== 'completed' && <StatusBadge status={meeting.status} />}
+            <span>{formatPlatform(meeting.platform)}</span>
+            {metaDateTime && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>{metaDateTime}</span>
+              </>
+            )}
+            <span aria-hidden="true">·</span>
+            <span>{formatDuration(meeting.duration_seconds)}</span>
+          </span>
         </div>
 
-        <AudioPlayer src={meeting.audio_playback_url} />
+        <nav className="-mb-px mt-2.5 flex gap-5 overflow-x-auto no-scrollbar">
+          {TABS.map((tab) => {
+            const on = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                aria-current={on ? 'page' : undefined}
+                className={`relative flex-none border-b-2 pb-2.5 pt-2 text-[13.5px] font-bold transition-colors ${
+                  on ? 'border-brand-blue text-brand-dark' : 'border-transparent text-muted hover:text-brand-dark'
+                }`}
+              >
+                {tab.label}
+                {tab.id === 'action_items' && <span className="ml-1.5 text-[11px] text-muted">{actionCount}</span>}
+              </button>
+            );
+          })}
+        </nav>
+      </header>
 
+      {/* One scroll container: the page itself. No inner overflow-y-auto, no
+          viewport-height card, no scrollbar inside a scrollbar. */}
+      <div className="flex-1 pb-8 pt-5">
         {meeting.status === 'failed' && (
-          <div className="p-4 bg-status-failed-bg border border-red-100 dark:border-red-500/20 rounded-xl flex items-start gap-3">
-            <AlertCircle className="w-5 h-5 text-status-failed-fg mt-0.5 flex-none" />
-            <div className="flex-1 min-w-0">
-              <h3 className="text-sm font-bold text-status-failed-fg">Processing failed</h3>
-              <p className="text-sm text-status-failed-fg/90 mt-1">
+          <div className="mb-5 flex items-start gap-3 rounded-xl border border-status-failed-fg/20 bg-status-failed-bg p-4">
+            <AlertCircle className="mt-0.5 h-5 w-5 flex-none text-status-failed-fg" />
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm font-bold text-status-failed-fg">Processing failed</h2>
+              <p className="mt-1 break-words text-sm text-status-failed-fg">
                 {meeting.error_message || 'An unknown error occurred during transcription.'}
               </p>
             </div>
             <button
               onClick={handleRetryClick}
               disabled={isRetrying}
-              className="flex-none px-3.5 py-2 bg-surface text-status-failed-fg text-sm font-bold border border-red-200 dark:border-red-500/20 rounded-lg disabled:opacity-50 flex items-center gap-2"
+              className="flex flex-none items-center gap-2 rounded-lg border border-status-failed-fg/25 bg-surface px-3.5 py-2 text-sm font-bold text-status-failed-fg disabled:opacity-50"
             >
-              <RefreshCw className={`w-4 h-4 ${isRetrying ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`h-4 w-4 ${isRetrying ? 'animate-spin' : ''}`} />
               {isRetrying ? 'Retrying…' : 'Retry'}
             </button>
           </div>
         )}
 
         {PROCESSING_STATUSES.includes(meeting.status) && (
-          <div className="p-5 bg-status-done-bg border border-border-strong rounded-xl flex flex-col items-center text-center gap-2">
-            <Loader2 className="w-6 h-6 text-brand-blue animate-spin" />
-            <h3 className="text-sm font-bold text-brand-dark">{PROCESSING_LABEL[meeting.status]}</h3>
+          <div className="mb-5 flex flex-col items-center gap-2 rounded-xl border border-accent-line bg-accent-soft p-5 text-center">
+            <Loader2 className="h-6 w-6 animate-spin text-brand-blue" />
+            <h2 className="text-sm font-bold text-brand-dark">{PROCESSING_LABEL[meeting.status]}</h2>
             <p className="text-xs text-muted">
               {meeting.status === 'queued'
                 ? 'The recorder is busy with another meeting. MeetIQ will join as soon as it frees up.'
@@ -166,55 +274,21 @@ export const MeetingDetails = ({ meeting, onRetry, onStop, onDeleteRequest }) =>
                 onClick={handleStopClick}
                 disabled={isStopping}
                 title={meeting.status === 'queued' ? 'Stop waiting and cancel this recording' : 'Stop the bot and abandon this recording'}
-                className="mt-1 px-3.5 py-2 bg-surface text-status-failed-fg text-sm font-bold border border-red-200 dark:border-red-500/20 rounded-lg disabled:opacity-50 flex items-center gap-2"
+                className="mt-1 flex items-center gap-2 rounded-lg border border-status-failed-fg/25 bg-surface px-3.5 py-2 text-sm font-bold text-status-failed-fg disabled:opacity-50"
               >
-                <Square className="w-3.5 h-3.5 fill-current" />
+                <Square className="h-3.5 w-3.5 fill-current" />
                 {isStopping ? 'Stopping…' : meeting.status === 'queued' ? 'Cancel' : 'Stop bot'}
               </button>
             )}
           </div>
         )}
-      </div>
 
-      {/* Tabs */}
-      <div className="flex-none px-5 lg:px-7 pt-3 lg:pt-0">
-        <div className="hidden lg:flex gap-6 border-b border-line -mb-px">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`py-3.5 text-sm font-bold border-b-2 transition-colors flex items-center gap-1.5 ${
-                activeTab === tab.id ? 'text-brand-blue border-brand-blue' : 'text-muted border-transparent hover:text-brand-dark'
-              }`}
-            >
-              {tab.label}
-              {tab.id === 'action_items' && (
-                <span className="text-[11px] bg-line text-body rounded-md px-1.5 py-0.5">{actionCount}</span>
-              )}
-            </button>
-          ))}
-        </div>
-        <div className="lg:hidden flex gap-1.5 bg-status-muted-bg rounded-[10px] p-1 mb-3">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex-1 text-center py-2 rounded-lg text-[13px] font-bold transition-colors ${
-                activeTab === tab.id ? 'bg-surface text-brand-dark shadow-sm' : 'text-body'
-              }`}
-            >
-              {tab.id === 'action_items' ? `Actions · ${actionCount}` : tab.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 lg:overflow-y-auto px-5 lg:px-7 pt-5 pb-44 lg:pb-5">
         {activeTab === 'summary' && <SummaryTab summary={summary} keyPoints={key_points} conclusion={conclusion} />}
         {activeTab === 'action_items' && <ActionItemsList actionItems={action_items} />}
         {activeTab === 'transcript' && <TranscriptTab conversation={conversation} />}
       </div>
+
+      <AudioPlayer src={meeting.audio_playback_url} />
     </div>
   );
 };
