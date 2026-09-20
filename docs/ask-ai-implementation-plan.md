@@ -483,3 +483,17 @@ Defaults in [config.py](../backend/app/config.py), the same way the existing cha
 | 6 Frontend | Low | |
 | 7 Tests | — | Written alongside each phase; final pass before release |
 | 8 Release | — | Backend, backfill, frontend, then monitor cost |
+
+## Open issues
+
+| # | Issue | Status |
+|---|---|---|
+| 1 | Search query embedded by the wrong provider during a Gemini outage | **Not done** |
+
+### 1. Search query embedded by the wrong provider during a Gemini outage — **Not done**
+
+**Where:** `embed_query` in [embedding_service.py](../backend/app/services/embedding_service.py) (the `except TRANSIENT_EXCEPTIONS` branch of the Gemini path). Pre-dates Ask AI; affects Ask AI's `find_meetings_by_topic` and `search_across_meetings`, and the per-meeting chat's `search_transcript`.
+
+**Problem:** when a meeting was indexed by Gemini and Gemini fails to embed the search query (429 quota, 503, timeout) and `JINA_API_KEY` is set, `embed_query` quietly embeds the query with **Jina** instead. A Jina query vector compared against Gemini-indexed vectors produces meaningless distances, so the search returns the wrong meetings or passages with no error, and the model answers confidently from them. This contradicts the function's own docstring ("`provider` MUST match whichever model indexed the meeting"). No test covers this path.
+
+**Fix to make:** `embed_query` must never switch providers for a query. When the meeting's own provider fails, raise instead of falling back. The Ask AI search tools already turn that into their `SEARCH_UNAVAILABLE` note ("Search is temporarily unavailable…"); check that `search_transcript` in [rag/tools.py](../backend/app/rag/tools.py) handles it too. Add a test: a Gemini-indexed meeting, Gemini failing, a Jina key set — no Jina call is made and the search reports it is unavailable.

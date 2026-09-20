@@ -1,0 +1,1360 @@
+/* ===================================================================
+   MeetIQ app prototype - shared styles.
+
+   Same token names and the same `.dark` switch as the landing page and
+   frontend/src/index.css, so all three surfaces stay in one palette.
+
+   Layout rules this file enforces, because they are what the current app
+   gets wrong:
+     - one scroll container per screen, never a card inside a card
+     - the sidebar is a rail on tablets, not a phone bottom bar
+     - content gets the room; chrome stays slim and sticky
+     - row actions appear on hover/focus, not on all eight rows at once
+     - inputs are 16px so iOS Safari does not zoom on focus
+   =================================================================== */
+
+:root {
+  color-scheme: light;
+
+  --bg: #fbfcfe;
+  --bg-soft: #f3f7fc;
+  --surface: #ffffff;
+  --surface-2: #f7f9fc;
+
+  --line: rgba(13, 24, 40, 0.1);
+  --line-strong: rgba(13, 24, 40, 0.17);
+
+  --text: #0b1420;
+  --text-soft: #45566a;
+  --text-muted: #6c7d91;
+
+  --azure: #1668d6;
+  --azure-deep: #0b4fb4;
+  --cyan: #0e9cbc;
+
+  --tint: rgba(13, 24, 40, 0.028);
+  --tint-2: rgba(13, 24, 40, 0.05);
+  --tint-3: rgba(13, 24, 40, 0.09);
+
+  --accent-soft: rgba(22, 104, 214, 0.1);
+  --accent-line: rgba(22, 104, 214, 0.22);
+  --accent-ink: #1560c4;
+
+  --ok-soft: rgba(14, 156, 188, 0.12);
+  --ok-ink: #0b7f9a;
+  --warn-soft: rgba(191, 123, 10, 0.12);
+  --warn-ink: #9a6508;
+  --bad-soft: rgba(199, 58, 58, 0.1);
+  --bad-ink: #b4372f;
+
+  --nav-bg: rgba(251, 252, 254, 0.86);
+  --sidebar: #f7f9fc;
+  --elevated: #ffffff;
+  --shadow-sm: 0 1px 2px rgba(13, 24, 40, 0.06), 0 1px 1px rgba(13, 24, 40, 0.04);
+  --shadow-md: 0 12px 28px -12px rgba(13, 32, 60, 0.28), 0 0 0 1px rgba(13, 24, 40, 0.05);
+  --shadow-lg: 0 30px 70px -28px rgba(13, 32, 60, 0.4), 0 0 0 1px rgba(13, 24, 40, 0.06);
+
+  --btn-face: #131c28;
+  --btn-face-2: #0b1018;
+  --btn-ink: #ffffff;
+
+  --radius: 14px;
+  --radius-lg: 20px;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --rail: 72px;
+  --side: 264px;
+  --topbar: 56px;
+  --mobnav: calc(58px + env(safe-area-inset-bottom, 0px));
+}
+
+.dark {
+  color-scheme: dark;
+
+  --bg: #080b11;
+  --bg-soft: #0b1018;
+  --surface: #10161f;
+  --surface-2: #151d28;
+
+  --line: rgba(255, 255, 255, 0.07);
+  --line-strong: rgba(255, 255, 255, 0.13);
+
+  --text: #e9eef5;
+  --text-soft: #aab6c4;
+  --text-muted: #74828f;
+
+  --azure: #4da3ff;
+  --azure-deep: #1d6fd6;
+  --cyan: #6fe3f2;
+
+  --tint: rgba(255, 255, 255, 0.025);
+  --tint-2: rgba(255, 255, 255, 0.05);
+  --tint-3: rgba(255, 255, 255, 0.09);
+
+  --accent-soft: rgba(77, 163, 255, 0.14);
+  --accent-line: rgba(77, 163, 255, 0.28);
+  --accent-ink: #8cc6ff;
+
+  --ok-soft: rgba(111, 227, 242, 0.12);
+  --ok-ink: #6fe3f2;
+  --warn-soft: rgba(228, 180, 92, 0.14);
+  --warn-ink: #e4b45c;
+  --bad-soft: rgba(228, 140, 140, 0.13);
+  --bad-ink: #e48c8c;
+
+  --nav-bg: rgba(8, 11, 17, 0.82);
+  --sidebar: #0b1018;
+  --elevated: #141d28;
+  --shadow-sm: none;
+  --shadow-md: 0 12px 28px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --shadow-lg: 0 30px 70px -26px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(255, 255, 255, 0.06);
+
+  --btn-face: #ffffff;
+  --btn-face-2: #dbe6f2;
+  --btn-ink: #0a0e14;
+}
+
+/* ------------------------------------------------------------- base */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text-soft);
+  font-family: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  color: var(--text);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--azure);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.mono {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+.eyebrow {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.truncate {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------- buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 38px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: none;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.18s, border-color 0.18s, color 0.18s, transform 0.18s var(--ease),
+    box-shadow 0.18s;
+}
+
+.btn svg {
+  flex: none;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--azure), var(--azure-deep));
+  color: #fff;
+  box-shadow: 0 6px 18px -6px rgba(22, 104, 214, 0.65);
+}
+
+.btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px -8px rgba(22, 104, 214, 0.8);
+}
+
+.btn-quiet {
+  border-color: var(--line);
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-quiet:hover {
+  border-color: var(--line-strong);
+  background: var(--tint);
+}
+
+.btn-bare {
+  color: var(--text-soft);
+}
+
+.btn-bare:hover {
+  background: var(--tint-2);
+  color: var(--text);
+}
+
+.btn-danger {
+  background: var(--bad-soft);
+  color: var(--bad-ink);
+  border-color: transparent;
+}
+
+.btn-danger:hover {
+  background: var(--bad-soft);
+  filter: brightness(1.08);
+}
+
+.btn-lg {
+  height: 46px;
+  padding: 0 20px;
+  font-size: 15px;
+  border-radius: 12px;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.18s, color 0.18s, border-color 0.18s;
+}
+
+.icon-btn:hover {
+  background: var(--tint-2);
+  color: var(--text);
+}
+
+.icon-btn.bordered {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ------------------------------------------------------------ shell */
+body.app {
+  display: flex;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 40;
+  width: var(--side);
+  display: flex;
+  flex-direction: column;
+  background: var(--sidebar);
+  border-right: 1px solid var(--line);
+  transition: width 0.22s var(--ease);
+}
+
+.side-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 60px;
+  padding: 0 14px 0 18px;
+  flex: none;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 800;
+  font-size: 16px;
+  color: var(--text);
+  letter-spacing: -0.02em;
+  min-width: 0;
+}
+
+.mark-dot {
+  fill: var(--azure);
+}
+
+.mark-from {
+  stop-color: var(--cyan);
+}
+
+.mark-to {
+  stop-color: var(--azure-deep);
+}
+
+.side-collapse {
+  margin-left: auto;
+}
+
+/* Search opens the command palette. A real one, so the sidebar carries
+   something more than four links. */
+.side-search {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 12px 10px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: border-color 0.18s, background 0.18s;
+}
+
+.side-search:hover {
+  border-color: var(--line-strong);
+}
+
+.side-search kbd {
+  margin-left: auto;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  padding: 2px 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--text-muted);
+}
+
+.side-cta {
+  margin: 0 12px 14px;
+}
+
+.side-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* Explicit: overflow-y alone makes the X axis scrollable too, and in the
+     rail that produced a stray horizontal scrollbar above the account row. */
+  overflow-x: hidden;
+  padding: 2px 12px 12px;
+}
+
+.nav-group + .nav-group {
+  margin-top: 18px;
+}
+
+.nav-label {
+  padding: 0 10px 7px;
+  display: block;
+}
+
+.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  height: 38px;
+  padding: 0 10px;
+  border-radius: 9px;
+  color: var(--text-soft);
+  font-size: 14px;
+  font-weight: 600;
+  transition: background 0.16s, color 0.16s;
+}
+
+.nav-item + .nav-item {
+  margin-top: 2px;
+}
+
+.nav-item svg {
+  flex: none;
+  color: var(--text-muted);
+  transition: color 0.16s;
+}
+
+.nav-item:hover {
+  background: var(--tint-2);
+  color: var(--text);
+}
+
+.nav-item:hover svg {
+  color: var(--text-soft);
+}
+
+/* Active state: a quiet wash plus an edge marker, instead of the filled
+   blue block the current app uses. */
+.nav-item.is-active {
+  background: var(--tint-2);
+  color: var(--text);
+  font-weight: 700;
+}
+
+.nav-item.is-active svg {
+  color: var(--azure);
+}
+
+.nav-item.is-active::before {
+  content: '';
+  position: absolute;
+  left: -12px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--azure);
+}
+
+.nav-count {
+  margin-left: auto;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Plan card - fills the dead space in the middle of the sidebar with
+   something a user acts on. */
+.plan {
+  margin: 14px 12px 0;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.plan-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.plan-bar {
+  margin: 9px 0 8px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--tint-3);
+  overflow: hidden;
+}
+
+.plan-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--azure), var(--cyan));
+}
+
+.plan a {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--accent-ink);
+}
+
+.side-foot {
+  flex: none;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--line);
+}
+
+/* One account button that opens a menu, rather than three stacked rows. */
+.account {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.16s, border-color 0.16s;
+}
+
+.account:hover {
+  background: var(--tint-2);
+}
+
+.avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, var(--azure), var(--azure-deep));
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 800;
+}
+
+.account-who {
+  min-width: 0;
+  flex: 1;
+}
+
+.account-name {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.account-mail {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+/* -------------------------------------------------- collapsed rail */
+body.rail .sidebar {
+  width: var(--rail);
+}
+
+/* Stacked in the rail, so the control that expands the sidebar again is
+   still on screen. Hiding it here would trap the user in the rail. */
+body.rail .side-top {
+  flex-direction: column;
+  height: auto;
+  gap: 6px;
+  padding: 12px 0 6px;
+  justify-content: center;
+}
+
+body.rail .side-collapse svg {
+  transform: scaleX(-1);
+}
+
+body.rail .sidebar .brand span,
+body.rail .side-search span,
+body.rail .side-search kbd,
+body.rail .nav-label,
+body.rail .nav-item span,
+body.rail .nav-count,
+body.rail .plan,
+body.rail .account-who,
+body.rail .account svg {
+  display: none;
+}
+
+body.rail .side-search {
+  justify-content: center;
+  margin: 0 12px 10px;
+  padding: 0;
+}
+
+body.rail .side-cta .btn span {
+  display: none;
+}
+
+body.rail .nav-item,
+body.rail .account {
+  justify-content: center;
+  padding: 0;
+}
+
+body.rail .nav-item.is-active::before {
+  left: -12px;
+}
+
+body.rail .main {
+  margin-left: var(--rail);
+}
+
+/* The rail's labels come from each item's `title` and `aria-label`, set in
+   app.js. A CSS tooltip would have to sit outside the nav's scroll box,
+   which is what added the horizontal scrollbar; the native one costs
+   nothing and keeps the name available to screen readers, since the
+   visible label is display:none here. */
+
+/* ------------------------------------------------- main + topbar */
+.main {
+  flex: 1;
+  min-width: 0;
+  margin-left: var(--side);
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-height: 100dvh;
+  transition: margin 0.22s var(--ease);
+}
+
+.topbar {
+  display: none;
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  height: var(--topbar);
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  background: var(--nav-bg);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--line);
+}
+
+.bottom-nav {
+  display: none;
+  position: fixed;
+  inset: auto 0 0 0;
+  z-index: 40;
+  height: var(--mobnav);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  grid-template-columns: repeat(4, 1fr);
+  background: var(--nav-bg);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-top: 1px solid var(--line);
+}
+
+.bottom-nav a {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.bottom-nav a.is-active {
+  color: var(--azure);
+}
+
+.bottom-nav svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* ------------------------------------------------------------ page */
+.page {
+  flex: 1;
+  width: 100%;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 26px 28px 40px;
+}
+
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.page-title {
+  font-size: 25px;
+}
+
+.page-sub {
+  margin-top: 4px;
+  font-size: 13.5px;
+  color: var(--text-muted);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  /* Without this the input's intrinsic width stops the toolbar shrinking,
+     and the page overflows sideways on a 320px phone. */
+  min-width: 0;
+}
+
+.search svg {
+  position: absolute;
+  left: 11px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+/* 16px keeps iOS Safari from zooming the page on focus. */
+.input,
+.search input,
+.textarea {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+  transition: border-color 0.18s, box-shadow 0.18s;
+}
+
+.search input {
+  width: 232px;
+  min-width: 0;
+  padding-left: 34px;
+}
+
+.input::placeholder,
+.search input::placeholder,
+.textarea::placeholder {
+  color: var(--text-muted);
+}
+
+.input:focus,
+.search input:focus,
+.textarea:focus {
+  outline: none;
+  border-color: var(--azure);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.textarea {
+  height: auto;
+  min-height: 96px;
+  padding: 10px 12px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+/* Filter chips: scroll sideways on small screens instead of being cut
+   off at the edge, which is what the current dashboard does. */
+.chips {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+  margin-bottom: 14px;
+}
+
+.chips::-webkit-scrollbar {
+  display: none;
+}
+
+.chip {
+  flex: none;
+  height: 32px;
+  padding: 0 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-soft);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.18s, color 0.18s, background 0.18s;
+}
+
+.chip:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.chip.is-on {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent-ink);
+}
+
+.chip .n {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------ list */
+.group-head {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 0 7px;
+  background: linear-gradient(to bottom, var(--bg) 72%, transparent);
+}
+
+.group-head i {
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+.list {
+  border-top: 1px solid var(--line);
+}
+
+/* Flat rows with dividers - no card per row, no box inside a box. */
+.row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 13px;
+  padding: 13px 10px;
+  border-bottom: 1px solid var(--line);
+  transition: background 0.16s;
+}
+
+.row:hover {
+  background: var(--tint);
+}
+
+.row-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--tint-2);
+  color: var(--text-muted);
+}
+
+.row-icon.is-live {
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+}
+
+.row-icon.is-bad {
+  background: var(--bad-soft);
+  color: var(--bad-ink);
+}
+
+.row-title {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.015em;
+}
+
+.row-sub {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.row-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.row-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.row-meta b {
+  font-weight: 600;
+  color: var(--text-soft);
+}
+
+/* Actions stay out of the way until the row is hovered or focused. */
+.row-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.16s;
+}
+
+.row:hover .row-actions,
+.row:focus-within .row-actions {
+  opacity: 1;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  background: var(--tint-2);
+  color: var(--text-soft);
+}
+
+.badge.ok {
+  background: var(--ok-soft);
+  color: var(--ok-ink);
+}
+
+.badge.warn {
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+}
+
+.badge.bad {
+  background: var(--bad-soft);
+  color: var(--bad-ink);
+}
+
+.badge .pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* ----------------------------------------------------------- cards */
+.card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.card-pad {
+  padding: 18px;
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 14px;
+  padding: 64px 24px;
+}
+
+.empty-icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.empty h3 {
+  font-size: 18px;
+}
+
+.empty p {
+  max-width: 42ch;
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+/* ------------------------------------------------------------ menu */
+.menu {
+  position: absolute;
+  z-index: 60;
+  min-width: 194px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--elevated);
+  box-shadow: var(--shadow-lg);
+}
+
+.menu button,
+.menu a {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-soft);
+  font-size: 13.5px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu button:hover,
+.menu a:hover {
+  background: var(--tint-2);
+  color: var(--text);
+}
+
+.menu .danger {
+  color: var(--bad-ink);
+}
+
+.menu hr {
+  margin: 5px 4px;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.menu .mail {
+  padding: 7px 9px 9px;
+  font-size: 12px;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
+/* --------------------------------------------------------- overlay */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: rgba(6, 10, 16, 0.55);
+  backdrop-filter: blur(2px);
+  opacity: 0;
+  animation: fade 0.18s forwards;
+}
+
+@keyframes fade {
+  to {
+    opacity: 1;
+  }
+}
+
+/* ------------------------------------------------------- palette */
+.palette {
+  position: fixed;
+  z-index: 60;
+  top: 12vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 32px));
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  background: var(--elevated);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.palette-input {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.palette-input input {
+  flex: 1;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+  outline: none;
+}
+
+.palette-list {
+  max-height: min(48vh, 380px);
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.palette-list .sec {
+  padding: 8px 10px 4px;
+}
+
+.palette-list a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  color: var(--text-soft);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.palette-list a:hover,
+.palette-list a.cursor {
+  background: var(--tint-2);
+  color: var(--text);
+}
+
+.palette-list svg {
+  color: var(--text-muted);
+}
+
+/* --------------------------------------------------------- toasts */
+.toasts {
+  position: fixed;
+  z-index: 70;
+  right: 18px;
+  bottom: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--elevated);
+  box-shadow: var(--shadow-lg);
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
+  animation: rise 0.22s var(--ease);
+}
+
+.toast svg {
+  color: var(--ok-ink);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+/* -------------------------------------------------------- switch */
+.switch {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 24px;
+  border-radius: 999px;
+  border: 0;
+  background: var(--tint-3);
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 0.2s var(--ease);
+}
+
+.switch[aria-checked='true'] {
+  background: linear-gradient(135deg, var(--azure), var(--azure-deep));
+}
+
+.switch[aria-checked='true']::after {
+  transform: translateX(16px);
+}
+
+/* ---------------------------------------------------- breakpoints */
+@media (max-width: 1023px) {
+  /* Tablets get the rail, not the phone layout. */
+  .sidebar {
+    width: var(--rail);
+  }
+  .side-top {
+    padding: 0;
+    justify-content: center;
+  }
+  /* Scoped to the sidebar: the top bar's wordmark must survive. */
+  .sidebar .brand span,
+  .side-collapse,
+  .side-search span,
+  .side-search kbd,
+  .nav-label,
+  .nav-item span,
+  .nav-count,
+  .plan,
+  .account-who,
+  .account svg {
+    display: none;
+  }
+  .side-search {
+    justify-content: center;
+    padding: 0;
+  }
+  .side-cta .btn span {
+    display: none;
+  }
+  .nav-item,
+  .account {
+    justify-content: center;
+    padding: 0;
+  }
+  .main {
+    margin-left: var(--rail);
+  }
+  .page {
+    padding: 22px 22px 36px;
+  }
+}
+
+@media (max-width: 719px) {
+  .sidebar {
+    display: none;
+  }
+  .topbar {
+    display: flex;
+  }
+  .bottom-nav {
+    display: grid;
+  }
+  /* body.rail has to be named here. A rail preference saved on a desktop
+     otherwise out-ranks a plain `.main` rule and leaves a 72px gap on the
+     phone, where the sidebar is not even displayed. */
+  .main,
+  body.rail .main {
+    margin-left: 0;
+    padding-bottom: var(--mobnav);
+  }
+  .page {
+    padding: 16px 16px 28px;
+  }
+  .page-head {
+    margin-bottom: 14px;
+  }
+  .page-title {
+    font-size: 22px;
+  }
+  .toolbar {
+    width: 100%;
+  }
+  .search {
+    flex: 1;
+  }
+  .search input {
+    width: 100%;
+  }
+  /* Phones: the status, metadata and actions move under the title rather
+     than competing with it for a single line. Keeping them in a third
+     column pushes the row past the viewport on a 320px screen. */
+  .row {
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 11px;
+    padding: 12px 4px;
+  }
+  .row-right {
+    grid-column: 2;
+    flex-wrap: wrap;
+    gap: 8px 10px;
+    margin-top: 7px;
+  }
+  .row-meta {
+    gap: 9px;
+  }
+  /* Touch has no hover, so row actions are always reachable. */
+  .row-actions {
+    opacity: 1;
+    margin-left: auto;
+  }
+  .toasts {
+    right: 12px;
+    left: 12px;
+    bottom: calc(var(--mobnav) + 12px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
