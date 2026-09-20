@@ -124,6 +124,21 @@ export const Dashboard = () => {
 
   const groups = useMemo(() => groupMeetingsByDate(filteredMeetings), [filteredMeetings]);
 
+  // Chip counts ignore the status filter (a chip has to say what it would
+  // show, not what the current filter leaves) but respect the search, so
+  // searching narrows every chip at once.
+  const counts = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    const searched = meetings.filter(
+      (m) => !query || (m.title || m.meeting_url || '').toLowerCase().includes(query)
+    );
+    return FILTERS.reduce((acc, f) => {
+      acc[f.key] =
+        f.key === 'all' ? searched.length : searched.filter((m) => getStatusMeta(m.status).tone === f.key).length;
+      return acc;
+    }, {});
+  }, [meetings, searchQuery]);
+
   const totalDurationLabel = useMemo(() => {
     const totalSeconds = meetings.reduce((sum, m) => sum + (m.duration_seconds || 0), 0);
     return formatDuration(totalSeconds);
@@ -141,41 +156,50 @@ export const Dashboard = () => {
               {meetings.length} recording{meetings.length === 1 ? '' : 's'} · {totalDurationLabel} of audio
             </p>
           </div>
-          <div className="flex gap-3">
-            <div className="relative">
-              <Search className="w-4 h-4 text-faint absolute left-3 top-1/2 -translate-y-1/2" />
+          <div className="flex w-full gap-3 sm:w-auto">
+            <div className="relative flex-1 sm:flex-none">
+              <Search className="w-4 h-4 text-muted absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 placeholder="Search titles"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full sm:w-72 h-10 pl-9 pr-3 rounded-lg border border-border text-sm text-brand-dark placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-brand-blue/30 focus:border-brand-blue transition-all"
+                className="w-full sm:w-72 h-10 pl-9 pr-3 rounded-[10px] border border-line bg-surface text-base sm:text-sm text-brand-dark placeholder:text-muted focus:outline-none focus:border-brand-blue transition-colors"
               />
             </div>
             <button
               onClick={() => setIsModalOpen(true)}
-              className="flex items-center px-4 py-2 bg-linear-to-br from-brand-blue to-brand-blue-light text-white font-bold text-sm rounded-lg hover:opacity-90 transition-opacity shadow-sm shrink-0"
+              className="btn-primary flex flex-none items-center gap-1.5 rounded-[10px] px-4 py-2 text-sm font-bold transition-opacity hover:opacity-90"
             >
-              <Plus className="w-4 h-4 mr-1.5" />
+              <Plus className="w-4 h-4" />
               Record
             </button>
           </div>
         </div>
 
-        <div className="flex gap-2 flex-wrap">
-          {FILTERS.map((f) => (
-            <button
-              key={f.key}
-              onClick={() => setStatusFilter(f.key)}
-              className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
-                statusFilter === f.key
-                  ? 'bg-brand-blue text-white border-brand-blue'
-                  : 'bg-surface text-body border-border-strong hover:border-brand-blue/40'
-              }`}
-            >
-              {f.label}
-            </button>
-          ))}
+        {/* Scrolls sideways on a phone instead of clipping at the edge. */}
+        <div className="-mx-4 flex gap-2 overflow-x-auto px-4 no-scrollbar tablet:mx-0 tablet:px-0" role="tablist" aria-label="Filter by status">
+          {FILTERS.map((f) => {
+            const on = statusFilter === f.key;
+            return (
+              <button
+                key={f.key}
+                role="tab"
+                aria-selected={on}
+                onClick={() => setStatusFilter(f.key)}
+                className={`flex h-8 flex-none items-center gap-1.5 rounded-full border px-3.5 text-[13px] font-semibold transition-colors ${
+                  on
+                    ? 'border-accent-line bg-accent-soft text-accent-ink'
+                    : 'border-line bg-surface text-body hover:border-border hover:text-brand-dark'
+                }`}
+              >
+                {f.label}
+                <span className={`text-[11.5px] tabular-nums ${on ? 'text-accent-ink' : 'text-muted'}`}>
+                  {counts[f.key] ?? 0}
+                </span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -191,7 +215,7 @@ export const Dashboard = () => {
                 type="url"
                 required
                 placeholder="https://meet.google.com/abc-defg-hij"
-                className="w-full px-4 py-2.5 rounded-xl border border-border focus:outline-none focus:ring-2 focus:ring-brand-blue/50 focus:border-brand-blue transition-all"
+                className="w-full px-4 py-2.5 rounded-xl border border-border bg-surface text-base text-brand-dark placeholder:text-muted focus:outline-none focus:border-brand-blue transition-colors"
                 value={meetingUrl}
                 onChange={(e) => setMeetingUrl(e.target.value)}
               />
@@ -207,7 +231,7 @@ export const Dashboard = () => {
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="flex items-center px-4 py-2 bg-brand-blue text-white font-medium text-sm rounded-xl hover:opacity-90 disabled:opacity-50 transition-opacity"
+                  className="btn-primary flex items-center px-4 py-2 font-bold text-sm rounded-xl hover:opacity-90 disabled:opacity-50 transition-opacity"
                 >
                   {submitting ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
                   Start Recording
@@ -239,9 +263,9 @@ export const Dashboard = () => {
         <div className="flex flex-col">
           {groups.map((group) => (
             <div key={group.label}>
-              <div className="flex items-center gap-3 py-3">
-                <span className="text-xs font-extrabold tracking-widest uppercase text-muted">{group.label}</span>
-                <span className="flex-1 h-px bg-line" />
+              <div className="sticky top-0 z-5 flex items-center gap-2.5 bg-page pb-1.5 pt-3.5">
+                <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-muted">{group.label}</span>
+                <span className="h-px flex-1 bg-line" />
               </div>
               {group.items.map((meeting) => (
                 <MeetingRow

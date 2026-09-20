@@ -131,6 +131,44 @@
   }
 }
 
+/* The primary button's fill and ink, in one place because phases 4 to 7 all
+   need it and a repeated gradient string is how palettes drift apart.
+
+   The ink flips by theme, which is not decoration. White on the azure->cyan
+   gradient measures 3.23:1 at the cyan end in light mode and 2.63:1 in dark -
+   both fail AA. Light ends the gradient on the deep azure and keeps white
+   (5.27:1); dark keeps the bright gradient and switches to the page ink
+   (7.50:1). Size, shape and spacing stay with the utilities at each call
+   site; only colour lives here. */
+@layer components {
+  .btn-primary {
+    background-image: linear-gradient(
+      to bottom right,
+      var(--color-brand-blue),
+      var(--color-brand-blue-deep)
+    );
+    color: #fff;
+  }
+
+  .dark .btn-primary {
+    background-image: linear-gradient(
+      to bottom right,
+      var(--color-brand-blue),
+      var(--color-brand-blue-light)
+    );
+    color: var(--color-page);
+  }
+}
+
+/* Sideways-scrolling strips - the dashboard's filter chips - keep the scroll
+   but drop the bar, which on a phone would otherwise sit across the chips
+   themselves. The chips still clip at the edge without the scroll, which is
+   the thing being fixed, so this is not purely cosmetic. */
+@layer utilities {
+  .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+}
+
 /* The logo mark's own colours. They live here rather than on the <svg> because
    browsers do not resolve var() inside SVG presentation attributes - a
    fill="var(--color-brand-blue)" silently renders as nothing. Going through a
