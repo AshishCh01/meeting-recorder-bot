@@ -66,6 +66,16 @@ This plan ports that design into the React app in nine phases. It does not chang
 
 **Done when:** the app runs, every page renders in the new palette, dark mode still toggles, and no component file changed.
 
+**Status: done** — merged 2026-09-20 (`21f5058`). Nine files, all under `frontend/`.
+
+Three things later phases inherit from it:
+
+- **The dark primary button is illegible and phases 3 and 4 must fix it.** `--color-brand-blue` is now a light azure in dark mode (`#4DA3FF`), and every primary button is `from-brand-blue to-brand-blue-light text-white`, so white-on-azure measures 2.63 where it used to be 7.52. The prototype avoids this by flipping the dark button to a white face with dark ink (`--btn-face`, `--btn-ink`); port that rather than changing the token back, which is correct at 6.9–7.5:1 for links, nav and the accent trio.
+- **`@theme` is declared `static`.** Otherwise Tailwind tree-shakes unused tokens out of `:root` while the `.dark` block keeps them, and a raw `var(--color-tint)` resolves in one theme only. Leave it.
+- **Not done: the favicon set and app icon.** `public/` still carries the old PNG mark, so the browser tab disagrees with the in-app logo. Pick it up in phase 8.
+
+Also carried forward, and not phase 0's to fix: `--color-faint` fails AA in both themes (2.79 light, 3.62 dark), and the rgba tokens must never take a Tailwind slash-opacity modifier — `bg-tint-2/50` halves an already-transparent colour.
+
 ## Phase 1 — Landing page
 
 **Goal:** [frontend/src/pages/Landing.jsx](../frontend/src/pages/Landing.jsx) rebuilt from `prototype/index.html`.
@@ -78,7 +88,7 @@ This plan ports that design into the React app in nine phases. It does not chang
 - Scroll reveals via `IntersectionObserver` in a small hook. Guard the hidden state so the page is readable without JS.
 - "See how it works" scrolls to the section. Do not give it a play icon unless a real video exists.
 
-**Pricing:** decide before building — either the three proposed tiers with the buttons collecting interest, or a "free while in beta" section. Do not ship buttons that lead nowhere.
+**Pricing — decided 2026-09-20: free while in beta.** One section, no tier cards, no "MOST POPULAR" badge, no price. It says the product is free during the beta and that paid plans come later, and its only call to action is the same sign-up the rest of the page uses. This is the honest option while billing does not exist, and it removes the three dead buttons the tier proposal would have shipped. Revisit when Razorpay lands.
 
 **Done when:** it matches the prototype at 1440/820/375, reveals work, reduced-motion is respected, and nothing in the copy is untrue.
 
@@ -104,7 +114,7 @@ This plan ports that design into the React app in nine phases. It does not chang
 - **Three breakpoints, not one.** Desktop ≥1024: full sidebar, collapsible to a rail. Tablet 720–1023: icon rail. Phone <720: top bar plus bottom nav. The current single `lg:` breakpoint is why tablets get a stretched phone layout.
 - Active item: a quiet background wash plus a 3px edge marker. Not a filled blue block.
 - Sidebar footer: **one** account button opening a menu (email, Settings, theme, Sign out). Not three stacked rows, and never a truncated email as the identity line.
-- Add the ⌘K command palette and the plan card. The plan card must read its numbers from the API; if no usage field exists yet, leave the card out rather than hard-coding "3 / 5".
+- Add the ⌘K command palette. **Leave the sidebar plan card out.** The prototype's "Free plan · 3 / 5 · Upgrade to Pro" has no API behind it, and with pricing now "free while in beta" there is no Pro to upgrade to — it would be two untruths in one card. Revisit alongside billing and usage metering.
 - Persist the rail preference. **Lift the sidebar state out of `Layout`** — it currently lives in `useState` inside a component each page mounts separately, so collapsing it resets on every navigation.
 
 **Watch for — both of these were found and fixed in the prototype**
@@ -216,20 +226,25 @@ Copy anywhere in the app or landing page must stay inside this list.
 | Delete removes audio, transcript and chat | True |
 | Dashboard search | **Titles only** |
 | Billing, trials, SSO, admin controls, retention policies | **Do not exist** |
+| "Free while in beta" | True — and the only pricing claim the app may make |
 | "Decisions" extracted from a meeting | **Does not exist** — summary, key points, conclusion, action items |
 
-## Demo cut (manager demo, 2026-09-22)
+## Schedule (revised 2026-09-20)
 
-If time runs short, this is the order that shows best:
+The earlier two-day cut — phases 0 → 3 → 5, then 6, with the landing page demoed from the prototype HTML — is superseded. The whole frontend is being built on 2026-09-20, ahead of the manager demo on 2026-09-22.
 
-1. Day one: phases 0 → 3 → 5.
-2. Day two morning: phase 6.
-3. Day two afternoon: buffer for fixes and a rehearsal. Keep it.
+Phase 0 is merged. The remaining order, which keeps every screen demoable at each stop:
 
-Open `prototype/index.html` in a browser tab to show the landing page rather than spending phase 1 on it. Ask AI, legal pages and auth can stay on the old design inside the new shell — that reads as work in progress, which is accurate.
+1. **3 — app shell.** Everything else renders inside it, so it goes first.
+2. **5 — meetings list and upcoming**, then **6 — meeting detail**. The two screens the demo actually walks through.
+3. **7 — Ask AI**, then **4 — auth**. Auth is small and self-contained; it can slip without hurting the demo.
+4. **1 — landing**, then **2 — legal pages**. Independent of the app phases.
+5. **8 — polish and QA** across whatever landed.
+
+If the day runs out, stop at a phase boundary and leave the rest on the old design inside the new shell. A half-finished phase is the one outcome to avoid — an unstyled screen is fine, a broken one is not.
 
 ## Not included
 
 - **Billing and Razorpay.** Deferred until after the frontend. Test keys are already in `backend/.env`, with placeholders in `backend/.env.example`.
 - **Usage metering.** Counting recording hours, enforcing caps mid-call. Backend work, and the harder half of billing.
-- **The landing page's pricing tiers as functioning products.** They are a proposal until billing exists.
+- **Pricing tiers.** Dropped from the landing page entirely (see phase 1); it says "free while in beta" instead. Tiers return with billing, not before.
