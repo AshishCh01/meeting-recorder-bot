@@ -22,7 +22,7 @@ It is one self-contained file with no build step. Either:
 
 ## Design direction
 
-- Visual reference: Attio (dark, fine hairlines, ambient gradient, restrained
+- Visual reference: Attio (fine hairlines, ambient gradient, restrained
   motion). Writing reference: Cal.com (plain, short sentences).
 - All colours, spacing and radii come from the custom properties in `:root`.
   Change those and the whole page re-themes — the same approach the app
@@ -30,6 +30,30 @@ It is one self-contained file with no build step. Either:
 - Motion: scroll reveals, a drifting hero glow, an animated waveform and a
   cursor spotlight on cards. Everything collapses under
   `prefers-reduced-motion: reduce`.
+
+## Light and dark
+
+Both themes ship. The page follows the system setting on a first visit, and
+the moon/sun button in the header overrides that and remembers the choice.
+
+- `:root` holds the light values, `:root[data-theme="dark"]` redefines the
+  same names. Every rule reads those variables and nothing else, so a colour
+  is changed in one place, not two.
+- An inline script in `<head>` resolves the theme before the first paint, so
+  there is no flash of the wrong colours. It also adds a `js` class, which is
+  what gates the scroll reveals — with scripting off the content is visible
+  rather than stuck at `opacity: 0`.
+- `localStorage` access is wrapped in `try/catch` for private windows.
+- The logo mark themes with the page, via CSS classes rather than `fill`
+  attributes: browsers do not resolve `var()` inside SVG presentation
+  attributes.
+
+Two things to carry into the React port: the app currently themes off a
+`.dark` class on `<html>` while this page uses `data-theme`, so pick one; and
+without JS this page falls back to light regardless of the system setting.
+
+Checked in Chromium at 1440px and 375px in both themes — no horizontal
+overflow, and the toggle flips, relabels itself and survives a reload.
 
 ## Claims on this page
 
