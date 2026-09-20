@@ -1,7 +1,7 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Send, Loader2 } from 'lucide-react';
-import meetiqLogo from '../assets/logo.png';
+import { Logo } from './Logo';
 import { useMeetingChatContext } from '../context/MeetingChatContext';
 
 const MEETING_SUGGESTIONS = ['Summarize the decisions', 'What are the action items?', 'Any risks mentioned?'];
@@ -137,7 +137,7 @@ export const MeetingChatInterface = () => {
       placeholder="Ask anything about this call…"
       header={
         <div className="flex-none px-5 py-5 border-b border-line flex items-center gap-2.5">
-          <img src={meetiqLogo} alt="" className="w-7 h-7 rounded-lg object-contain" />
+          <Logo className="w-7 h-7" />
           <div>
             <div className="text-[15px] font-extrabold text-brand-dark tracking-tight">Ask about this meeting</div>
             <div className="text-xs text-muted">Answers cite the transcript</div>

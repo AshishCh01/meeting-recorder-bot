@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { Link, useNavigate } from 'react-router-dom';
 import { Mail, Lock, Loader2 } from 'lucide-react';
 import { ThemeToggle } from '../components/ThemeToggle';
-import meetiqLogo from '../assets/logo.png';
+import { Logo } from '../components/Logo';
 
 export const Login = () => {
   const [email, setEmail] = useState('');
@@ -30,7 +30,7 @@ export const Login = () => {
     <div className="min-h-screen flex flex-col bg-page">
       <header className="flex items-center justify-between px-5 sm:px-6 h-16">
         <Link to="/" className="flex items-center gap-2.5">
-          <img src={meetiqLogo} alt="MeetIQ" className="h-7 w-7 object-contain" />
+          <Logo alt="MeetIQ" className="h-7 w-7" />
           <span className="text-lg font-extrabold text-brand-dark tracking-tight">MeetIQ</span>
         </Link>
         <ThemeToggle className="p-2 text-muted hover:text-brand-dark transition-colors" iconClassName="h-5 w-5" />

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Menu, X, FileText, MessageCircleQuestion, Search, ShieldOff } from 'lucide-react';
 import { ThemeToggle } from '../components/ThemeToggle';
-import meetiqLogo from '../assets/logo.png';
+import { Logo } from '../components/Logo';
 
 const STEPS = [
   {
@@ -100,7 +100,7 @@ export const Landing = () => {
       <header className="sticky top-0 z-40 bg-surface/90 backdrop-blur-sm border-b border-line">
         <div className="max-w-6xl mx-auto flex items-center justify-between px-5 sm:px-6 h-16">
           <div className="flex items-center gap-2.5">
-            <img src={meetiqLogo} alt="MeetIQ" className="h-7 w-7 object-contain" />
+            <Logo alt="MeetIQ" className="h-7 w-7" />
             <span className="text-lg font-extrabold text-brand-dark tracking-tight">MeetIQ</span>
           </div>
 
@@ -318,7 +318,7 @@ export const Landing = () => {
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row justify-between gap-10">
           <div className="flex flex-col gap-3 max-w-xs">
             <div className="flex items-center gap-2.5">
-              <img src={meetiqLogo} alt="" className="h-6.5 w-6.5 object-contain" />
+              <Logo className="h-6.5 w-6.5" />
               <span className="text-base font-extrabold text-white">MeetIQ</span>
             </div>
             <div className="text-[13.5px] leading-relaxed text-[#8A97A4]">
