@@ -36,9 +36,16 @@ It is one self-contained file with no build step. Either:
 Both themes ship. The page follows the system setting on a first visit, and
 the moon/sun button in the header overrides that and remembers the choice.
 
-- `:root` holds the light values, `:root[data-theme="dark"]` redefines the
-  same names. Every rule reads those variables and nothing else, so a colour
-  is changed in one place, not two.
+- `:root` holds the light values, `.dark` on `<html>` redefines the same
+  names. Every rule reads those variables and nothing else, so a colour is
+  changed in one place, not two.
+- **The switch matches the React app on purpose.** Same `dark` class and same
+  `theme` storage key as `frontend/index.html` and `context/ThemeContext.jsx`.
+  The app's Tailwind setup binds its `dark:` utilities to that class through
+  `@custom-variant dark`, so one switch flips the tokens and every `dark:`
+  utility together. Had this page used its own attribute, porting the tokens
+  would have left the app half-themed. It also means a visitor's choice on
+  the landing page carries into the app.
 - An inline script in `<head>` resolves the theme before the first paint, so
   there is no flash of the wrong colours. It also adds a `js` class, which is
   what gates the scroll reveals — with scripting off the content is visible
@@ -48,9 +55,11 @@ the moon/sun button in the header overrides that and remembers the choice.
   attributes: browsers do not resolve `var()` inside SVG presentation
   attributes.
 
-Two things to carry into the React port: the app currently themes off a
-`.dark` class on `<html>` while this page uses `data-theme`, so pick one; and
-without JS this page falls back to light regardless of the system setting.
+One thing to carry into the React port: without JS this page falls back to
+light regardless of the system setting, because the pre-paint script is what
+sets the class. Fixing that means a second copy of the dark token list inside
+`@media (prefers-color-scheme: dark)`, which risks the two drifting apart. The
+React app already behaves the same way, so this is left as-is deliberately.
 
 Checked in Chromium at 1440px and 375px in both themes — no horizontal
 overflow, and the toggle flips, relabels itself and survives a reload.

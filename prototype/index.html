@@ -19,28 +19,38 @@
       // Runs before the first paint, so the page never flashes the wrong
       // theme. Also marks that JS is available - the scroll reveals start
       // hidden only when something is there to un-hide them.
+      //
+      // The `dark` class and the `theme` storage key are deliberately the
+      // same ones the React app uses (frontend/index.html and
+      // context/ThemeContext.jsx), so this page and the app agree on the
+      // switch - and a visitor's choice here carries into the app.
       (function () {
         var root = document.documentElement;
         root.classList.add('js');
         var stored = null;
         try {
-          stored = localStorage.getItem('meetiq-theme');
+          stored = localStorage.getItem('theme');
         } catch (e) {
           /* private mode, blocked storage - fall back to the system setting */
         }
         var dark = stored ? stored === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
-        root.setAttribute('data-theme', dark ? 'dark' : 'light');
+        if (dark) root.classList.add('dark');
       })();
     </script>
     <style>
       /* ------------------------------------------------------------------
          Design tokens.
 
-         Light is the base set; dark redefines the same names below. Every
-         rule in the page reads these variables and nothing else, so the two
-         themes stay in step and the whole page re-themes from one block.
-         This is the same approach frontend/src/index.css already uses, so
-         these values port straight over in the React rebuild.
+         Light is the base set; `.dark` on <html> redefines the same names
+         below. Every rule in the page reads these variables and nothing
+         else, so the two themes stay in step and the whole page re-themes
+         from one block.
+
+         The `.dark` switch matches frontend/src/index.css, which drives both
+         its own tokens and Tailwind's dark: utilities through
+         `@custom-variant dark`. Keeping them identical means these values
+         port straight over in the React rebuild - and that one switch flips
+         the tokens and every dark: utility together.
          ------------------------------------------------------------------ */
       :root {
         color-scheme: light;
@@ -110,7 +120,7 @@
         --maxw: 1180px;
       }
 
-      :root[data-theme='dark'] {
+      .dark {
         color-scheme: dark;
 
         --bg: #080b11;
@@ -341,11 +351,11 @@
         display: none;
       }
 
-      :root[data-theme='dark'] .theme-btn .sun {
+      .dark .theme-btn .sun {
         display: block;
       }
 
-      :root[data-theme='dark'] .theme-btn .moon {
+      .dark .theme-btn .moon {
         display: none;
       }
 
@@ -2166,25 +2176,26 @@
 
     <script>
       // Theme. The head script already resolved light/dark before paint;
-      // this only handles the toggle and remembers the choice.
+      // this only handles the toggle and remembers the choice. Same class
+      // and storage key as ThemeContext.jsx in the React app.
       (function theme() {
         const root = document.documentElement;
         const btn = document.getElementById('themeBtn');
         const meta = document.querySelector('meta[name="theme-color"]');
 
         const paint = (mode) => {
-          root.setAttribute('data-theme', mode);
+          root.classList.toggle('dark', mode === 'dark');
           if (meta) meta.setAttribute('content', mode === 'dark' ? '#080B11' : '#FBFCFE');
           btn.setAttribute('aria-label', mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
         };
 
-        paint(root.getAttribute('data-theme') || 'light');
+        paint(root.classList.contains('dark') ? 'dark' : 'light');
 
         btn.addEventListener('click', () => {
-          const next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+          const next = root.classList.contains('dark') ? 'light' : 'dark';
           paint(next);
           try {
-            localStorage.setItem('meetiq-theme', next);
+            localStorage.setItem('theme', next);
           } catch (e) {
             /* storage blocked - the choice just won't survive a reload */
           }
