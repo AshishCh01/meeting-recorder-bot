@@ -1,7 +1,11 @@
+// Short names on purpose. These sit in a metadata column next to a duration
+// and a timestamp, and "Google Meet" against "Zoom" left that column visibly
+// ragged from row to row. "Meet" and "Zoom" are the same width, so the
+// columns line up and the labels are still unambiguous.
 const PLATFORM_LABELS = {
-  google: 'Google Meet',
+  google: 'Meet',
   zoom: 'Zoom',
-  teams: 'Microsoft Teams',
+  teams: 'Teams',
 };
 
 export function formatPlatform(platform) {
