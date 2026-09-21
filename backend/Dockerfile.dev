@@ -7,6 +7,7 @@ WORKDIR /app
 
 # Install ffmpeg for transcription_service.py (required for _is_audio_silent)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
