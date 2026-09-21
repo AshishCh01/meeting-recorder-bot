@@ -236,8 +236,21 @@ def _reupload_from_bot(db: Session, meeting: Meeting):
     always did.
     """
     # Before the claim: if the host cannot be resolved there is nothing to ask
-    # and no reason to move the meeting out of "transcribing" first.
-    host = _recorder_for(meeting)
+    # and no reason to move the meeting out of "transcribing" first. It must
+    # still go back to "failed", though - retry_meeting already claimed it as
+    # "transcribing", and nothing else will ever move it on. The common case
+    # is a meeting cancelled while queued on a pool of two or more: it never
+    # reached a recorder, so its bot_host_id is NULL and there is no file.
+    try:
+        host = _recorder_for(meeting)
+    except HTTPException as e:
+        db.execute(
+            update(Meeting)
+            .where(Meeting.id == meeting.id, Meeting.status == "transcribing")
+            .values(status="failed", error_message=e.detail)
+        )
+        db.commit()
+        raise
 
     result = db.execute(
         update(Meeting)
