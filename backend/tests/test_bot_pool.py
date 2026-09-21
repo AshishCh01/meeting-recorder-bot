@@ -731,6 +731,33 @@ def test_stop_fails_closed_when_a_past_c3_meeting_has_no_host(db, user, two_host
     assert recorded_calls == []
 
 
+def test_retrying_a_meeting_cancelled_while_queued_lands_back_at_failed(db, user, two_hosts, recorded_calls, monkeypatch):
+    """
+    A meeting cancelled while queued never reached a recorder: NULL
+    bot_host_id and nothing in storage. Retry claims it as "transcribing"
+    before looking for the file, and with two hosts the re-upload fallback
+    cannot pick one. That 409 used to leave the meeting in "transcribing"
+    forever - the page showed "Transcribing" until the watchdog's TTL.
+    """
+    meeting = make_meeting(db, user.id, status="failed", bot_host_id=None)
+
+    class EmptyStorage:
+        storage = property(lambda self: self)
+        from_ = lambda self, bucket: self
+        list = lambda self, folder: []
+
+    monkeypatch.setattr(meetings_api, "supabase", EmptyStorage())
+
+    with pytest.raises(HTTPException) as exc:
+        meetings_api.retry_meeting(meeting_id=meeting.id, db=db, user_id=str(user.id))
+
+    assert exc.value.status_code == 409
+    assert recorded_calls == [], "a re-upload was posted to a guessed host"
+    row = reread(meeting.id)
+    assert row.status == "failed", "an unresolvable host stranded the meeting in transcribing"
+    assert "no recorder recorded" in row.error_message
+
+
 def test_a_delete_is_not_blocked_by_an_unresolvable_host(db, user, two_hosts, recorded_calls, no_storage):
     """
     Delete is not stop. Not knowing which bot to tell is a reason to skip the
