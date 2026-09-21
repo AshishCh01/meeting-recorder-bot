@@ -82,7 +82,7 @@ CONFTEST_ENV_KEYS = frozenset({
 })
 
 from app.db import database  # noqa: E402
-from app.db.models import AiUsageEvent, AskAiConversation, AskAiMessage, ChatMessage, Meeting, MeetingChunk, User  # noqa: E402
+from app.db.models import AiUsageEvent, AskAiConversation, AskAiMessage, CalendarConnection, ChatMessage, Meeting, MeetingChunk, Payment, Subscription, User  # noqa: E402
 
 
 def _guard_engine() -> None:
@@ -118,9 +118,16 @@ def _expected_url() -> str:
 # ask_ai_conversations and ask_ai_messages are here for Ask AI, whose
 # one-empty-chat rule is a partial unique index - only a real table can
 # enforce it.
+# subscriptions and payments are here for billing Phase 1: both carry
+# constraints only a real table enforces - one subscription per user, and a
+# unique razorpay_order_id, which is what makes the payment flow idempotent.
 _TABLES = [
     User.__table__, Meeting.__table__, MeetingChunk.__table__, ChatMessage.__table__, AiUsageEvent.__table__,
     AskAiConversation.__table__, AskAiMessage.__table__,
+    Subscription.__table__, Payment.__table__,
+    # calendar_connections: billing Phase 4 gates three /calendar routes, and
+    # the two it deliberately leaves open (status, disconnect) read this table.
+    CalendarConnection.__table__,
 ]
 
 
@@ -160,7 +167,7 @@ def clean_tables():
     yield
     with database.engine.begin() as conn:
         from sqlalchemy import text
-        conn.execute(text("TRUNCATE ask_ai_messages, ask_ai_conversations, ai_usage_events, chat_messages, meeting_chunks, meetings, users RESTART IDENTITY CASCADE"))
+        conn.execute(text("TRUNCATE calendar_connections, payments, subscriptions, ask_ai_messages, ask_ai_conversations, ai_usage_events, chat_messages, meeting_chunks, meetings, users RESTART IDENTITY CASCADE"))
 
 
 @pytest.fixture(autouse=True)

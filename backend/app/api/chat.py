@@ -10,6 +10,7 @@ from app.api.auth import get_current_user
 from app.models.meeting import ChatHistoryResponse, ChatMessageOut, ChatRequest, ChatResponse
 from app.rag.chat_service import ask_question, ask_question_stream
 from app.services import rate_limit
+from app.billing import quota
 
 router = APIRouter(prefix="/meetings", tags=["chat"])
 
@@ -111,6 +112,11 @@ async def chat_with_meeting(
     user_id: str = Depends(rate_limit.limited(rate_limit.CHAT))
 ):
     _assert_chattable(db, meeting_id, user_id)
+    # Billing Phase 2. Per-meeting chat draws on the same AI-question
+    # allowance as Ask AI - see quota's module docstring on why both surfaces
+    # share one budget. Between the ownership check and the session release,
+    # for the same reason the limiter sits above the body.
+    quota.enforce_ai_question_quota(db, user_id)
     _release_request_session(db)
     result = await ask_question(str(meeting_id), payload.question, payload.session_id, user_id)
     return ChatResponse(**result)
@@ -135,6 +141,10 @@ async def chat_with_meeting_stream(
     a normal 404/409 rather than a 200 stream containing an error.
     """
     _assert_chattable(db, meeting_id, user_id)
+    # Same budget as the JSON transport above, checked the same way - two
+    # transports must not buy two allowances, exactly as rate_limit.CHAT is
+    # one scope across both.
+    quota.enforce_ai_question_quota(db, user_id)
     # Here in the route body, not in event_source: the generator only runs
     # after this returns, and the checks above must still fail as a real
     # 404/409 rather than inside a 200 stream.

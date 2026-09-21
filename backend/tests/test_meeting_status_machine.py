@@ -186,10 +186,22 @@ def test_no_status_is_written_outside_the_vocabulary():
     Not exhaustive by construction: a status arriving through a variable (the
     webhook's payload.status is never written directly) is not a literal. The
     webhook only writes the literals it branches on, which this does see.
+
+    app/billing is excluded. This test is about the *meeting* state machine -
+    what the watchdog sweeps, and what a TTL is owed for. Billing writes
+    `status` on two other tables entirely (subscriptions: active/cancelled/
+    expired, payments: created/paid/failed), which have their own lifecycle,
+    no watchdog and no TTL. Adding them to VOCABULARY would assert the
+    watchdog is expected to sweep a payment; leaving them in the scan makes
+    this fail on a vocabulary it does not govern. Their guard is
+    tests/test_billing_checkout.py.
     """
     app_dir = Path(__file__).resolve().parent.parent / "app"
+    billing_dir = app_dir / "billing"
     written = {}
     for path in app_dir.rglob("*.py"):
+        if billing_dir in path.parents:
+            continue
         for match in re.finditer(r'\bstatus\s*=\s*"([a-z_]+)"', path.read_text(encoding="utf-8")):
             written.setdefault(match.group(1), set()).add(path.name)
 
@@ -277,7 +289,7 @@ def test_the_claim_restarts_the_watchdog_clock(db, user, distinct_ttls, schedule
     very next sweep sees a "joining" meeting far past its 11-minute TTL and
     fails it before the bot has had a chance to connect.
     """
-    monkeypatch.setattr(scheduler, "trigger_bot_join", lambda *args: {"status": "ok"})
+    monkeypatch.setattr(scheduler, "trigger_bot_join", lambda *args, **kwargs: {"status": "ok"})
 
     booked = make_meeting(
         db, user.id, status="scheduled",
@@ -294,7 +306,7 @@ def test_the_claim_restarts_the_watchdog_clock(db, user, distinct_ttls, schedule
 
 def test_a_bot_that_will_not_start_fails_the_claimed_meeting(db, user, scheduler_flags, monkeypatch):
     """joining is written by the claim; a trigger that raises must not leave it there."""
-    def refuse(*args):
+    def refuse(*args, **kwargs):
         raise RuntimeError("recorder unreachable")
 
     monkeypatch.setattr(scheduler, "trigger_bot_join", refuse)
@@ -316,7 +328,7 @@ def test_a_claim_that_crashes_mid_revalidation_is_still_swept(db, user, distinct
     way out, and this shows it is one.
     """
     trigger_calls = []
-    monkeypatch.setattr(scheduler, "trigger_bot_join", lambda *args: trigger_calls.append(args))
+    monkeypatch.setattr(scheduler, "trigger_bot_join", lambda *args, **kwargs: trigger_calls.append(args))
 
     def unexpected(user_id, db):
         raise KeyError("token cache corrupted")

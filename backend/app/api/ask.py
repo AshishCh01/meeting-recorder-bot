@@ -33,6 +33,7 @@ from app.models.ask import (
     AskMessageOut, AskRenameRequest, AskRequest,
 )
 from app.services import rate_limit
+from app.billing import quota
 
 router = APIRouter(prefix="/ask", tags=["ask-ai"])
 
@@ -154,6 +155,12 @@ async def ask_in_conversation(
     )
     if owned is None:
         raise HTTPException(404, NOT_FOUND)
+    # Billing Phase 2, and it has to sit exactly here: after the ownership
+    # check (a chat you cannot see is a 404, not a bill) and before the
+    # session is released, because it queries. A 402 raised now is a real
+    # status code; raised inside event_source it would be a 200 stream
+    # carrying an error the upgrade prompt could not branch on.
+    quota.enforce_ai_question_quota(db, user_id)
     # In the route body, not in event_source: see chat._release_request_session.
     _release_request_session(db)
     tz_name = resolve_tz(payload.timezone).key

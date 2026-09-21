@@ -9,6 +9,7 @@ from app.db.models import Meeting, User
 from app.services import calendar_service
 from app.services import google_oauth_service as oauth
 from app.services.bot_service import initial_status, trigger_bot_join
+from app.billing import quota
 
 logger = logging.getLogger(__name__)
 
@@ -186,9 +187,15 @@ def trigger_due_meetings(db: Session) -> int:
 
         try:
             db_user = db.query(User).filter(User.id == meeting.user_id).first()
+            # The plan cap as it stands now, not as it stood when the meeting
+            # was scheduled - a meeting booked in March and running in April
+            # gets April's plan. The meeting-count quota was already spent at
+            # booking time and is deliberately not re-checked here; see
+            # bot_dispatch for the same reasoning.
             trigger_bot_join(
                 meeting.platform, meeting.meeting_url, str(meeting.id),
                 str(meeting.user_id), db_user.bot_display_name,
+                max_duration_minutes=quota.resolve_max_duration_minutes(db, str(meeting.user_id)),
             )
             triggered += 1
         except Exception as e:

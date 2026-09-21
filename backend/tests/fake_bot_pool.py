@@ -188,7 +188,7 @@ class FakeBotPool:
 
     # -- the bot_service surface -------------------------------------------
 
-    def post_join(self, host, platform, url, meeting_id, user_id, bot_display_name):
+    def post_join(self, host, platform, url, meeting_id, user_id, bot_display_name, max_duration_minutes=None):
         return self.by_id(host.id).join(host, platform, url, meeting_id, user_id, bot_display_name)
 
     def stop_bot(self, host, meeting_id):

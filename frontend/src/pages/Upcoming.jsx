@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Loader2, CalendarClock } from 'lucide-react';
+import { Loader2, CalendarClock, Lock } from 'lucide-react';
 import { Layout } from '../components/Layout';
 import api from '../lib/api';
 import { formatPlatform } from '../lib/format';
 import { useToast } from '../context/ToastContext';
+import { useBilling } from '../context/BillingContext';
 import { LoadingLabel, RowSkeleton } from '../components/Skeleton';
 
 // event.starts_at is either an ISO datetime (timed event) or a plain
@@ -78,6 +79,8 @@ const RecordSwitch = ({ on, pending, disabled, onChange, label }) => (
 
 export const Upcoming = () => {
   const { toast } = useToast();
+  const { can, planName, loading: billingLoading } = useBilling();
+  const canSchedule = can('calendar_scheduling');
   const [status, setStatus] = useState({ connected: false, google_email: null });
   const [statusLoading, setStatusLoading] = useState(true);
   const [events, setEvents] = useState([]);
@@ -87,6 +90,17 @@ export const Upcoming = () => {
 
   const fetchAll = async () => {
     setError(null);
+    // Billing Phase 4: /calendar/events 402s on a plan without scheduling, so
+    // a free user's visit here would otherwise be a spinner that resolves
+    // into an error. /calendar/status is deliberately left ungated on the
+    // backend (a downgraded user must still see and revoke a connection), but
+    // there is nothing to do with the answer on this page, so neither call is
+    // made at all.
+    if (!canSchedule) {
+      setStatusLoading(false);
+      setEventsLoading(false);
+      return;
+    }
     try {
       const { data: calStatus } = await api.get('/calendar/status');
       setStatus(calStatus);
@@ -107,8 +121,12 @@ export const Upcoming = () => {
   };
 
   useEffect(() => {
+    // Waits for the plan before deciding: firing on the first render would
+    // run the free-user branch for everyone, paying users included, and then
+    // never re-run once the plan arrived.
+    if (billingLoading) return;
     fetchAll();
-  }, []);
+  }, [billingLoading, canSchedule]);
 
   const handleToggle = async (event) => {
     setPendingId(event.id);
@@ -132,15 +150,47 @@ export const Upcoming = () => {
       <div className="mb-6">
         <h1 className="text-2xl font-extrabold text-brand-dark tracking-tight">Upcoming</h1>
         <p className="text-sm text-muted mt-1">
-          {statusLoading
-            ? 'Checking calendar connection…'
-            : status.connected
-              ? `Synced from ${status.google_email}`
-              : 'Connect your Google Calendar to see upcoming meetings here.'}
+          {billingLoading
+            ? 'Loading…'
+            : !canSchedule
+              ? 'Record meetings straight from your calendar on Pro.'
+              : statusLoading
+                ? 'Checking calendar connection…'
+                : status.connected
+                  ? `Synced from ${status.google_email}`
+                  : 'Connect your Google Calendar to see upcoming meetings here.'}
         </p>
       </div>
 
-      {!statusLoading && !status.connected && (
+      {/* Billing Phase 4. The page is reachable on every plan and explains
+          itself, rather than disappearing from the nav - a feature you cannot
+          see is one you will never buy. The backend refuses the same routes
+          regardless of what is rendered here. */}
+      {!billingLoading && !canSchedule && (
+        <div className="flex flex-col items-center justify-center text-center gap-5 px-6 py-20">
+          <div className="w-14 h-14 rounded-2xl bg-accent-soft flex items-center justify-center">
+            <Lock className="h-7 w-7 text-accent-ink" />
+          </div>
+          <div className="max-w-md">
+            <h2 className="text-2xl font-extrabold text-brand-dark tracking-tight">
+              Calendar scheduling is part of Pro
+            </h2>
+            <p className="mt-3 text-[15px] leading-relaxed text-body">
+              Connect Google Calendar and opt individual events into recording - MeetIQ joins
+              automatically a couple of minutes before each one starts. You&rsquo;re on{' '}
+              {planName || 'Free'}.
+            </p>
+          </div>
+          <Link
+            to="/settings"
+            className="btn-primary px-6 py-3 rounded-xl font-bold text-sm hover:opacity-90 transition-opacity"
+          >
+            See plans
+          </Link>
+        </div>
+      )}
+
+      {!billingLoading && canSchedule && !statusLoading && !status.connected && (
         <div className="flex flex-col items-center justify-center text-center gap-5 px-6 py-20">
           <div className="w-14 h-14 rounded-2xl bg-accent-soft flex items-center justify-center">
             <CalendarClock className="h-7 w-7 text-accent-ink" />
@@ -161,7 +211,7 @@ export const Upcoming = () => {
         </div>
       )}
 
-      {status.connected && (
+      {canSchedule && status.connected && (
         <>
           {error && <p className="text-sm text-red-600 dark:text-red-400 mb-4">{error}</p>}
 

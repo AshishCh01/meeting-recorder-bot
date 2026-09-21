@@ -2,8 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Layout } from '../components/Layout';
 import { MeetingRow } from '../components/dashboard/MeetingRow';
 import { EmptyState } from '../components/dashboard/EmptyState';
+import { useBilling } from '../context/BillingContext';
+import { Link } from 'react-router-dom';
 import { DeleteConfirmDialog } from '../components/DeleteConfirmDialog';
-import { Search, Plus, Loader2 } from 'lucide-react';
+import { Search, Plus, Loader2, AlertCircle } from 'lucide-react';
 import api from '../lib/api';
 import { getStatusMeta } from '../lib/status';
 import { groupMeetingsByDate } from '../lib/dateGroups';
@@ -21,6 +23,12 @@ const FILTERS = [
 
 export const Dashboard = () => {
   const { toast } = useToast();
+  const { usage, refresh: refreshBilling } = useBilling();
+  // `null` limit means unlimited, so "at the cap" is only ever true for a
+  // plan that has one.
+  const atMeetingCap =
+    usage && usage.meetings_limit !== null && usage.meetings_used >= usage.meetings_limit;
+
   const [meetings, setMeetings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -90,8 +98,17 @@ export const Dashboard = () => {
       setMeetingUrl('');
       setIsModalOpen(false);
       fetchMeetings(); // Refresh list to show new meeting
+      // The meter has to move with the thing it measures. Without this the
+      // count stays stale until a reload, and a user who just spent their
+      // last meeting is still told they have one left.
+      refreshBilling();
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to start recording');
+      // A 402 means the cap was reached in between the page loading and this
+      // click - another tab, or the last meeting of the month. Re-read the
+      // usage so the banner and the meter agree with the refusal the user
+      // just read, instead of still claiming there is room.
+      if (err.response?.status === 402) refreshBilling();
     } finally {
       setSubmitting(false);
     }
@@ -157,6 +174,12 @@ export const Dashboard = () => {
             <h1 className="text-2xl font-extrabold text-brand-dark tracking-tight">Meetings</h1>
             <p className="text-sm text-muted mt-1">
               {meetings.length} recording{meetings.length === 1 ? '' : 's'} · {totalDurationLabel} of audio
+              {/* The remaining allowance belongs next to the count it limits,
+                  not buried in Settings. Omitted entirely when unlimited -
+                  there is no number to report. */}
+              {usage && usage.meetings_limit !== null && (
+                <> · {usage.meetings_used} of {usage.meetings_limit} this month</>
+              )}
             </p>
           </div>
           <div className="flex w-full gap-3 sm:w-auto">
@@ -170,6 +193,9 @@ export const Dashboard = () => {
                 className="w-full sm:w-72 h-10 pl-9 pr-3 rounded-[10px] border border-line bg-surface text-base sm:text-sm text-brand-dark placeholder:text-muted focus:outline-none focus:border-brand-blue transition-colors"
               />
             </div>
+            {/* Still pressable at the cap: the modal is where the limit is
+                explained, and a dead button explains nothing. The backend
+                refuses the request either way. */}
             <button
               onClick={() => setIsModalOpen(true)}
               className="btn-primary flex flex-none items-center gap-1.5 rounded-[10px] px-4 py-2 text-sm font-bold transition-opacity hover:opacity-90"
@@ -179,6 +205,24 @@ export const Dashboard = () => {
             </button>
           </div>
         </div>
+
+        {atMeetingCap && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-status-failed-fg/25 bg-status-failed-bg px-3.5 py-3">
+            <div className="flex items-start gap-2.5 text-[13.5px] text-body">
+              <AlertCircle className="mt-0.5 h-4 w-4 flex-none text-status-failed-fg" aria-hidden="true" />
+              <span>
+                You have used all {usage.meetings_limit} meetings on the {usage.plan_name} plan this
+                month. Everything already recorded stays — only new recordings are paused.
+              </span>
+            </div>
+            <Link
+              to="/settings"
+              className="btn-primary flex-none rounded-[10px] px-4 py-2 text-[13px] font-bold transition-opacity hover:opacity-90"
+            >
+              See plans
+            </Link>
+          </div>
+        )}
 
         {/* Scrolls sideways on a phone instead of clipping at the edge. */}
         <div className="-mx-4 flex gap-2 overflow-x-auto px-4 no-scrollbar tablet:mx-0 tablet:px-0" role="tablist" aria-label="Filter by status">

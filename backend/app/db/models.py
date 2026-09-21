@@ -15,9 +15,20 @@ class User(Base):
     # The user's own instructions for Ask AI, added to its prompt. NULL when
     # none are set. At most 1,000 characters, enforced by the API.
     ask_ai_instructions = Column(Text, nullable=True)
+    # Which billing tier this user is on - "free", "pro" or "team", the ids in
+    # app/billing/plans.py. Denormalised from the subscriptions row on purpose:
+    # every quota check and feature gate reads it, on paths (recording a
+    # meeting, answering a chat turn) where a join would be pure cost.
+    #
+    # That makes it a cache, so it has exactly one writer: the subscription
+    # activation/expiry code in app/billing. Nothing else may set it, or the
+    # cache and the subscription drift apart. Never NULL - a user with no
+    # subscription is "free", not unknown.
+    plan = Column(String, nullable=False, server_default="free")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     meetings = relationship("Meeting", back_populates="user")
+    subscription = relationship("Subscription", back_populates="user", uselist=False)
 
 class Meeting(Base):
     __tablename__ = "meetings"
@@ -266,4 +277,110 @@ class AskAiMessage(Base):
     __table_args__ = (
         # The only access path: one conversation's thread, in order.
         Index("ix_ask_ai_messages_conversation", "conversation_id", "id"),
+    )
+
+
+class Subscription(Base):
+    """
+    A user's current paid plan. One row per user, or none at all - a user with
+    no row is on Free.
+
+    Deliberately not a history table. Upgrading, downgrading or renewing
+    rewrites this row in place (hence the unique user_id), because the only
+    question anything asks it is "what is this user on right now, and until
+    when". The audit trail lives in `payments`, which is append-only: every
+    charge that ever succeeded is a row there whatever happens here.
+
+    **This is a demo.** Razorpay runs on test keys, so `status` is set by our
+    own code after a test-mode payment rather than by a real settlement, and
+    any user may take any plan. Nothing here is safe to point at live keys
+    without adding the things a real system needs - idempotent webhook
+    replay, dunning, proration and refunds - none of which exist yet.
+    """
+    __tablename__ = "subscriptions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # Unique: one current subscription per user, see the class docstring.
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
+    # A plan id from app/billing/plans.py - "pro" or "team". Never "free":
+    # free is the absence of a subscription, not a subscription to nothing.
+    plan = Column(String, nullable=False)
+    # "active", "cancelled" (still paid up to current_period_end) or
+    # "expired" (period elapsed, user has been moved back to free).
+    status = Column(String, nullable=False, server_default="active")
+    # Seats, for per-seat plans. Always 1 for Pro - charge_paise() ignores it
+    # there rather than trusting the column.
+    seats = Column(Integer, nullable=False, server_default="1")
+    # The window every per-period quota is counted inside. Free users have no
+    # row, so their window is the calendar month instead (Phase 2).
+    current_period_start = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    current_period_end = Column(DateTime(timezone=True), nullable=False)
+    # Set when the user cancels: they keep the plan until current_period_end,
+    # then expiry moves them to free rather than renewing.
+    cancel_at_period_end = Column(Boolean, nullable=False, server_default="false")
+    # The Razorpay objects that produced this subscription, for tracing a row
+    # back to a dashboard entry. Nullable because a plan granted by hand (the
+    # demo path) has no payment behind it.
+    razorpay_order_id = Column(String, nullable=True)
+    razorpay_payment_id = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="subscription")
+
+    __table_args__ = (
+        # The expiry sweep: every active subscription whose period has run
+        # out. Ordered so the scan is over status first, which is selective
+        # once most rows are expired.
+        Index("ix_subscriptions_status_period_end", "status", "current_period_end"),
+    )
+
+
+class Payment(Base):
+    """
+    One attempted charge - append-only, and the only durable record that money
+    (in the demo, test-mode play money) changed hands.
+
+    user_id and subscription_id are plain UUIDs with no foreign keys, for the
+    same reason AiUsageEvent's are: deleting a user or rewriting a
+    subscription must not erase what was charged. A financial record outlives
+    the thing it was for.
+
+    The amount is an integer count of paise, never a float and never rupees -
+    it is exactly what was sent to Razorpay, so the row can be reconciled
+    against a dashboard entry without a unit conversion in between.
+    """
+    __tablename__ = "payments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), nullable=False)
+    subscription_id = Column(UUID(as_uuid=True), nullable=True)
+    # The plan this charge was for, copied rather than joined: if the
+    # catalogue's prices change later, this row still says what was bought.
+    plan = Column(String, nullable=False)
+    seats = Column(Integer, nullable=False, server_default="1")
+    # Paise. See the class docstring.
+    amount_paise = Column(Integer, nullable=False)
+    currency = Column(String, nullable=False, server_default="INR")
+    # "created" (order opened, nothing paid yet), "paid" or "failed".
+    status = Column(String, nullable=False, server_default="created")
+    # Unique: Razorpay's order id is the idempotency key for the whole flow.
+    # A duplicated webhook or a double-clicked Checkout button must not
+    # produce a second row, and the database is what guarantees that rather
+    # than a check-then-insert in application code.
+    razorpay_order_id = Column(String, nullable=False, unique=True)
+    razorpay_payment_id = Column(String, nullable=True)
+    # The HMAC Checkout hands back, kept for after-the-fact verification.
+    # Not a secret on its own - it is only meaningful next to the order id.
+    razorpay_signature = Column(String, nullable=True)
+    # Razorpay's own error_code/error_description on a failure, and anything
+    # else worth keeping from the callback. Free-form on purpose: it is
+    # diagnostic, and nothing branches on it.
+    notes = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        # Billing history for one user, newest first.
+        Index("ix_payments_user_created", "user_id", text("created_at DESC")),
     )

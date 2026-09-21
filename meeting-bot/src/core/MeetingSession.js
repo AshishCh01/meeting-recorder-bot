@@ -1,7 +1,7 @@
 const DEFAULT_BOT_NAME = 'MeetIQ Notetaker';
 
 export class MeetingSession {
-  constructor({ meetingId, meetingUrl, platform, userId, botDisplayName }) {
+  constructor({ meetingId, meetingUrl, platform, userId, botDisplayName, maxDurationMinutes }) {
     this.meetingId = meetingId;
     this.meetingUrl = meetingUrl;
     this.platform = platform;
@@ -14,6 +14,10 @@ export class MeetingSession {
     this.recordingFilePath = null; // local temp path, set by RecordingFile
     this.cancelRequested = false;
     this.audioSinkName = null; // per-session PulseAudio sink, set by MeetingLifecycle via AudioSink.provision()
+    // The caller's billing plan cap, in minutes (backend billing Phase 2).
+    // null when the caller sent none, which is the pre-billing behaviour:
+    // MeetingLifecycle then falls back to MAX_RECORDING_DURATION_MINUTES.
+    this.maxDurationMinutes = maxDurationMinutes ?? null;
   }
 
   // Signals the lifecycle's admission-wait and in-meeting polling loops to

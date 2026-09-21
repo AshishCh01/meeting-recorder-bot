@@ -13,14 +13,31 @@ from app.api.meetings import meeting_to_dict
 from app.models.calendar import CalendarConnectResponse, CalendarStatus, CalendarEventOut
 from app.services import google_oauth_service as oauth
 from app.services import calendar_service
+from app.billing import quota
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
 
+# Billing Phase 4 gates three routes here - /connect, /events and
+# /events/{id}/schedule - and deliberately NOT /status or /disconnect.
+#
+# A user who downgrades still has a Google account connected to this service,
+# and has to be able to see that and revoke it. Gating disconnect would leave
+# them connected with no way out, which is a worse outcome than letting a free
+# user press a button that only removes access.
+
 
 @router.get("/connect", response_model=CalendarConnectResponse)
-def connect(user_id: str = Depends(get_current_user)):
+def connect(
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+):
+    # Billing Phase 4. The gate goes on the entry point rather than on
+    # /oauth/callback: refusing halfway through Google's consent screen would
+    # strand the user on an error page having already granted access. The
+    # callback is only reachable by first coming through here.
+    quota.require_feature(db, user_id, "calendar_scheduling")
     try:
         auth_url = oauth.build_auth_url(user_id)
     except oauth.GoogleCalendarNotConfigured as e:
@@ -109,6 +126,10 @@ def list_events(
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user)
 ):
+    # Billing Phase 4. Reading the calendar is part of the same paid feature
+    # as acting on it - a free user has nothing to do with this list.
+    quota.require_feature(db, user_id, "calendar_scheduling")
+
     access_token = _access_token_or_error(user_id, db)
 
     try:
@@ -150,6 +171,13 @@ def schedule_event(
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user)
 ):
+    # Billing Phase 4, first thing: scheduling is a paid capability, and a
+    # free user should not reach a recorder through the calendar at all.
+    # Before _access_token_or_error rather than after, so a refused plan
+    # costs no Google round-trip and answers 402 instead of the 409 a free
+    # user with no connection would otherwise get.
+    quota.require_feature(db, user_id, "calendar_scheduling")
+
     access_token = _access_token_or_error(user_id, db)
 
     try:
@@ -180,6 +208,14 @@ def schedule_event(
         # Idempotent - a double-click or a retried request lands on
         # the same already-scheduled meeting rather than erroring.
         return meeting_to_dict(existing)
+
+    # Billing Phase 2. Deliberately *after* the idempotency check above: a
+    # retry of something already scheduled must keep returning the existing
+    # meeting even once the user is at their cap, or a double-click turns
+    # into a 402 for a meeting they already have. Booking spends the quota,
+    # so this counts against the same allowance as POST /meetings - see
+    # quota._count_meetings on why the window is created_at, not scheduled_at.
+    quota.enforce_meeting_quota(db, user_id)
 
     meeting = Meeting(
         user_id=user_id,

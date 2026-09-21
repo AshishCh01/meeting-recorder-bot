@@ -25,6 +25,7 @@ def _settings_out(user: User) -> UserSettings:
         email=user.email,
         bot_display_name=user.bot_display_name,
         ask_ai_instructions=user.ask_ai_instructions,
+        plan=user.plan,
     )
 
 

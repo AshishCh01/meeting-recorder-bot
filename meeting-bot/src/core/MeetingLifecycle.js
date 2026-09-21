@@ -54,7 +54,16 @@ export async function runMeetingLifecycle(session, {
     notifyStatusUpdate(session); // fire-and-forget, never rejects
     recorder.start();
 
-    const MAX_MEETING_MINUTES = Number(process.env.MAX_RECORDING_DURATION_MINUTES || 90);
+    // This host's own ceiling, and then the caller's plan cap on top of it
+    // (backend billing Phase 2). The smaller wins: a plan may shorten a
+    // recording but never extend it past what this host is configured for,
+    // so raising a tier in the backend cannot quietly make every recorder
+    // run longer. session.maxDurationMinutes is null for any caller that
+    // sends none, which leaves the env var in sole charge exactly as before.
+    const HOST_MAX_MINUTES = Number(process.env.MAX_RECORDING_DURATION_MINUTES || 90);
+    const MAX_MEETING_MINUTES = session.maxDurationMinutes
+      ? Math.min(HOST_MAX_MINUTES, session.maxDurationMinutes)
+      : HOST_MAX_MINUTES;
     const hardDeadline = Date.now() + MAX_MEETING_MINUTES * 60 * 1000;
 
     while (!session.cancelRequested && await bot.isStillInMeeting()) {

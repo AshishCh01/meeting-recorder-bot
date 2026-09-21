@@ -86,7 +86,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 function makeJoinHandler(platform) {
   return (req, res) => {
-    const { url, meetingId, userId, botDisplayName } = req.body;
+    const { url, meetingId, userId, botDisplayName, maxDurationMinutes } = req.body;
     if (!url || !meetingId || !userId) {
       return res.status(400).json({ error: 'url, meetingId, and userId are required' });
     }
@@ -108,7 +108,19 @@ function makeJoinHandler(platform) {
       return res.status(409).json({ error: 'Bot is currently busy with another meeting' });
     }
 
-    const session = new MeetingSession({ meetingId, meetingUrl: url, platform, userId, botDisplayName });
+    // Optional, and validated rather than trusted: a caller sending 0, a
+    // negative, a string or something enormous must not be able to end every
+    // recording instantly or disable the cap. Anything that is not a sane
+    // positive number is dropped, and the lifecycle falls back to the env
+    // var - the same thing that happens when the key is absent entirely,
+    // which is what every pre-billing caller sends.
+    const capMinutes = Number(maxDurationMinutes);
+    const cap = Number.isFinite(capMinutes) && capMinutes > 0 ? Math.floor(capMinutes) : null;
+
+    const session = new MeetingSession({
+      meetingId, meetingUrl: url, platform, userId, botDisplayName,
+      maxDurationMinutes: cap,
+    });
     activeMeetings.set(meetingId, session);
 
     res.status(202).json({ status: 'accepted', meetingId });
