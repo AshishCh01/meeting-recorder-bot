@@ -30,12 +30,13 @@ def add_user(user_id=None, email=None):
     return str(user_id)
 
 
-def add_meeting(user_id, status="completed", embedding_provider=None, chunks=()):
+def add_meeting(user_id, status="completed", embedding_provider=None, chunks=(), recording_url=None):
     meeting_id = uuid.uuid4()
     db = SessionLocal()
     try:
         db.add(Meeting(id=meeting_id, user_id=user_id, meeting_url="https://zoom.us/j/1", platform="zoom",
-                       status=status, title="Planning", embedding_provider=embedding_provider))
+                       status=status, title="Planning", embedding_provider=embedding_provider,
+                       recording_url=recording_url))
         db.flush()
         for i, (content, embedding) in enumerate(chunks):
             db.add(MeetingChunk(meeting_id=meeting_id, chunk_index=i, content=content, speakers=["Asha"],
@@ -90,9 +91,31 @@ def test_get_meeting_holds_no_connection_while_signing(fake_sign, monkeypatch, c
     assert [c["checked_out"] for c in fake_sign] == [0], f"checked out while signing ({cache}): {fake_sign}"
 
 
-def test_get_meeting_does_not_sign_an_unfinished_meeting(fake_sign, monkeypatch):
+# The recording is in Storage once the webhook claims the meeting for
+# transcription, and that claim is what sets recording_url - so it is playable
+# while transcribing, and after a failed transcription too.
+@pytest.mark.parametrize("status, recording_url", [
+    ("transcribing", "https://signed.example/at-claim"),
+    ("failed", "https://signed.example/at-claim"),
+])
+def test_get_meeting_signs_a_meeting_whose_recording_is_uploaded(fake_sign, monkeypatch, status, recording_url):
     user_id = add_user()
-    meeting_id = add_meeting(user_id, status="transcribing")
+    meeting_id = add_meeting(user_id, status=status, recording_url=recording_url)
+    monkeypatch.setattr(auth, "_identify", lambda token: (user_id, f"u-{user_id}@example.com"))
+
+    response = TestClient(app).get(f"/meetings/{meeting_id}", headers=HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["audio_playback_url"] == f"https://signed.example/{user_id}/{meeting_id}/recording.m4a"
+    assert [c["checked_out"] for c in fake_sign] == [0]
+
+
+# No recording in Storage yet - still in the call or mid-upload - or a meeting
+# that failed before any completed report was accepted for it.
+@pytest.mark.parametrize("status", ["queued", "joining", "recording", "uploading", "failed"])
+def test_get_meeting_does_not_sign_a_meeting_without_an_uploaded_recording(fake_sign, monkeypatch, status):
+    user_id = add_user()
+    meeting_id = add_meeting(user_id, status=status)
     monkeypatch.setattr(auth, "_identify", lambda token: (user_id, f"u-{user_id}@example.com"))
 
     response = TestClient(app).get(f"/meetings/{meeting_id}", headers=HEADERS)
