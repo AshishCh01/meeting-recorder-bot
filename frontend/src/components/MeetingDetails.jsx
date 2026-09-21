@@ -135,6 +135,17 @@ export const MeetingDetails = ({
     setIsStopping(false);
   };
 
+  // The audio is playable while the meeting is still transcribing, and the
+  // page polls through that - each poll signs a fresh URL. Handing every one
+  // to <audio> would restart playback, so hold the first URL for this meeting
+  // and only drop it when the backend stops sending one (e.g. after Retry).
+  const playbackRef = useRef({ id: null, url: null });
+  const incomingUrl = meeting?.audio_playback_url || null;
+  if (playbackRef.current.id !== meeting?.id || !incomingUrl || !playbackRef.current.url) {
+    playbackRef.current = { id: meeting?.id, url: incomingUrl };
+  }
+  const audioSrc = playbackRef.current.url;
+
   const transcriptData = meeting?.transcript || {};
   const { summary, key_points, conclusion, action_items, conversation } = transcriptData;
   const actionCount = action_items?.length || 0;
@@ -313,7 +324,7 @@ export const MeetingDetails = ({
         {activeTab === 'transcript' && <TranscriptTab conversation={conversation} />}
       </div>
 
-      <AudioPlayer src={meeting.audio_playback_url} gutterClass={gutter} />
+      <AudioPlayer src={audioSrc}gutterClass={gutter} />
     </div>
   );
 };

@@ -152,7 +152,12 @@ def get_meeting(
     # round-trip to Supabase Storage. Everything past this point reads the
     # plain dict, never the ORM object, so keep it that way.
     db.close()
-    if m_dict.get("status") == "completed":
+    # The recording is in Storage from the moment the webhook claims the
+    # meeting for transcription (that claim is what sets recording_url), so
+    # it is playable while transcribing and after a failed transcription too.
+    # A failed meeting without recording_url never uploaded anything.
+    status = m_dict.get("status")
+    if status in ("transcribing", "completed") or (status == "failed" and m_dict.get("recording_url")):
         storage_path = f"{m_dict['user_id']}/{m_dict['id']}/recording.m4a"
         try:
             m_dict["audio_playback_url"] = get_signed_recording_url(storage_path, expires_in=3600)
