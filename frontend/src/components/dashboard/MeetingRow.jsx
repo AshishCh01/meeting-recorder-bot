@@ -97,14 +97,6 @@ export const MeetingRow = ({ meeting, onDeleteRequest, onRetry, retrying }) => {
             "Completed" tell the user nothing they cannot see from the row. */}
         {tone !== 'done' && <StatusBadge status={meeting.status} />}
 
-        <span className="flex items-center gap-2.5 text-[12.5px] tabular-nums text-muted">
-          {meeting.duration_seconds ? (
-            <b className="font-semibold text-body">{formatDuration(meeting.duration_seconds)}</b>
-          ) : null}
-          <span>{formatPlatform(meeting.platform)}</span>
-          <span className="hidden tablet:inline">{formatMeetingTime(meeting.created_at)}</span>
-        </span>
-
         {meeting.status === 'failed' && (
           <button
             type="button"
@@ -117,6 +109,17 @@ export const MeetingRow = ({ meeting, onDeleteRequest, onRetry, retrying }) => {
           </button>
         )}
 
+        <div className="flex items-center gap-2.5 text-[12.5px] tabular-nums text-muted tablet:grid tablet:grid-cols-[64px_56px_90px] tablet:gap-3 tablet:items-center tablet:shrink-0">
+          <span className="whitespace-nowrap tabular-nums tablet:text-right">
+            {meeting.duration_seconds ? (
+              <b className="font-semibold text-body">{formatDuration(meeting.duration_seconds)}</b>
+            ) : (
+              <span className="text-muted/40 hidden tablet:inline">—</span>
+            )}
+          </span>
+          <span className="whitespace-nowrap tablet:text-left">{formatPlatform(meeting.platform)}</span>
+          <span className="hidden whitespace-nowrap tablet:block tablet:text-right">{formatMeetingTime(meeting.created_at)}</span>
+        </div>
       </div>
 
       {/* A child of the article, not of the meta line, so the phone offsets
