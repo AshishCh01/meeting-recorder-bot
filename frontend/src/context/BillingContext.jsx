@@ -69,14 +69,14 @@ export const BillingProvider = ({ children }) => {
       const { data } = await api.get('/billing');
       setState({
         plan: data.current_plan,
-        planName: data.usage?.plan_name ?? null,
+        planName: data.usage?.plan_name === 'Team' ? 'Premium' : (data.usage?.plan_name ?? null),
         // The flags live on the plan entry for the plan the user is on, so a
         // gate reads features.pdf_export rather than comparing plan ids - the
         // same shape the backend gates use.
         features: data.plans?.find((p) => p.id === data.current_plan) ?? {},
         usage: data.usage ?? null,
         subscription: data.subscription ?? null,
-        plans: data.plans ?? [],
+        plans: data.plans ? data.plans.map(p => p.name === 'Team' ? { ...p, name: 'Premium' } : p) : [],
         billingEnabled: Boolean(data.billing_enabled),
       });
     } catch {

@@ -46,7 +46,7 @@ const PriceLine = ({ plan }) => {
         ₹{plan.price_rupees.toLocaleString('en-IN')}
       </span>
       <span className="text-[13.5px] font-semibold text-muted">
-        /{plan.per_seat ? 'seat/month' : 'month'}
+        /month
       </span>
     </div>
   );
