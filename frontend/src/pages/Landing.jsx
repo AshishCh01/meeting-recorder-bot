@@ -110,7 +110,7 @@ export const Landing = () => {
   const [plans, setPlans] = useState([]);
   useEffect(() => {
     api.get('/billing/plans')
-      .then(({ data }) => setPlans(data))
+      .then(({ data }) => setPlans(data.map(p => p.name === 'Team' ? { ...p, name: 'Premium' } : p)))
       .catch(() => setPlans([]));
   }, []);
 
