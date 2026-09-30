@@ -32,7 +32,7 @@ function featuresOf(plan) {
     { on: true, text: limitLabel(plan.ask_ai_questions_per_period, 'AI questions a month') },
     { on: plan.pdf_export, text: 'PDF export' },
     { on: plan.calendar_scheduling, text: 'Calendar scheduling' },
-    { on: plan.team_workspace, text: 'Shared team workspace' },
+    //{ on: plan.team_workspace, text: 'Everything in Pro' },
   ];
 }
 
