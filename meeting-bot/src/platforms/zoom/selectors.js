@@ -65,12 +65,14 @@ export const ZOOM_SELECTORS = {
     onState: [
       'button[aria-label^="stop my video" i]',
       'button[aria-label^="stop video" i]',
-      'role=button[name=/^stop (my )?video/i]',
+      'button[aria-label^="stop camera" i]',
+      'role=button[name=/^(stop|turn off) (my )?(video|camera)/i]',
     ],
     offState: [
       'button[aria-label^="start my video" i]',
       'button[aria-label^="start video" i]',
-      'role=button[name=/^start (my )?video/i]',
+      'button[aria-label^="start camera" i]',
+      'role=button[name=/^(start|turn on) (my )?(video|camera)/i]',
     ],
   },
 
